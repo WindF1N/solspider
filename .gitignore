@@ -1,0 +1,44 @@
+# Виртуальное окружение
+venv/
+pump_venv/
+env/
+.env
+
+# Конфигурационные файлы с секретами
+config.py
+.env.local
+
+# Логи
+*.log
+pump_bot.log
+webhook_debug.log
+
+# Python кеш
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Системные файлы
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE файлы
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Backup файлы
+*.backup
+*.bak
+
+# Временные файлы
+*.tmp
+*.temp 
