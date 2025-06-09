@@ -26,26 +26,54 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID", "YOUR_CHAT_ID")
 TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
+# Список чатов для отправки уведомлений
+CHAT_IDS = [
+    CHAT_ID,  # Основной чат из .env
+    "5542434203",  # Дополнительный чат 1
+    "1424887871"   # Дополнительный чат 2
+]
+
 # Nitter конфигурация для анализа Twitter
 NITTER_COOKIE = "techaro.lol-anubis-auth-for-nitter.tiekoetter.com=eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhY3Rpb24iOiJDSEFMTEVOR0UiLCJjaGFsbGVuZ2UiOiJiMGEyOWM0YzcwZGM0YzYxMjE2NTNkMzQwYTU0YTNmNTFmZmJlNDIwOGM4MWZkZmUxNDA4MTY2MGNmMDc3ZGY2IiwiZXhwIjoxNzQ5NjAyOTA3LCJpYXQiOjE3NDg5OTgxMDcsIm5iZiI6MTc0ODk5ODA0Nywibm9uY2UiOiIxMzI4MSIsInBvbGljeVJ1bGUiOiJlZDU1ZThhMGJkZjcwNGM4NTFkY2RjMjQ3OWZmMTJlMjM1YzY1Y2Q0NjMwZGYwMTgwNGM4ZTgyMzZjMzU1NzE2IiwicmVzcG9uc2UiOiIwMDAwYWEwZjdmMjBjNGQ0MGU5ODIzMWI4MDNmNWZiMGJlMGZjZmZiOGRhOTIzNDUyNDdhZjU1Yjk1MDJlZWE2In0.615N6HT0huTaYXHffqbBWqlpbpUgb7uVCh__TCoIuZLtGzBkdS3K8fGOPkFxHrbIo2OY3bw0igmtgDZKFesjAg"
 
 def send_telegram(message, inline_keyboard=None):
-    """Отправка сообщения в Telegram с кнопками"""
-    try:
-        payload = {
-            "chat_id": CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": False
-        }
+    """Отправка сообщения в Telegram во все чаты"""
+    success_count = 0
+    total_chats = 0
+    
+    for chat_id in CHAT_IDS:
+        # Пропускаем пустые или неверные chat_id
+        if not chat_id or chat_id in ["YOUR_CHAT_ID", ""]:
+            continue
+            
+        total_chats += 1
         
-        if inline_keyboard:
-            payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
-        
-        response = requests.post(TELEGRAM_URL, json=payload)
-        return response.status_code == 200
-    except Exception as e:
-        logger.error(f"Ошибка Telegram: {e}")
+        try:
+            payload = {
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": False
+            }
+            
+            if inline_keyboard:
+                payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
+            
+            response = requests.post(TELEGRAM_URL, json=payload)
+            if response.status_code == 200:
+                logger.info(f"✅ Сообщение отправлено в чат {chat_id}")
+                success_count += 1
+            else:
+                logger.error(f"❌ Ошибка Telegram для чата {chat_id}: {response.text}")
+                
+        except Exception as e:
+            logger.error(f"Ошибка Telegram для чата {chat_id}: {e}")
+    
+    if success_count > 0:
+        logger.info(f"📤 Сообщение отправлено в {success_count}/{total_chats} чатов")
+        return True
+    else:
+        logger.error("❌ Не удалось отправить сообщение ни в один чат")
         return False
 
 def analyze_token_sentiment(mint, symbol):
