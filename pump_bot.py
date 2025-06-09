@@ -17,8 +17,13 @@ except ImportError:
     # dotenv не установлен, используем системные переменные окружения
     pass
 
+# Импорт модулей проекта
+from logger_config import setup_logging, log_token_analysis, log_trade_activity, log_database_operation, log_daily_stats
+from database import get_db_manager
+from connection_monitor import connection_monitor
+
 # Настройка логирования
-logging.basicConfig(level=logging.INFO)
+setup_logging()
 logger = logging.getLogger(__name__)
 
 # Telegram конфигурация
@@ -32,6 +37,17 @@ CHAT_IDS = [
     "5542434203",  # Дополнительный чат 1
     "1424887871"   # Дополнительный чат 2
 ]
+
+# WebSocket конфигурация
+WEBSOCKET_CONFIG = {
+    'ping_interval': 30,     # Ping каждые 30 секунд
+    'ping_timeout': 20,      # Ожидание pong 20 секунд 
+    'close_timeout': 15,     # Таймаут закрытия
+    'max_size': 10**7,       # Максимальный размер сообщения (10MB)
+    'max_queue': 32,         # Размер очереди
+    'heartbeat_check': 300,  # Проверка соединения если нет сообщений 5 минут
+    'health_check_interval': 100  # Проверяем здоровье каждые 100 сообщений
+}
 
 # Nitter конфигурация для анализа Twitter
 NITTER_COOKIE = "techaro.lol-anubis-auth-for-nitter.tiekoetter.com=eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhY3Rpb24iOiJDSEFMTEVOR0UiLCJjaGFsbGVuZ2UiOiJiMGEyOWM0YzcwZGM0YzYxMjE2NTNkMzQwYTU0YTNmNTFmZmJlNDIwOGM4MWZkZmUxNDA4MTY2MGNmMDc3ZGY2IiwiZXhwIjoxNzQ5NjAyOTA3LCJpYXQiOjE3NDg5OTgxMDcsIm5iZiI6MTc0ODk5ODA0Nywibm9uY2UiOiIxMzI4MSIsInBvbGljeVJ1bGUiOiJlZDU1ZThhMGJkZjcwNGM4NTFkY2RjMjQ3OWZmMTJlMjM1YzY1Y2Q0NjMwZGYwMTgwNGM4ZTgyMzZjMzU1NzE2IiwicmVzcG9uc2UiOiIwMDAwYWEwZjdmMjBjNGQ0MGU5ODIzMWI4MDNmNWZiMGJlMGZjZmZiOGRhOTIzNDUyNDdhZjU1Yjk1MDJlZWE2In0.615N6HT0huTaYXHffqbBWqlpbpUgb7uVCh__TCoIuZLtGzBkdS3K8fGOPkFxHrbIo2OY3bw0igmtgDZKFesjAg"
@@ -76,8 +92,48 @@ def send_telegram(message, inline_keyboard=None):
         logger.error("❌ Не удалось отправить сообщение ни в один чат")
         return False
 
-def analyze_token_sentiment(mint, symbol):
-    """Анализ упоминаний токена в Twitter через Nitter"""
+async def search_single_query(query, headers):
+    """Выполняет одиночный поисковый запрос к Nitter"""
+    url = f"https://nitter.tiekoetter.com/search?f=tweets&q=%22{query}%22"
+    
+    try:
+        # Используем asyncio совместимую библиотеку
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=10) as response:
+                if response.status == 200:
+                    html = await response.text()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    
+                    # Находим все твиты
+                    tweets = soup.find_all('div', class_='timeline-item')
+                    tweet_count = len(tweets)
+                    
+                    # Анализируем активность в твитах
+                    engagement = 0
+                    for tweet in tweets:
+                        stats = tweet.find_all('span', class_='tweet-stat')
+                        for stat in stats:
+                            icon_container = stat.find('div', class_='icon-container')
+                            if icon_container:
+                                text = icon_container.get_text(strip=True)
+                                # Извлекаем числа (лайки, ретвиты, комментарии)
+                                numbers = re.findall(r'\d+', text)
+                                if numbers:
+                                    engagement += int(numbers[0])
+                    
+                    logger.info(f"🔍 Nitter анализ '{query}': {tweet_count} твитов, активность: {engagement}")
+                    return tweet_count, engagement
+                else:
+                    logger.warning(f"❌ Nitter ответил {response.status} для '{query}'")
+                    return 0, 0
+                    
+    except Exception as e:
+        logger.error(f"Ошибка запроса к Nitter для '{query}': {e}")
+        return 0, 0
+
+async def analyze_token_sentiment(mint, symbol):
+    """Анализ упоминаний токена в Twitter через Nitter (параллельно)"""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -89,52 +145,22 @@ def analyze_token_sentiment(mint, symbol):
             'Upgrade-Insecure-Requests': '1',
         }
         
-        # Поиск по символу и адресу контракта
+        # Параллельные запросы по символу и адресу контракта
         search_queries = [f'${symbol}', mint]
-        total_tweets = 0
-        total_engagement = 0
-        symbol_tweets = 0
-        contract_tweets = 0
         
-        for i, query in enumerate(search_queries):
-            url = f"https://nitter.tiekoetter.com/search?f=tweets&q=%22{query}%22"
-            
-            try:
-                response = requests.get(url, headers=headers, timeout=10)
-                if response.status_code == 200:
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    
-                    # Находим все твиты
-                    tweets = soup.find_all('div', class_='timeline-item')
-                    tweet_count = len(tweets)
-                    total_tweets += tweet_count
-                    
-                    # Сохраняем отдельно твиты по символу и контракту
-                    if i == 0:  # Символ токена
-                        symbol_tweets = tweet_count
-                    else:  # Адрес контракта
-                        contract_tweets = tweet_count
-                    
-                    # Анализируем активность в твитах
-                    for tweet in tweets:
-                        stats = tweet.find_all('span', class_='tweet-stat')
-                        for stat in stats:
-                            icon_container = stat.find('div', class_='icon-container')
-                            if icon_container:
-                                text = icon_container.get_text(strip=True)
-                                # Извлекаем числа (лайки, ретвиты, комментарии)
-                                numbers = re.findall(r'\d+', text)
-                                if numbers:
-                                    total_engagement += int(numbers[0])
-                    
-                    logger.info(f"🔍 Nitter анализ '{query}': {tweet_count} твитов, активность: {total_engagement}")
-                    
-                    # Небольшая задержка между запросами
-                    time.sleep(1)
-                    
-            except Exception as e:
-                logger.error(f"Ошибка запроса к Nitter для '{query}': {e}")
-                continue
+        # Выполняем оба запроса параллельно
+        results = await asyncio.gather(
+            search_single_query(search_queries[0], headers),  # Символ токена
+            search_single_query(search_queries[1], headers),  # Адрес контракта
+            return_exceptions=True
+        )
+        
+        # Обрабатываем результаты
+        symbol_tweets, symbol_engagement = results[0] if not isinstance(results[0], Exception) else (0, 0)
+        contract_tweets, contract_engagement = results[1] if not isinstance(results[1], Exception) else (0, 0)
+        
+        total_tweets = symbol_tweets + contract_tweets
+        total_engagement = symbol_engagement + contract_engagement
         
         # Рассчитываем рейтинг токена
         if total_tweets == 0:
@@ -186,7 +212,7 @@ def analyze_token_sentiment(mint, symbol):
             'contract_found': False
         }
 
-def format_new_token(data):
+async def format_new_token(data):
     """Форматирование сообщения о новом токене с полной информацией"""
     mint = data.get('mint', 'Unknown')
     name = data.get('name', 'Unknown Token')
@@ -196,7 +222,16 @@ def format_new_token(data):
     
     # Анализируем упоминания в Twitter
     logger.info(f"🔍 Анализируем токен {symbol} в Twitter...")
-    twitter_analysis = analyze_token_sentiment(mint, symbol)
+    twitter_analysis = await analyze_token_sentiment(mint, symbol)
+    
+    # Сохраняем токен в базу данных
+    try:
+        db_manager = get_db_manager()
+        saved_token = db_manager.save_token(data, twitter_analysis)
+        log_database_operation("SAVE_TOKEN", "tokens", "SUCCESS", f"Symbol: {symbol}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка сохранения токена в БД: {e}")
+        log_database_operation("SAVE_TOKEN", "tokens", "ERROR", str(e))
     
     # Дополнительная информация
     uri = data.get('uri', '')
@@ -256,11 +291,22 @@ def format_new_token(data):
     
     # Проверяем, стоит ли отправлять уведомление на основе Twitter активности
     should_notify = (
-        twitter_analysis['score'] >= 5 or  # Минимальный скор
-        twitter_analysis['tweets'] >= 3 or  # Минимум 3 твита
-        'высокий' in twitter_analysis['rating'].lower() or  # Высокий интерес
-        'средний' in twitter_analysis['rating'].lower()    # Средний интерес
+        twitter_analysis['contract_found'] and (  # НОВЫЙ ФИЛЬТР: адрес контракта найден в Twitter
+            twitter_analysis['score'] >= 5 or  # Минимальный скор
+            twitter_analysis['tweets'] >= 3 or  # Минимум 3 твита
+            'высокий' in twitter_analysis['rating'].lower() or  # Высокий интерес
+            'средний' in twitter_analysis['rating'].lower()    # Средний интерес
+        )
     )
+    
+    # Дополнительное логирование фильтрации
+    if not twitter_analysis['contract_found']:
+        logger.info(f"🚫 Токен {symbol} отфильтрован: адрес контракта НЕ найден в Twitter")
+    elif not should_notify:
+        logger.info(f"🚫 Токен {symbol} отфильтрован: низкие показатели Twitter активности")
+    
+    # Логируем анализ токена
+    log_token_analysis(data, twitter_analysis, should_notify)
     
     return message, keyboard, should_notify
 
@@ -316,28 +362,109 @@ async def handle_message(message):
             logger.info(f"🚀 НОВЫЙ ТОКЕН: {token_name} ({symbol}) - {mint[:8]}...")
             
             # Анализируем токен и получаем сообщение
-            msg, keyboard, should_notify = format_new_token(data)
+            msg, keyboard, should_notify = await format_new_token(data)
             
             if should_notify:
                 logger.info(f"✅ Токен {symbol} прошел фильтрацию - отправляем уведомление")
                 send_telegram(msg, keyboard)
+                
+                # Обновляем статус уведомления в БД
+                try:
+                    db_manager = get_db_manager()
+                    # Здесь можно обновить поле notification_sent
+                    log_database_operation("UPDATE_NOTIFICATION", "tokens", "SUCCESS", f"Symbol: {symbol}")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка обновления статуса уведомления: {e}")
             else:
                 logger.info(f"❌ Токен {symbol} не прошел фильтрацию - пропускаем")
-            
+        
         # Проверяем, это ли торговое событие
         elif 'mint' in data and 'traderPublicKey' in data and 'sol_amount' in data:
             sol_amount = float(data.get('sol_amount', 0))
             is_buy = data.get('is_buy', True)
             mint = data.get('mint', 'Unknown')
             
+            # Сохраняем торговую операцию в БД
+            notification_sent = False
+            try:
+                db_manager = get_db_manager()
+                saved_trade = db_manager.save_trade(data)
+                log_database_operation("SAVE_TRADE", "trades", "SUCCESS", 
+                                     f"Amount: {sol_amount:.2f} SOL")
+            except Exception as e:
+                logger.error(f"❌ Ошибка сохранения торговой операции в БД: {e}")
+                log_database_operation("SAVE_TRADE", "trades", "ERROR", str(e))
+            
             # Отправляем уведомления о крупных сделках (больше 5 SOL)
             if sol_amount >= 5.0:
                 logger.info(f"💰 Крупная {'покупка' if is_buy else 'продажа'}: {sol_amount:.2f} SOL")
                 msg, keyboard = format_trade_alert(data)
-                send_telegram(msg, keyboard)
+                notification_sent = send_telegram(msg, keyboard)
+            
+            # Логируем торговую активность
+            log_trade_activity(data, notification_sent)
+        
+        # Проверяем, это ли миграция на Raydium
+        elif 'mint' in data and 'bondingCurveKey' in data and 'liquiditySol' in data:
+            logger.info(f"🚀 МИГРАЦИЯ НА RAYDIUM: {data.get('mint', 'Unknown')[:8]}...")
+            
+            # Сохраняем миграцию в БД
+            try:
+                db_manager = get_db_manager()
+                saved_migration = db_manager.save_migration(data)
+                log_database_operation("SAVE_MIGRATION", "migrations", "SUCCESS", 
+                                     f"Mint: {data.get('mint', 'Unknown')[:8]}...")
+            except Exception as e:
+                logger.error(f"❌ Ошибка сохранения миграции в БД: {e}")
+                log_database_operation("SAVE_MIGRATION", "migrations", "ERROR", str(e))
             
     except Exception as e:
         logger.error(f"Ошибка обработки: {e}")
+
+async def send_daily_stats():
+    """Отправка ежедневной статистики"""
+    try:
+        db_manager = get_db_manager()
+        stats = db_manager.get_token_stats()
+        
+        if stats:
+            # Логируем статистику
+            log_daily_stats(stats)
+            
+            # Формируем сообщение со статистикой
+            stats_message = (
+                f"📊 <b>ЕЖЕДНЕВНАЯ СТАТИСТИКА SolSpider</b>\n\n"
+                f"📈 <b>Всего токенов:</b> {stats['total_tokens']:,}\n"
+                f"💰 <b>Всего сделок:</b> {stats['total_trades']:,}\n"
+                f"🚀 <b>Миграций на Raydium:</b> {stats['total_migrations']:,}\n"
+                f"💎 <b>Крупных сделок за 24ч:</b> {stats['big_trades_24h']:,}\n\n"
+            )
+            
+            # Добавляем топ токены по Twitter скору
+            if stats['top_tokens']:
+                stats_message += "<b>🏆 ТОП ТОКЕНЫ по Twitter скору:</b>\n"
+                for i, token in enumerate(stats['top_tokens'][:5], 1):
+                    stats_message += f"{i}. {token['symbol']} - {token['score']:.1f}\n"
+            
+            stats_message += f"\n<b>🕐 Время:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            
+            # Отправляем статистику
+            send_telegram(stats_message)
+            logger.info("📊 Ежедневная статистика отправлена")
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки ежедневной статистики: {e}")
+
+async def check_connection_health(websocket):
+    """Проверка здоровья соединения"""
+    try:
+        # Отправляем простой ping
+        pong_waiter = await websocket.ping()
+        await asyncio.wait_for(pong_waiter, timeout=10)
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ Проблема с соединением: {e}")
+        return False
 
 async def main():
     """Основная функция с автоматическим реконнектом"""
@@ -346,17 +473,26 @@ async def main():
     retry_delay = 5
     retry_count = 0
     first_connection = True
+    last_stats_day = None
+    last_heartbeat = datetime.now()
     
     while True:
         try:
-            # Настройки WebSocket с keepalive
+            # Настройки WebSocket с улучшенным keepalive
             async with websockets.connect(
                 uri,
-                ping_interval=20,  # Отправка ping каждые 20 секунд
-                ping_timeout=10,   # Таймаут ожидания pong 10 секунд
-                close_timeout=10   # Таймаут закрытия соединения
+                ping_interval=WEBSOCKET_CONFIG['ping_interval'],
+                ping_timeout=WEBSOCKET_CONFIG['ping_timeout'],
+                close_timeout=WEBSOCKET_CONFIG['close_timeout'],
+                max_size=WEBSOCKET_CONFIG['max_size'],
+                max_queue=WEBSOCKET_CONFIG['max_queue'],
+                compression=None,   # Отключаем сжатие для стабильности
+                user_agent_header="SolSpider/1.0"  # Идентификация клиента
             ) as websocket:
                 logger.info("🌐 Подключен к PumpPortal")
+                
+                # Инициализируем мониторинг соединения
+                connection_monitor.connection_established()
                 
                 # Подписываемся на новые токены
                 subscribe_msg = {"method": "subscribeNewToken"}
@@ -388,25 +524,80 @@ async def main():
                 retry_count = 0
                 
                 # Слушаем сообщения
+                message_count = 0
                 async for message in websocket:
                     await handle_message(message)
+                    message_count += 1
+                    
+                    # Обновляем мониторинг
+                    connection_monitor.message_received()
+                    last_heartbeat = datetime.now()
+                    
+                    # Проверяем, нужно ли отправить ежедневную статистику
+                    current_day = datetime.now().strftime('%Y-%m-%d')
+                    current_hour = datetime.now().hour
+                    
+                    # Отправляем статистику раз в день в 12:00
+                    if (last_stats_day != current_day and current_hour >= 12):
+                        await send_daily_stats()
+                        last_stats_day = current_day
+                    
+                    # Отправляем статистику соединения каждый час
+                    if message_count % 3600 == 0 and message_count > 0:  # Примерно каждый час при активности
+                        connection_stats = connection_monitor.format_stats_message()
+                        logger.info("📊 Отправляем статистику соединения")
+                        send_telegram(connection_stats)
+                    
+                    # Проверяем здоровье соединения периодически
+                    if message_count % WEBSOCKET_CONFIG['health_check_interval'] == 0:
+                        current_time = datetime.now()
+                        time_since_heartbeat = (current_time - last_heartbeat).total_seconds()
+                        
+                        # Если долго нет сообщений, проверяем соединение
+                        if time_since_heartbeat > WEBSOCKET_CONFIG['heartbeat_check']:
+                            logger.info(f"🔍 Проверяем соединение (нет сообщений {time_since_heartbeat:.0f}с)")
+                            
+                            # Выполняем ping тест через монитор
+                            ping_time = await connection_monitor.ping_test(websocket)
+                            if ping_time == -1:
+                                logger.warning("❌ Соединение нездорово, переподключаемся...")
+                                break
+                            else:
+                                logger.info(f"✅ Ping: {ping_time:.0f}ms - соединение в порядке")
+                                last_heartbeat = current_time
                     
         except websockets.exceptions.ConnectionClosed as e:
-            logger.warning(f"⚠️ Соединение закрыто: {e}")
-            send_telegram(f"⚠️ <b>Соединение потеряно</b>\nПричина: {e}\n🔄 Попытка переподключения...")
+            # Обновляем статистику мониторинга
+            connection_monitor.connection_lost()
+            
+            if e.code == 1011:
+                logger.warning(f"⚠️ Keepalive timeout: {e}")
+                # Не отправляем уведомление для обычных keepalive ошибок
+            else:
+                logger.warning(f"⚠️ Соединение закрыто: {e}")
+                send_telegram(f"⚠️ <b>Соединение потеряно</b>\nКод: {e.code}\nПричина: {e.reason}\n🔄 Переподключение...")
         except websockets.exceptions.InvalidStatusCode as e:
             logger.error(f"❌ Неверный статус код: {e}")
             send_telegram(f"❌ <b>Ошибка подключения</b>\nСтатус: {e}")
         except websockets.exceptions.WebSocketException as e:
             logger.error(f"❌ WebSocket ошибка: {e}")
-            send_telegram(f"❌ <b>WebSocket ошибка</b>\n{e}")
+            # Не спамим уведомлениями при частых WebSocket ошибках
+            if retry_count <= 3:
+                send_telegram(f"❌ <b>WebSocket ошибка</b>\n{e}")
+        except ConnectionResetError as e:
+            logger.warning(f"⚠️ Соединение сброшено сетью: {e}")
+            # Обычная сетевая ошибка, не требует уведомления
+        except OSError as e:
+            logger.error(f"❌ Системная ошибка сети: {e}")
+            if retry_count <= 2:
+                send_telegram(f"❌ <b>Сетевая ошибка</b>\n{e}")
         except Exception as e:
             logger.error(f"❌ Неожиданная ошибка: {e}")
-            send_telegram(f"❌ <b>Критическая ошибка</b>\n{e}")
+            if retry_count <= 1:
+                send_telegram(f"❌ <b>Критическая ошибка</b>\n{e}")
         
-        # Увеличиваем задержку для следующего подключения
+        # Увеличиваем счетчик попыток
         retry_count = min(retry_count + 1, max_retries)
-        delay = retry_delay * retry_count
         
         if retry_count >= max_retries:
             error_msg = "❌ <b>Максимум попыток переподключения достигнут</b>\n⏹️ Бот остановлен"
@@ -414,8 +605,8 @@ async def main():
             send_telegram(error_msg)
             break
         
-        logger.info(f"🔄 Переподключение через {delay} секунд... (попытка {retry_count}/{max_retries})")
-        await asyncio.sleep(delay)
+        logger.info(f"🔄 Мгновенное переподключение... (попытка {retry_count}/{max_retries})")
+        # Без задержки - сразу переподключаемся
 
 if __name__ == "__main__":
     asyncio.run(main()) 

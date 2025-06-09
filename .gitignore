@@ -12,6 +12,7 @@ config.py
 *.log
 pump_bot.log
 webhook_debug.log
+logs/
 
 # Python кеш
 __pycache__/
@@ -41,4 +42,9 @@ Thumbs.db
 
 # Временные файлы
 *.tmp
-*.temp 
+*.temp
+
+# База данных и бэкапы
+database_backups/
+*.sql.backup
+*.db 

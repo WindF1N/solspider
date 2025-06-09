@@ -3,8 +3,10 @@
 ## 📋 Предварительные требования
 
 - Python 3.8+ 
+- MySQL/MariaDB сервер
 - Telegram аккаунт
 - Интернет соединение
+- 4GB+ свободного места для логов и БД
 
 ## 🤖 Создание Telegram бота
 
@@ -28,10 +30,28 @@ git clone https://github.com/your-username/pump-fun-telegram-bot
 cd pump-fun-telegram-bot
 ```
 
-### Шаг 2: Настройка переменных окружения
+### Шаг 2: Настройка MySQL базы данных
+```bash
+# Установка MySQL (Ubuntu/Debian)
+sudo apt update
+sudo apt install mysql-server
+
+# Запуск MySQL
+sudo systemctl start mysql
+sudo systemctl enable mysql
+
+# Вход в MySQL как root
+sudo mysql -u root -p
+
+# Выполните SQL скрипт в MySQL консоли
+source setup_database.sql;
+exit;
+```
+
+### Шаг 3: Настройка переменных окружения
 ```bash
 # Скопируйте пример файла
-cp .env.example .env
+cp env_example.txt .env
 
 # Отредактируйте файл .env
 nano .env
@@ -39,11 +59,19 @@ nano .env
 
 Вставьте ваши данные:
 ```
+# Telegram
 TELEGRAM_TOKEN=1234567890:ABCdefGHIjklmNOPqrstUVwxyz
 CHAT_ID=123456789
+
+# MySQL
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=solspider
+DB_PASSWORD=your_strong_password_here
+DB_NAME=solspider
 ```
 
-### Шаг 3: Установка и запуск
+### Шаг 4: Установка и запуск
 ```bash
 # Сделайте скрипт исполняемым
 chmod +x start_bot.sh
@@ -86,6 +114,40 @@ ps aux | grep pump_bot
 kill <PID>
 ```
 
+## 📊 Анализ данных
+
+### Просмотр статистики
+```bash
+# Запуск анализа данных
+python analyze_data.py
+```
+
+### Просмотр логов
+```bash
+# Общий лог
+tail -f logs/solspider.log
+
+# Только ошибки
+tail -f logs/errors.log
+
+# Новые токены
+tail -f logs/tokens.log
+
+# Торговые операции
+tail -f logs/trades.log
+```
+
+### Запросы к базе данных
+```bash
+# Подключение к MySQL
+mysql -u solspider -p solspider
+
+# Примеры запросов
+SELECT COUNT(*) FROM tokens;
+SELECT symbol, twitter_score FROM tokens ORDER BY twitter_score DESC LIMIT 10;
+SELECT COUNT(*) FROM trades WHERE sol_amount >= 5.0;
+```
+
 ## 🚀 Автозапуск (Linux/macOS)
 
 ### Создание systemd службы (Linux)
@@ -96,8 +158,8 @@ sudo nano /etc/systemd/system/pump-bot.service
 Содержимое файла:
 ```ini
 [Unit]
-Description=Pump.fun Telegram Bot
-After=network.target
+Description=SolSpider Pump.fun Bot
+After=network.target mysql.service
 
 [Service]
 Type=simple
@@ -105,6 +167,7 @@ User=yourusername
 WorkingDirectory=/path/to/pump-fun-telegram-bot
 ExecStart=/path/to/pump-fun-telegram-bot/venv/bin/python pump_bot.py
 Restart=always
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
