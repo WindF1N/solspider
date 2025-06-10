@@ -22,10 +22,14 @@ from logger_config import setup_logging, log_token_analysis, log_trade_activity,
 from database import get_db_manager
 from connection_monitor import connection_monitor
 from cookie_rotation import cookie_rotator
+from twitter_profile_parser import TwitterProfileParser
 
 # Настройка логирования
 setup_logging()
 logger = logging.getLogger(__name__)
+
+# Инициализация парсера профилей Twitter (будет создан в async функциях)
+twitter_parser = None
 
 # Telegram конфигурация
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
@@ -145,6 +149,9 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=True, cy
                     tweets = soup.find_all('div', class_='timeline-item')
                     tweet_count = len(tweets)
                     
+                    # Проверяем, это запрос по контракту (длинная строка)
+                    is_contract_query = len(query) > 20
+                    
                     # Анализируем активность в твитах
                     engagement = 0
                     for tweet in tweets:
@@ -160,6 +167,13 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=True, cy
                     
                     quote_status = "с кавычками" if use_quotes else "без кавычек"
                     logger.info(f"🔍 Nitter анализ '{query}' ({quote_status}): {tweet_count} твитов, активность: {engagement}")
+                    
+                    # Парсим авторов если найдены твиты по контракту
+                    authors_data = []
+                    if is_contract_query and tweet_count > 0:
+                        authors_data = await extract_tweet_authors(soup, query, True)
+                        if authors_data:
+                            logger.info(f"👥 Найдено {len(authors_data)} авторов для контракта")
                     
                     # Возвращаем твиты с их уникальными идентификаторами
                     tweet_data = []
@@ -181,7 +195,8 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=True, cy
                         if tweet_id:
                             tweet_data.append({
                                 'id': tweet_id,
-                                'engagement': 0  # будет заполнено ниже
+                                'engagement': 0,  # будет заполнено ниже
+                                'authors': authors_data if is_contract_query else []
                             })
                     
                     # Анализируем активность в твитах
@@ -259,6 +274,7 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
         all_tweets = {}
         symbol_tweets_count = 0
         contract_tweets_count = 0
+        contract_authors = []  # Авторы твитов с контрактами
         
         for i, result in enumerate(results):
             if isinstance(result, Exception) or not result:
@@ -267,6 +283,7 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
             for tweet_data in result:
                 tweet_id = tweet_data['id']
                 engagement = tweet_data['engagement']
+                authors = tweet_data.get('authors', [])
                 
                 # Если твит уже есть, берем максимальное значение активности
                 if tweet_id in all_tweets:
@@ -279,6 +296,8 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
                         symbol_tweets_count += 1
                     else:  # Последние 2 запроса - контракт
                         contract_tweets_count += 1
+                        # Добавляем авторов контрактных твитов
+                        contract_authors.extend(authors)
         
         # Итоговые подсчеты
         total_tweets = len(all_tweets)
@@ -295,7 +314,8 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
             'engagement': 0,
             'score': 0,
             'rating': '🔴 Мало внимания',
-            'contract_found': False
+            'contract_found': False,
+            'contract_authors': []
         }
         
         # Средняя активность на твит
@@ -321,7 +341,8 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
             'engagement': total_engagement,
             'score': round(score, 1),
             'rating': rating,
-            'contract_found': contract_tweets_count > 0
+            'contract_found': contract_tweets_count > 0,
+            'contract_authors': contract_authors
         }
         
     except Exception as e:
@@ -333,7 +354,8 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
             'engagement': 0,
             'score': 0,
             'rating': '❓ Ошибка анализа',
-            'contract_found': False
+            'contract_found': False,
+            'contract_authors': []
         }
 
 async def format_new_token(data):
@@ -396,6 +418,23 @@ async def format_new_token(data):
         message += f"<b>💬 Telegram:</b> <a href='{telegram}'>Ссылка</a>\n"
     if website:
         message += f"<b>🌐 Website:</b> <a href='{website}'>Ссылка</a>\n"
+    
+    # Добавляем информацию об авторах твитов с контрактом
+    if twitter_analysis.get('contract_authors'):
+        authors = twitter_analysis['contract_authors']
+        message += f"\n\n<b>👥 АВТОРЫ ТВИТОВ С КОНТРАКТОМ:</b>\n"
+        for i, author in enumerate(authors[:3]):  # Показываем максимум 3 авторов
+            username = author.get('username', 'Unknown')
+            display_name = author.get('display_name', username)
+            followers = author.get('followers_count', 0)
+            verified = "✅" if author.get('is_verified', False) else ""
+            tweet_text = author.get('tweet_text', '')[:100] + "..." if len(author.get('tweet_text', '')) > 100 else author.get('tweet_text', '')
+            
+            message += f"{i+1}. <b>@{username}</b> {verified}\n"
+            if display_name != username:
+                message += f"   📝 {display_name}\n"
+            message += f"   👥 {followers:,} подписчиков\n"
+            message += f"   💬 \"{tweet_text}\"\n"
     
     message += f"\n<b>🕐 Время:</b> {datetime.now().strftime('%H:%M:%S')}"
     
@@ -594,6 +633,121 @@ async def check_connection_health(websocket):
     except Exception as e:
         logger.warning(f"⚠️ Проблема с соединением: {e}")
         return False
+
+async def extract_tweet_authors(soup, query, contract_found):
+    """Извлекает авторов твитов и парсит их профили если найден контракт"""
+    authors_data = []
+    
+    if not contract_found:
+        return authors_data  # Парсим авторов только когда найден контракт
+    
+    try:
+        tweets = soup.find_all('div', class_='timeline-item')
+        
+        for tweet in tweets:
+            # Извлекаем имя автора
+            author_link = tweet.find('a', class_='username')
+            if author_link:
+                author_username = author_link.get_text(strip=True).replace('@', '')
+                
+                # Извлекаем текст твита
+                tweet_content = tweet.find('div', class_='tweet-content')
+                tweet_text = tweet_content.get_text(strip=True) if tweet_content else ""
+                
+                # Извлекаем дату твита
+                tweet_date = tweet.find('span', class_='tweet-date')
+                tweet_date_text = tweet_date.get_text(strip=True) if tweet_date else ""
+                
+                # Извлекаем статистику твита
+                retweets = 0
+                likes = 0
+                replies = 0
+                
+                stats = tweet.find_all('span', class_='tweet-stat')
+                for stat in stats:
+                    icon_container = stat.find('div', class_='icon-container')
+                    if icon_container:
+                        text = icon_container.get_text(strip=True)
+                        numbers = re.findall(r'\d+', text)
+                        if numbers:
+                            # Определяем тип статистики по порядку
+                            if 'reply' in str(stat).lower():
+                                replies = int(numbers[0])
+                            elif 'retweet' in str(stat).lower():
+                                retweets = int(numbers[0])
+                            elif 'heart' in str(stat).lower() or 'like' in str(stat).lower():
+                                likes = int(numbers[0])
+                
+                # Добавляем данные автора
+                authors_data.append({
+                    'username': author_username,
+                    'tweet_text': tweet_text[:200],  # Ограничиваем длину
+                    'tweet_date': tweet_date_text,
+                    'retweets': retweets,
+                    'likes': likes,
+                    'replies': replies,
+                    'query': query
+                })
+                
+                logger.info(f"📝 Найден автор твита: @{author_username} для запроса '{query}'")
+        
+        # Парсим профили авторов (максимум 5 для производительности)
+        unique_authors = list({author['username']: author for author in authors_data}.values())[:5]
+        
+        if unique_authors:
+            logger.info(f"👥 Парсим профили {len(unique_authors)} авторов...")
+            
+            # Получаем профили авторов
+            usernames = [author['username'] for author in unique_authors]
+            
+            # Используем контекстный менеджер для парсера
+            async with TwitterProfileParser() as profile_parser:
+                profiles = await profile_parser.get_multiple_profiles(usernames)
+            
+            # Обогащаем данные авторов профилями
+            for author in unique_authors:
+                username = author['username']
+                if username in profiles and profiles[username] and isinstance(profiles[username], dict):
+                    profile = profiles[username]
+                    author.update({
+                        'display_name': profile.get('display_name', ''),
+                        'followers_count': profile.get('followers_count', 0),
+                        'following_count': profile.get('following_count', 0),
+                        'tweets_count': profile.get('tweets_count', 0),
+                        'likes_count': profile.get('likes_count', 0),
+                        'bio': profile.get('bio', ''),
+                        'website': profile.get('website', ''),
+                        'join_date': profile.get('join_date', ''),
+                        'is_verified': profile.get('is_verified', False),
+                        'avatar_url': profile.get('avatar_url', '')
+                    })
+                    
+                    # Сохраняем в базу данных
+                    try:
+                        db_manager = get_db_manager()
+                        db_manager.save_twitter_author(profile)
+                        db_manager.save_tweet_mention({
+                            'mint': query if len(query) > 20 else None,  # Если длинный запрос - это контракт
+                            'author_username': username,
+                            'tweet_text': author['tweet_text'],
+                            'search_query': query,
+                            'retweets': author['retweets'],
+                            'likes': author['likes'],
+                            'replies': author['replies'],
+                            'author_followers_at_time': profile.get('followers_count', 0),
+                            'author_verified_at_time': profile.get('is_verified', False)
+                        })
+                        logger.info(f"💾 Сохранен профиль @{username} в БД")
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка сохранения профиля @{username}: {e}")
+                else:
+                    logger.warning(f"⚠️ Не удалось загрузить профиль @{username}")
+        
+        return unique_authors
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка парсинга авторов: {e}")
+        return []
 
 async def main():
     """Основная функция с автоматическим реконнектом"""

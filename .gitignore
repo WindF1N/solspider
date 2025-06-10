@@ -47,4 +47,6 @@ Thumbs.db
 # База данных и бэкапы
 database_backups/
 *.sql.backup
-*.db 
+*.db
+
+*.xlsx

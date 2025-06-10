@@ -110,6 +110,79 @@ class Migration(Base):
         Index('idx_migration_liquidity', 'liquidity_sol'),
     )
 
+class TwitterAuthor(Base):
+    """Модель для хранения информации об авторах твитов"""
+    __tablename__ = 'twitter_authors'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(100), unique=True, nullable=False, index=True)
+    display_name = Column(String(255), nullable=True)
+    
+    # Метрики аккаунта
+    tweets_count = Column(Integer, default=0)
+    following_count = Column(Integer, default=0)
+    followers_count = Column(Integer, default=0)
+    likes_count = Column(Integer, default=0)
+    
+    # Дополнительная информация
+    bio = Column(Text, nullable=True)
+    website = Column(String(500), nullable=True)
+    join_date = Column(String(100), nullable=True)
+    is_verified = Column(Boolean, default=False)
+    avatar_url = Column(String(500), nullable=True)
+    
+    # Метаданные
+    first_seen = Column(DateTime, default=datetime.utcnow)
+    last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Индексы
+    __table_args__ = (
+        Index('idx_author_followers', 'followers_count'),
+        Index('idx_author_tweets', 'tweets_count'),
+        Index('idx_author_verified', 'is_verified'),
+    )
+
+class TweetMention(Base):
+    """Модель для хранения отдельных твитов с упоминанием контрактов"""
+    __tablename__ = 'tweet_mentions'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tweet_id = Column(String(50), nullable=True, index=True)  # ID твита если доступен
+    mint = Column(String(44), nullable=False, index=True)  # Адрес контракта
+    author_username = Column(String(100), nullable=False, index=True)
+    
+    # Содержимое твита
+    tweet_text = Column(Text, nullable=False)
+    tweet_created_at = Column(DateTime, nullable=True)  # Дата создания твита
+    discovered_at = Column(DateTime, default=datetime.utcnow)  # Дата обнаружения
+    
+    # Тип упоминания
+    mention_type = Column(String(20), default='contract')  # 'contract' или 'symbol'
+    search_query = Column(String(200), nullable=True)  # Поисковый запрос
+    
+    # Метрики твита (если доступны)
+    retweets = Column(Integer, default=0)
+    likes = Column(Integer, default=0)
+    replies = Column(Integer, default=0)
+    
+    # Ссылка на автора
+    author_followers_at_time = Column(Integer, nullable=True)  # Подписчики на момент твита
+    author_verified_at_time = Column(Boolean, default=False)
+    
+    # Влияние на рынок (заполняется позже)
+    market_impact_1h = Column(Float, nullable=True)  # Изменение цены через 1ч
+    market_impact_6h = Column(Float, nullable=True)  # Изменение цены через 6ч
+    market_impact_24h = Column(Float, nullable=True)  # Изменение цены через 24ч
+    volume_impact_24h = Column(Float, nullable=True)  # Изменение объема через 24ч
+    
+    # Индексы
+    __table_args__ = (
+        Index('idx_mention_discovered', 'discovered_at'),
+        Index('idx_mention_mint_author', 'mint', 'author_username'),
+        Index('idx_mention_author_followers', 'author_followers_at_time'),
+        Index('idx_mention_market_impact', 'market_impact_24h'),
+    )
+
 class DatabaseManager:
     """Менеджер для работы с базой данных"""
     
@@ -124,7 +197,7 @@ class DatabaseManager:
             # Получаем параметры подключения из переменных окружения
             db_host = os.getenv('DB_HOST', 'localhost')
             db_port = os.getenv('DB_PORT', '3306')
-            db_user = os.getenv('DB_USER', 'solspider')
+            db_user = os.getenv('DB_USER', 'root')
             db_password = os.getenv('DB_PASSWORD', 'password')
             db_name = os.getenv('DB_NAME', 'solspider')
             
@@ -330,6 +403,114 @@ class DatabaseManager:
         finally:
             session.close()
     
+    def save_twitter_author(self, author_data):
+        """Сохранение данных об авторе твита"""
+        session = self.Session()
+        try:
+            # Проверяем, существует ли автор
+            existing_author = session.query(TwitterAuthor).filter_by(username=author_data.get('username')).first()
+            
+            if existing_author:
+                # Обновляем существующего автора
+                existing_author.display_name = author_data.get('display_name', existing_author.display_name)
+                existing_author.tweets_count = author_data.get('tweets_count', existing_author.tweets_count)
+                existing_author.following_count = author_data.get('following_count', existing_author.following_count)
+                existing_author.followers_count = author_data.get('followers_count', existing_author.followers_count)
+                existing_author.likes_count = author_data.get('likes_count', existing_author.likes_count)
+                existing_author.bio = author_data.get('bio', existing_author.bio)
+                existing_author.website = author_data.get('website', existing_author.website)
+                existing_author.join_date = author_data.get('join_date', existing_author.join_date)
+                existing_author.is_verified = author_data.get('is_verified', existing_author.is_verified)
+                existing_author.avatar_url = author_data.get('avatar_url', existing_author.avatar_url)
+                existing_author.last_updated = datetime.utcnow()
+                
+                author = existing_author
+                logger.info(f"📝 Обновлен автор @{author_data.get('username')} в БД")
+            else:
+                # Создаем нового автора
+                author = TwitterAuthor(
+                    username=author_data.get('username'),
+                    display_name=author_data.get('display_name'),
+                    tweets_count=author_data.get('tweets_count', 0),
+                    following_count=author_data.get('following_count', 0),
+                    followers_count=author_data.get('followers_count', 0),
+                    likes_count=author_data.get('likes_count', 0),
+                    bio=author_data.get('bio'),
+                    website=author_data.get('website'),
+                    join_date=author_data.get('join_date'),
+                    is_verified=author_data.get('is_verified', False),
+                    avatar_url=author_data.get('avatar_url')
+                )
+                
+                session.add(author)
+                logger.info(f"💾 Сохранен новый автор @{author_data.get('username')} в БД")
+            
+            session.commit()
+            return author
+            
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"❌ Ошибка сохранения автора в БД: {e}")
+            raise
+        finally:
+            session.close()
+    
+    def save_tweet_mention(self, tweet_data):
+        """Сохранение упоминания токена в твите"""
+        session = self.Session()
+        try:
+            # Создаем новое упоминание
+            mention = TweetMention(
+                tweet_id=tweet_data.get('tweet_id'),
+                mint=tweet_data.get('mint'),
+                author_username=tweet_data.get('author_username'),
+                tweet_text=tweet_data.get('tweet_text'),
+                tweet_created_at=tweet_data.get('tweet_created_at'),
+                discovered_at=tweet_data.get('discovered_at', datetime.utcnow()),
+                mention_type=tweet_data.get('mention_type', 'contract'),
+                search_query=tweet_data.get('search_query'),
+                retweets=tweet_data.get('retweets', 0),
+                likes=tweet_data.get('likes', 0),
+                replies=tweet_data.get('replies', 0),
+                author_followers_at_time=tweet_data.get('author_followers_at_time'),
+                author_verified_at_time=tweet_data.get('author_verified_at_time', False)
+            )
+            
+            session.add(mention)
+            session.commit()
+            
+            logger.info(f"📱 Сохранен твит от @{tweet_data.get('author_username')} о {tweet_data.get('mint')}")
+            return mention
+            
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"❌ Ошибка сохранения твита в БД: {e}")
+            raise
+        finally:
+            session.close()
+    
+    def update_market_impact(self, mention_id, impact_data):
+        """Обновление влияния твита на рынок"""
+        session = self.Session()
+        try:
+            mention = session.query(TweetMention).filter_by(id=mention_id).first()
+            if mention:
+                mention.market_impact_1h = impact_data.get('impact_1h')
+                mention.market_impact_6h = impact_data.get('impact_6h')
+                mention.market_impact_24h = impact_data.get('impact_24h')
+                mention.volume_impact_24h = impact_data.get('volume_impact_24h')
+                
+                session.commit()
+                logger.info(f"📈 Обновлено влияние твита {mention_id} на рынок")
+                return mention
+            
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"❌ Ошибка обновления влияния на рынок: {e}")
+            raise
+        finally:
+            session.close()
+
     def close(self):
         """Закрытие соединения с базой данных"""
         if self.engine:

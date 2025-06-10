@@ -8,9 +8,13 @@ import logging
 import time
 from datetime import datetime, timedelta
 from database import get_db_manager, Token
-from pump_bot import search_single_query, send_telegram
+from pump_bot import search_single_query, send_telegram, extract_tweet_authors
 from cookie_rotation import background_cookie_rotator
 from logger_config import setup_logging
+from twitter_profile_parser import TwitterProfileParser
+import re
+import aiohttp
+from bs4 import BeautifulSoup
 
 # Настройка логирования
 setup_logging()
@@ -24,6 +28,7 @@ class BackgroundTokenMonitor:
         self.running = False
         self.max_token_age_hours = 1  # Мониторим токены не старше 1 часа
         self.batch_delay = 0  # Задержка между батчами 10 секунд
+        # Парсер профилей Twitter (будет создан в async функциях)
         
         # Базовые заголовки для Nitter запросов (cookie будет добавлен автоматически)
         self.headers = {
@@ -59,42 +64,17 @@ class BackgroundTokenMonitor:
             session.close()
     
     async def check_contract_mentions(self, token, cycle_cookie):
-        """Проверяет появление упоминаний контракта в Twitter (с кавычками и без)"""
+        """Проверяет появление упоминаний контракта в Twitter (с кавычками и без) с парсингом авторов"""
         try:
-            # Делаем 2 запроса: с кавычками и без, используя один cookie для цикла
-            results = await asyncio.gather(
-                search_single_query(token.mint, self.headers, use_quotes=True, cycle_cookie=cycle_cookie),   # С кавычками
-                search_single_query(token.mint, self.headers, use_quotes=False, cycle_cookie=cycle_cookie),  # Без кавычек
-                return_exceptions=True
-            )
-            
-            # Собираем все твиты в один словарь для дедупликации
-            all_tweets = {}
-            
-            for i, result in enumerate(results):
-                if isinstance(result, Exception) or not result:
-                    continue
-                    
-                for tweet_data in result:
-                    tweet_id = tweet_data['id']
-                    engagement = tweet_data['engagement']
-                    
-                    # Если твит уже есть, берем максимальное значение активности
-                    if tweet_id in all_tweets:
-                        all_tweets[tweet_id] = max(all_tweets[tweet_id], engagement)
-                    else:
-                        all_tweets[tweet_id] = engagement
-            
-            # Итоговые подсчеты уникальных твитов
-            tweets_count = len(all_tweets)
-            engagement = sum(all_tweets.values())
+            # Получаем данные с авторами
+            tweets_count, engagement, authors = await self.get_contract_mentions_with_authors(token, cycle_cookie)
             
             # Проверяем если возвращается 0,0 - возможно блокировка
             if tweets_count == 0 and engagement == 0:
                 logger.debug(f"🔍 Контракт {token.symbol} не найден в Twitter (или блокировка)")
             
             if tweets_count > 0:
-                logger.info(f"🎯 НАЙДЕН контракт {token.symbol} в Twitter! Уникальных твитов: {tweets_count}, активность: {engagement}")
+                logger.info(f"🎯 НАЙДЕН контракт {token.symbol} в Twitter! Уникальных твитов: {tweets_count}, активность: {engagement}, авторов: {len(authors)}")
                 
                 # Обновляем данные в БД
                 session = self.db_manager.Session()
@@ -108,8 +88,8 @@ class BackgroundTokenMonitor:
                         
                         logger.info(f"✅ Обновлена БД для токена {token.symbol}")
                         
-                        # Отправляем уведомление
-                        await self.send_contract_alert(token, tweets_count, engagement)
+                        # Отправляем уведомление с информацией об авторах
+                        await self.send_contract_alert(token, tweets_count, engagement, authors)
                         
                 except Exception as e:
                     session.rollback()
@@ -126,8 +106,8 @@ class BackgroundTokenMonitor:
             logger.error(f"❌ Ошибка проверки контракта {token.symbol}: {e}")
             return False
     
-    async def send_contract_alert(self, token, tweets_count, engagement):
-        """Отправляет уведомление о найденном контракте"""
+    async def send_contract_alert(self, token, tweets_count, engagement, authors=None):
+        """Отправляет уведомление о найденном контракте с информацией об авторах"""
         try:
             # Вычисляем возраст токена
             age = datetime.utcnow() - token.created_at
@@ -144,8 +124,27 @@ class BackgroundTokenMonitor:
                 f"📈 <b>Текущий Market Cap:</b> ${token.market_cap:,.0f}\n\n"
                 f"🚀 <b>Пользователи начали делиться контрактом!</b>\n"
                 f"📈 <b>Возможен рост интереса к токену</b>\n\n"
-                f"⚡ <b>Время действовать!</b>"
             )
+            
+            # Добавляем информацию об авторах твитов
+            if authors:
+                message += f"<b>👥 АВТОРЫ ТВИТОВ С КОНТРАКТОМ:</b>\n"
+                for i, author in enumerate(authors[:3]):  # Показываем максимум 3 авторов
+                    username = author.get('username', 'Unknown')
+                    display_name = author.get('display_name', username)
+                    followers = author.get('followers_count', 0)
+                    verified = "✅" if author.get('is_verified', False) else ""
+                    tweet_text = author.get('tweet_text', '')[:80] + "..." if len(author.get('tweet_text', '')) > 80 else author.get('tweet_text', '')
+                    
+                    message += f"{i+1}. <b>@{username}</b> {verified}\n"
+                    if display_name != username:
+                        message += f"   📝 {display_name}\n"
+                    if followers > 0:
+                        message += f"   👥 {followers:,} подписчиков\n"
+                    message += f"   💬 \"{tweet_text}\"\n"
+                message += "\n"
+            
+            message += f"⚡ <b>Время действовать!</b>"
             
             # Кнопки для быстрых действий
             keyboard = [
@@ -243,6 +242,75 @@ class BackgroundTokenMonitor:
         """Останавливает мониторинг"""
         self.running = False
         logger.info("🛑 Остановка фонового мониторинга...")
+
+    async def get_contract_mentions_with_authors(self, token, cycle_cookie):
+        """Получает HTML ответы для парсинга авторов"""
+        try:
+            # Делаем запросы с получением HTML
+            urls = [
+                f"https://nitter.tiekoetter.com/search?f=tweets&q=%22{token.mint}%22&since=&until=&near=",  # С кавычками
+                f"https://nitter.tiekoetter.com/search?f=tweets&q={token.mint}&since=&until=&near="  # Без кавычек
+            ]
+            
+            headers_with_cookie = self.headers.copy()
+            headers_with_cookie['Cookie'] = cycle_cookie
+            
+            all_authors = []
+            tweets_count = 0
+            engagement = 0
+            
+            for url in urls:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(url, headers=headers_with_cookie, timeout=20) as response:
+                            if response.status == 200:
+                                html = await response.text()
+                                soup = BeautifulSoup(html, 'html.parser')
+                                
+                                # Проверяем на блокировку
+                                title = soup.find('title')
+                                if title and 'Making sure you\'re not a bot!' in title.get_text():
+                                    logger.error(f"🚫 NITTER ЗАБЛОКИРОВАН! Контракт: {token.mint}")
+                                    continue
+                                
+                                # Подсчитываем твиты
+                                tweets = soup.find_all('div', class_='timeline-item')
+                                tweets_count += len(tweets)
+                                
+                                # Парсим авторов если найдены твиты
+                                if tweets:
+                                    authors = await extract_tweet_authors(soup, token.mint, True)
+                                    all_authors.extend(authors)
+                                    
+                                    # Подсчитываем активность
+                                    for tweet in tweets:
+                                        stats = tweet.find_all('span', class_='tweet-stat')
+                                        for stat in stats:
+                                            icon_container = stat.find('div', class_='icon-container')
+                                            if icon_container:
+                                                text = icon_container.get_text(strip=True)
+                                                numbers = re.findall(r'\d+', text)
+                                                if numbers:
+                                                    engagement += int(numbers[0])
+                                
+                except Exception as e:
+                    logger.error(f"❌ Ошибка запроса к {url}: {e}")
+                    continue
+            
+            # Убираем дубликаты авторов
+            unique_authors = []
+            seen_usernames = set()
+            for author in all_authors:
+                username = author.get('username', '')
+                if username and username not in seen_usernames:
+                    unique_authors.append(author)
+                    seen_usernames.add(username)
+            
+            return tweets_count, engagement, unique_authors
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения данных для {token.symbol}: {e}")
+            return 0, 0, []
 
 async def main():
     """Основная функция для запуска фонового мониторинга"""
