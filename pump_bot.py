@@ -21,6 +21,7 @@ except ImportError:
 from logger_config import setup_logging, log_token_analysis, log_trade_activity, log_database_operation, log_daily_stats
 from database import get_db_manager
 from connection_monitor import connection_monitor
+from cookie_rotation import cookie_rotator
 
 # Настройка логирования
 setup_logging()
@@ -92,18 +93,53 @@ def send_telegram(message, inline_keyboard=None):
         logger.error("❌ Не удалось отправить сообщение ни в один чат")
         return False
 
-async def search_single_query(query, headers):
-    """Выполняет одиночный поисковый запрос к Nitter"""
-    url = f"https://nitter.tiekoetter.com/search?f=tweets&q=%22{query}%22"
+async def search_single_query(query, headers, retry_count=0, use_quotes=True, cycle_cookie=None):
+    """Выполняет одиночный поисковый запрос к Nitter с повторными попытками при 429 и ротацией cookies"""
+    if use_quotes:
+        url = f"https://nitter.tiekoetter.com/search?f=tweets&q=%22{query}%22&since=&until=&near="
+    else:
+        url = f"https://nitter.tiekoetter.com/search?f=tweets&q={query}&since=&until=&near="
+    
+    # Используем переданный cookie для цикла или получаем новый
+    if cycle_cookie:
+        current_cookie = cycle_cookie
+    else:
+        current_cookie = cookie_rotator.get_next_cookie()
+    
+    # Обновляем заголовки с cookie
+    headers_with_cookie = headers.copy()
+    headers_with_cookie['Cookie'] = current_cookie
     
     try:
         # Используем asyncio совместимую библиотеку
         import aiohttp
+        
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=10) as response:
+            async with session.get(url, headers=headers_with_cookie, timeout=20) as response:
                 if response.status == 200:
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
+                    
+                    # Проверяем на блокировку Nitter
+                    title = soup.find('title')
+                    if title and 'Making sure you\'re not a bot!' in title.get_text():
+                        logger.error(f"🚫 NITTER ЗАБЛОКИРОВАН! Нужно обновить куки для '{query}'")
+                        logger.error("🔧 Обновите куки в переменной NITTER_COOKIE")
+                        
+                        # Отправляем критическое уведомление
+                        alert_message = (
+                            f"🚫 <b>КРИТИЧЕСКАЯ ОШИБКА!</b>\n\n"
+                            f"🤖 <b>Nitter заблокирован</b>\n"
+                            f"🔧 <b>Требуется обновление кук</b>\n\n"
+                            f"📍 <b>Запрос:</b> {query}\n"
+                            f"⚠️ <b>Статус:</b> 'Making sure you're not a bot!'\n\n"
+                            f"🛠️ <b>Действия:</b>\n"
+                            f"1. Обновите NITTER_COOKIE\n"
+                            f"2. Перезапустите бота\n\n"
+                            f"❌ <b>Twitter анализ недоступен!</b>"
+                        )
+                        send_telegram(alert_message)
+                        return 0, 0
                     
                     # Находим все твиты
                     tweets = soup.find_all('div', class_='timeline-item')
@@ -122,45 +158,133 @@ async def search_single_query(query, headers):
                                 if numbers:
                                     engagement += int(numbers[0])
                     
-                    logger.info(f"🔍 Nitter анализ '{query}': {tweet_count} твитов, активность: {engagement}")
-                    return tweet_count, engagement
+                    quote_status = "с кавычками" if use_quotes else "без кавычек"
+                    logger.info(f"🔍 Nitter анализ '{query}' ({quote_status}): {tweet_count} твитов, активность: {engagement}")
+                    
+                    # Возвращаем твиты с их уникальными идентификаторами
+                    tweet_data = []
+                    for tweet in tweets:
+                        # Извлекаем уникальные данные твита для дедупликации
+                        tweet_link = tweet.find('a', class_='tweet-link')
+                        tweet_time = tweet.find('span', class_='tweet-date')
+                        tweet_text = tweet.find('div', class_='tweet-content')
+                        
+                        tweet_id = None
+                        if tweet_link and 'href' in tweet_link.attrs:
+                            tweet_id = tweet_link['href']
+                        elif tweet_time and tweet_text:
+                            # Создаем уникальный ID на основе времени + текста
+                            time_text = tweet_time.get_text(strip=True) if tweet_time else ""
+                            content_text = tweet_text.get_text(strip=True)[:50] if tweet_text else ""
+                            tweet_id = f"{time_text}_{hash(content_text)}"
+                        
+                        if tweet_id:
+                            tweet_data.append({
+                                'id': tweet_id,
+                                'engagement': 0  # будет заполнено ниже
+                            })
+                    
+                    # Анализируем активность в твитах
+                    for i, tweet in enumerate(tweets):
+                        if i < len(tweet_data):
+                            stats = tweet.find_all('span', class_='tweet-stat')
+                            for stat in stats:
+                                icon_container = stat.find('div', class_='icon-container')
+                                if icon_container:
+                                    text = icon_container.get_text(strip=True)
+                                    numbers = re.findall(r'\d+', text)
+                                    if numbers:
+                                        tweet_data[i]['engagement'] += int(numbers[0])
+                    
+                    return tweet_data
+                elif response.status == 429:
+                    # Ошибка 429 - Too Many Requests, помечаем cookie как неработающий
+                    cookie_rotator.mark_cookie_failed(current_cookie)
+                    
+                    if retry_count < 3:  # Максимум 3 повторные попытки с новыми cookies
+                        logger.warning(f"⚠️ Nitter 429 (Too Many Requests) для '{query}', пробуем другой cookie (попытка {retry_count + 1}/3)")
+                        await asyncio.sleep(1)  # Пауза перед сменой cookie
+                        # Не передаем cycle_cookie при 429 - получим новый cookie из ротации
+                        return await search_single_query(query, headers, retry_count + 1, use_quotes, None)
+                    else:
+                        logger.error(f"❌ Nitter 429 (Too Many Requests) для '{query}' - превышено количество попыток с разными cookies")
+                        return []
                 else:
                     logger.warning(f"❌ Nitter ответил {response.status} для '{query}'")
-                    return 0, 0
+                    return []
                     
     except Exception as e:
-        logger.error(f"Ошибка запроса к Nitter для '{query}': {e}")
-        return 0, 0
+        logger.error(f"Ошибка запроса к Nitter для '{query}': {type(e).__name__}: {e}")
+        
+        # Повторная попытка при любых ошибках (не только 429)
+        if retry_count < 3:
+            logger.warning(f"⚠️ Повторная попытка для '{query}' после ошибки {type(e).__name__} (попытка {retry_count + 1}/3)")
+            await asyncio.sleep(1)  # Пауза перед повтором
+            return await search_single_query(query, headers, retry_count + 1, use_quotes, cycle_cookie)
+        else:
+            logger.error(f"❌ Превышено количество попыток для '{query}' - возвращаем пустой результат")
+            return []
 
-async def analyze_token_sentiment(mint, symbol):
-    """Анализ упоминаний токена в Twitter через Nitter (параллельно)"""
+async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
+    """Анализ упоминаний токена в Twitter через Nitter (4 запроса с дедупликацией)"""
     try:
+        # Базовые заголовки без cookie (cookie будет добавлен в search_single_query)
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64; rv:45.0) Gecko/20100101 Firefox/45.0',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
             'Accept-Encoding': 'gzip, deflate',
-            'Cookie': NITTER_COOKIE,
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
         }
         
-        # Параллельные запросы по символу и адресу контракта
-        search_queries = [f'${symbol}', mint]
+        # 4 запроса: символ и контракт, каждый с кавычками и без
+        search_queries = [
+            (f'${symbol}', True),   # Символ с кавычками
+            (f'${symbol}', False),  # Символ без кавычек
+            (mint, True),           # Контракт с кавычками
+            (mint, False)           # Контракт без кавычек
+        ]
         
-        # Выполняем оба запроса параллельно
+        # Выполняем все 4 запроса параллельно
         results = await asyncio.gather(
-            search_single_query(search_queries[0], headers),  # Символ токена
-            search_single_query(search_queries[1], headers),  # Адрес контракта
+            search_single_query(search_queries[0][0], headers, use_quotes=search_queries[0][1], cycle_cookie=cycle_cookie),
+            search_single_query(search_queries[1][0], headers, use_quotes=search_queries[1][1], cycle_cookie=cycle_cookie),
+            search_single_query(search_queries[2][0], headers, use_quotes=search_queries[2][1], cycle_cookie=cycle_cookie),
+            search_single_query(search_queries[3][0], headers, use_quotes=search_queries[3][1], cycle_cookie=cycle_cookie),
             return_exceptions=True
         )
         
-        # Обрабатываем результаты
-        symbol_tweets, symbol_engagement = results[0] if not isinstance(results[0], Exception) else (0, 0)
-        contract_tweets, contract_engagement = results[1] if not isinstance(results[1], Exception) else (0, 0)
+        # Собираем все твиты в один словарь для дедупликации
+        all_tweets = {}
+        symbol_tweets_count = 0
+        contract_tweets_count = 0
         
-        total_tweets = symbol_tweets + contract_tweets
-        total_engagement = symbol_engagement + contract_engagement
+        for i, result in enumerate(results):
+            if isinstance(result, Exception) or not result:
+                continue
+                
+            for tweet_data in result:
+                tweet_id = tweet_data['id']
+                engagement = tweet_data['engagement']
+                
+                # Если твит уже есть, берем максимальное значение активности
+                if tweet_id in all_tweets:
+                    all_tweets[tweet_id] = max(all_tweets[tweet_id], engagement)
+                else:
+                    all_tweets[tweet_id] = engagement
+                    
+                    # Подсчитываем уникальные твиты по категориям
+                    if i < 2:  # Первые 2 запроса - символ
+                        symbol_tweets_count += 1
+                    else:  # Последние 2 запроса - контракт
+                        contract_tweets_count += 1
+        
+        # Итоговые подсчеты
+        total_tweets = len(all_tweets)
+        total_engagement = sum(all_tweets.values())
+        
+        logger.info(f"📊 Итоговый анализ '{symbol}': {total_tweets} уникальных твитов (символ: {symbol_tweets_count}, контракт: {contract_tweets_count}), активность: {total_engagement}")
         
         # Рассчитываем рейтинг токена
         if total_tweets == 0:
@@ -192,12 +316,12 @@ async def analyze_token_sentiment(mint, symbol):
         
         return {
             'tweets': total_tweets,
-            'symbol_tweets': symbol_tweets,
-            'contract_tweets': contract_tweets,
+            'symbol_tweets': symbol_tweets_count,
+            'contract_tweets': contract_tweets_count,
             'engagement': total_engagement,
             'score': round(score, 1),
             'rating': rating,
-            'contract_found': contract_tweets > 0
+            'contract_found': contract_tweets_count > 0
         }
         
     except Exception as e:
@@ -289,9 +413,9 @@ async def format_new_token(data):
         ]
     ]
     
-    # Проверяем, стоит ли отправлять уведомление на основе Twitter активности
-    should_notify = (
-        twitter_analysis['contract_found'] and (  # НОВЫЙ ФИЛЬТР: адрес контракта найден в Twitter
+    # НОВАЯ ЛОГИКА: сохраняем все токены, но уведомления только для найденных контрактов
+    immediate_notify = (
+        twitter_analysis['contract_found'] and (  # Контракт уже найден в Twitter
             twitter_analysis['score'] >= 5 or  # Минимальный скор
             twitter_analysis['tweets'] >= 3 or  # Минимум 3 твита
             'высокий' in twitter_analysis['rating'].lower() or  # Высокий интерес
@@ -299,11 +423,16 @@ async def format_new_token(data):
         )
     )
     
-    # Дополнительное логирование фильтрации
-    if not twitter_analysis['contract_found']:
-        logger.info(f"🚫 Токен {symbol} отфильтрован: адрес контракта НЕ найден в Twitter")
-    elif not should_notify:
-        logger.info(f"🚫 Токен {symbol} отфильтрован: низкие показатели Twitter активности")
+    # Логирование стратегии
+    if twitter_analysis['contract_found']:
+        if immediate_notify:
+            logger.info(f"✅ Токен {symbol} - контракт найден, отправляем уведомление")
+        else:
+            logger.info(f"⚠️ Токен {symbol} - контракт найден, но низкая активность")
+    else:
+        logger.info(f"📝 Токен {symbol} - контракт НЕ найден, добавляем в фоновый мониторинг")
+    
+    should_notify = immediate_notify
     
     # Логируем анализ токена
     log_token_analysis(data, twitter_analysis, should_notify)
