@@ -8,6 +8,11 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 import re
 import time
+import random
+import ssl
+from logging.handlers import RotatingFileHandler
+import colorlog
+import threading
 
 # Загрузка переменных окружения из .env файла
 try:
@@ -19,9 +24,9 @@ except ImportError:
 
 # Импорт модулей проекта
 from logger_config import setup_logging, log_token_analysis, log_trade_activity, log_database_operation, log_daily_stats
-from database import get_db_manager
+from database import get_db_manager, TwitterAuthor, Token, Trade, Migration
 from connection_monitor import connection_monitor
-from cookie_rotation import cookie_rotator
+from cookie_rotation import cookie_rotator, background_cookie_rotator
 from twitter_profile_parser import TwitterProfileParser
 
 # Настройка логирования
@@ -56,6 +61,19 @@ WEBSOCKET_CONFIG = {
 
 # Nitter конфигурация для анализа Twitter
 NITTER_COOKIE = "techaro.lol-anubis-auth-for-nitter.tiekoetter.com=eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhY3Rpb24iOiJDSEFMTEVOR0UiLCJjaGFsbGVuZ2UiOiJiMGEyOWM0YzcwZGM0YzYxMjE2NTNkMzQwYTU0YTNmNTFmZmJlNDIwOGM4MWZkZmUxNDA4MTY2MGNmMDc3ZGY2IiwiZXhwIjoxNzQ5NjAyOTA3LCJpYXQiOjE3NDg5OTgxMDcsIm5iZiI6MTc0ODk5ODA0Nywibm9uY2UiOiIxMzI4MSIsInBvbGljeVJ1bGUiOiJlZDU1ZThhMGJkZjcwNGM4NTFkY2RjMjQ3OWZmMTJlMjM1YzY1Y2Q0NjMwZGYwMTgwNGM4ZTgyMzZjMzU1NzE2IiwicmVzcG9uc2UiOiIwMDAwYWEwZjdmMjBjNGQ0MGU5ODIzMWI4MDNmNWZiMGJlMGZjZmZiOGRhOTIzNDUyNDdhZjU1Yjk1MDJlZWE2In0.615N6HT0huTaYXHffqbBWqlpbpUgb7uVCh__TCoIuZLtGzBkdS3K8fGOPkFxHrbIo2OY3bw0igmtgDZKFesjAg"
+
+# Черный список авторов Twitter (исключаем из анализа)
+TWITTER_AUTHOR_BLACKLIST = {
+    'launchonpump',    # @LaunchOnPump - официальный аккаунт платформы
+    'fake_aio'
+    'cheeznytrashiny',
+    # Добавьте других нежелательных авторов здесь
+}
+
+# Очередь для асинхронной обработки анализа Twitter
+twitter_analysis_queue = asyncio.Queue()
+# Словарь для хранения результатов анализа
+twitter_analysis_results = {}
 
 def send_telegram(message, inline_keyboard=None):
     """Отправка сообщения в Telegram во все чаты"""
@@ -127,7 +145,7 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=True, cy
                     # Проверяем на блокировку Nitter
                     title = soup.find('title')
                     if title and 'Making sure you\'re not a bot!' in title.get_text():
-                        logger.error(f"🚫 NITTER ЗАБЛОКИРОВАН! Нужно обновить куки для '{query}'")
+                        logger.error(f"🚫 NITTER ЗАБЛОКИРОВАН! Нужно обновить куки для '{query}' куки '{current_cookie}'")
                         logger.error("🔧 Обновите куки в переменной NITTER_COOKIE")
                         
                         # Отправляем критическое уведомление
@@ -143,7 +161,7 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=True, cy
                             f"❌ <b>Twitter анализ недоступен!</b>"
                         )
                         send_telegram(alert_message)
-                        return 0, 0
+                        return []
                     
                     # Находим все твиты
                     tweets = soup.find_all('div', class_='timeline-item')
@@ -213,16 +231,18 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=True, cy
                     
                     return tweet_data
                 elif response.status == 429:
-                    # Ошибка 429 - Too Many Requests, помечаем cookie как неработающий
-                    cookie_rotator.mark_cookie_failed(current_cookie)
-                    
-                    if retry_count < 3:  # Максимум 3 повторные попытки с новыми cookies
-                        logger.warning(f"⚠️ Nitter 429 (Too Many Requests) для '{query}', пробуем другой cookie (попытка {retry_count + 1}/3)")
-                        await asyncio.sleep(1)  # Пауза перед сменой cookie
-                        # Не передаем cycle_cookie при 429 - получим новый cookie из ротации
-                        return await search_single_query(query, headers, retry_count + 1, use_quotes, None)
+                    # Ошибка 429 - Too Many Requests, увеличиваем паузу
+                    if retry_count < 2:  # Максимум 2 попытки с увеличивающимися паузами
+                        pause_time = (retry_count + 1) * 3  # 3, 6 секунд
+                        logger.warning(f"⚠️ Nitter 429 (Too Many Requests) для '{query}', ждём {pause_time}с (попытка {retry_count + 1}/2)")
+                        await asyncio.sleep(pause_time)
+                        return await search_single_query(query, headers, retry_count + 1, use_quotes, cycle_cookie)
                     else:
-                        logger.error(f"❌ Nitter 429 (Too Many Requests) для '{query}' - превышено количество попыток с разными cookies")
+                        # Только после 2 попыток помечаем cookie как временно недоступный
+                        if not cycle_cookie:  # Помечаем только если НЕ используется cycle_cookie
+                            cookie_rotator.mark_cookie_failed(current_cookie)
+                            logger.warning(f"❌ [PUMP_BOT] Cookie помечен как неработающий после 429 ошибок")
+                        logger.error(f"❌ Nitter 429 (Too Many Requests) для '{query}' - превышено количество попыток")
                         return []
                 else:
                     logger.warning(f"❌ Nitter ответил {response.status} для '{query}'")
@@ -243,6 +263,11 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=True, cy
 async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
     """Анализ упоминаний токена в Twitter через Nitter (4 запроса с дедупликацией)"""
     try:
+        # Получаем один cookie для всего анализа токена (4 запроса)
+        if not cycle_cookie:
+            cycle_cookie = cookie_rotator.get_cycle_cookie()
+            logger.debug(f"🍪 Используем один cookie для анализа токена {symbol}")
+            
         # Базовые заголовки без cookie (cookie будет добавлен в search_single_query)
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64; rv:45.0) Gecko/20100101 Firefox/45.0',
@@ -261,14 +286,15 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
             (mint, False)           # Контракт без кавычек
         ]
         
-        # Выполняем все 4 запроса параллельно
-        results = await asyncio.gather(
-            search_single_query(search_queries[0][0], headers, use_quotes=search_queries[0][1], cycle_cookie=cycle_cookie),
-            search_single_query(search_queries[1][0], headers, use_quotes=search_queries[1][1], cycle_cookie=cycle_cookie),
-            search_single_query(search_queries[2][0], headers, use_quotes=search_queries[2][1], cycle_cookie=cycle_cookie),
-            search_single_query(search_queries[3][0], headers, use_quotes=search_queries[3][1], cycle_cookie=cycle_cookie),
-            return_exceptions=True
-        )
+        # Выполняем запросы последовательно с паузами для избежания блокировки
+        results = []
+        for i, (query, use_quotes) in enumerate(search_queries):
+            try:
+                result = await search_single_query(query, headers, use_quotes=use_quotes, cycle_cookie=cycle_cookie)
+                results.append(result)
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка запроса {i+1}: {e}")
+                results.append(e)
         
         # Собираем все твиты в один словарь для дедупликации
         all_tweets = {}
@@ -359,25 +385,45 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
         }
 
 async def format_new_token(data):
-    """Форматирование сообщения о новом токене с полной информацией"""
+    """Форматирование сообщения о новом токене с быстрым сохранением и фоновым анализом Twitter"""
     mint = data.get('mint', 'Unknown')
     name = data.get('name', 'Unknown Token')
     symbol = data.get('symbol', 'UNK')
     description = data.get('description', 'Нет описания')
     creator = data.get('traderPublicKey', 'Unknown')
     
-    # Анализируем упоминания в Twitter
-    logger.info(f"🔍 Анализируем токен {symbol} в Twitter...")
-    twitter_analysis = await analyze_token_sentiment(mint, symbol)
+    # Создаем базовый анализ Twitter для немедленного сохранения
+    twitter_analysis = {
+        'tweets': 0,
+        'symbol_tweets': 0,
+        'contract_tweets': 0,
+        'engagement': 0,
+        'score': 0,
+        'rating': '⏳ Анализируется...',
+        'contract_found': False,
+        'contract_authors': []
+    }
     
-    # Сохраняем токен в базу данных
+    # БЫСТРО сохраняем токен в базу данных БЕЗ ожидания анализа Twitter
+    token_id = None
     try:
         db_manager = get_db_manager()
         saved_token = db_manager.save_token(data, twitter_analysis)
+        # Просто используем mint как уникальный идентификатор
+        if saved_token:
+            token_id = mint  # Используем mint как ID для поиска в фоновом анализе
+        logger.info(f"⚡ БЫСТРО сохранен токен {symbol} в БД")
         log_database_operation("SAVE_TOKEN", "tokens", "SUCCESS", f"Symbol: {symbol}")
     except Exception as e:
-        logger.error(f"❌ Ошибка сохранения токена в БД: {e}")
+        logger.error(f"❌ Ошибка быстрого сохранения токена в БД: {e}")
         log_database_operation("SAVE_TOKEN", "tokens", "ERROR", str(e))
+    
+    # Добавляем токен в очередь для фонового анализа Twitter
+    try:
+        await twitter_analysis_queue.put(data)
+        logger.info(f"📋 Токен {symbol} добавлен в очередь фонового анализа Twitter")
+    except Exception as e:
+        logger.error(f"❌ Ошибка добавления в очередь анализа: {e}")
     
     # Дополнительная информация
     uri = data.get('uri', '')
@@ -452,24 +498,12 @@ async def format_new_token(data):
         ]
     ]
     
-    # НОВАЯ ЛОГИКА: сохраняем все токены, но уведомления только для найденных контрактов
-    immediate_notify = (
-        twitter_analysis['contract_found'] and (  # Контракт уже найден в Twitter
-            twitter_analysis['score'] >= 5 or  # Минимальный скор
-            twitter_analysis['tweets'] >= 3 or  # Минимум 3 твита
-            'высокий' in twitter_analysis['rating'].lower() or  # Высокий интерес
-            'средний' in twitter_analysis['rating'].lower()    # Средний интерес
-        )
-    )
+    # НОВАЯ ЛОГИКА: быстрое сохранение, анализ Twitter в фоне
+    # Немедленного уведомления нет - Twitter анализ идет в фоне
+    immediate_notify = False
     
-    # Логирование стратегии
-    if twitter_analysis['contract_found']:
-        if immediate_notify:
-            logger.info(f"✅ Токен {symbol} - контракт найден, отправляем уведомление")
-        else:
-            logger.info(f"⚠️ Токен {symbol} - контракт найден, но низкая активность")
-    else:
-        logger.info(f"📝 Токен {symbol} - контракт НЕ найден, добавляем в фоновый мониторинг")
+    # Все токены сохраняются в БД и добавляются в фоновый мониторинг
+    logger.info(f"⚡ Токен {symbol} - быстро сохранен, Twitter анализ запущен в фоне")
     
     should_notify = immediate_notify
     
@@ -650,6 +684,11 @@ async def extract_tweet_authors(soup, query, contract_found):
             if author_link:
                 author_username = author_link.get_text(strip=True).replace('@', '')
                 
+                # Проверяем черный список авторов
+                if author_username.lower() in TWITTER_AUTHOR_BLACKLIST:
+                    logger.info(f"🚫 Автор @{author_username} в черном списке - пропускаем")
+                    continue
+                
                 # Извлекаем текст твита
                 tweet_content = tweet.find('div', class_='tweet-content')
                 tweet_text = tweet_content.get_text(strip=True) if tweet_content else ""
@@ -695,20 +734,94 @@ async def extract_tweet_authors(soup, query, contract_found):
         unique_authors = list({author['username']: author for author in authors_data}.values())[:5]
         
         if unique_authors:
-            logger.info(f"👥 Парсим профили {len(unique_authors)} авторов...")
+            logger.info(f"👥 Проверяем профили {len(unique_authors)} авторов...")
             
-            # Получаем профили авторов
-            usernames = [author['username'] for author in unique_authors]
+            # Проверяем существующих авторов в БД
+            db_manager = get_db_manager()
+            usernames_to_parse = []
+            usernames_to_update = []
+            existing_authors = {}
             
-            # Используем контекстный менеджер для парсера
-            async with TwitterProfileParser() as profile_parser:
-                profiles = await profile_parser.get_multiple_profiles(usernames)
+            for author in unique_authors:
+                username = author['username']
+                
+                # Проверяем в БД
+                session = db_manager.Session()
+                try:
+                    existing_author = session.query(TwitterAuthor).filter_by(username=username).first()
+                    if existing_author:
+                        # Проверяем возраст данных (обновляем если старше 24 часов)
+                        time_since_update = datetime.utcnow() - existing_author.last_updated
+                        hours_since_update = time_since_update.total_seconds() / 3600
+                        
+                        if hours_since_update >= 24:
+                            # Данные устарели - нужно обновить
+                            usernames_to_update.append(username)
+                            existing_authors[username] = {
+                                'username': existing_author.username,
+                                'display_name': existing_author.display_name,
+                                'followers_count': existing_author.followers_count,
+                                'following_count': existing_author.following_count,
+                                'tweets_count': existing_author.tweets_count,
+                                'likes_count': existing_author.likes_count,
+                                'bio': existing_author.bio,
+                                'website': existing_author.website,
+                                'join_date': existing_author.join_date,
+                                'is_verified': existing_author.is_verified,
+                                'avatar_url': existing_author.avatar_url
+                            }
+                            logger.info(f"🔄 Автор @{username} найден в БД, но данные устарели ({hours_since_update:.1f}ч) - нужно обновление")
+                        else:
+                            # Данные свежие - используем из БД
+                            existing_authors[username] = {
+                                'username': existing_author.username,
+                                'display_name': existing_author.display_name,
+                                'followers_count': existing_author.followers_count,
+                                'following_count': existing_author.following_count,
+                                'tweets_count': existing_author.tweets_count,
+                                'likes_count': existing_author.likes_count,
+                                'bio': existing_author.bio,
+                                'website': existing_author.website,
+                                'join_date': existing_author.join_date,
+                                'is_verified': existing_author.is_verified,
+                                'avatar_url': existing_author.avatar_url
+                            }
+                            logger.info(f"📋 Автор @{username} найден в БД ({existing_author.followers_count:,} подписчиков, обновлен {hours_since_update:.1f}ч назад)")
+                    else:
+                        # Автор не найден - нужно загрузить профиль
+                        usernames_to_parse.append(username)
+                        logger.info(f"🔍 Автор @{username} не найден в БД - нужна загрузка")
+                finally:
+                    session.close()
+            
+            # Загружаем новых авторов и обновляем устаревшие
+            new_profiles = {}
+            updated_profiles = {}
+            total_to_load = len(usernames_to_parse) + len(usernames_to_update)
+            
+            if total_to_load > 0:
+                logger.info(f"📥 Загружаем {len(usernames_to_parse)} новых и обновляем {len(usernames_to_update)} устаревших профилей...")
+                
+                # Используем контекстный менеджер для парсера
+                async with TwitterProfileParser() as profile_parser:
+                    # Загружаем новые профили
+                    if usernames_to_parse:
+                        new_profiles = await profile_parser.get_multiple_profiles(usernames_to_parse)
+                    
+                    # Обновляем устаревшие профили
+                    if usernames_to_update:
+                        updated_profiles = await profile_parser.get_multiple_profiles(usernames_to_update)
+            else:
+                logger.info(f"✅ Все авторы найдены в БД с актуальными данными - пропускаем загрузку профилей")
             
             # Обогащаем данные авторов профилями
             for author in unique_authors:
                 username = author['username']
-                if username in profiles and profiles[username] and isinstance(profiles[username], dict):
-                    profile = profiles[username]
+                
+                # Приоритет: обновленные данные > новые данные > существующие в БД
+                profile = updated_profiles.get(username) or new_profiles.get(username) or existing_authors.get(username)
+                
+                if profile and isinstance(profile, dict):
                     author.update({
                         'display_name': profile.get('display_name', ''),
                         'followers_count': profile.get('followers_count', 0),
@@ -722,32 +835,217 @@ async def extract_tweet_authors(soup, query, contract_found):
                         'avatar_url': profile.get('avatar_url', '')
                     })
                     
-                    # Сохраняем в базу данных
-                    try:
-                        db_manager = get_db_manager()
-                        db_manager.save_twitter_author(profile)
-                        db_manager.save_tweet_mention({
-                            'mint': query if len(query) > 20 else None,  # Если длинный запрос - это контракт
-                            'author_username': username,
-                            'tweet_text': author['tweet_text'],
-                            'search_query': query,
-                            'retweets': author['retweets'],
-                            'likes': author['likes'],
-                            'replies': author['replies'],
-                            'author_followers_at_time': profile.get('followers_count', 0),
-                            'author_verified_at_time': profile.get('is_verified', False)
-                        })
-                        logger.info(f"💾 Сохранен профиль @{username} в БД")
-                    except Exception as e:
-                        logger.error(f"❌ Ошибка сохранения профиля @{username}: {e}")
+                    # Сохраняем в базу данных новые профили
+                    if username in usernames_to_parse:
+                        try:
+                            db_manager.save_twitter_author(profile)
+                            db_manager.save_tweet_mention({
+                                'mint': query if len(query) > 20 else None,  # Если длинный запрос - это контракт
+                                'author_username': username,
+                                'tweet_text': author['tweet_text'],
+                                'search_query': query,
+                                'retweets': author['retweets'],
+                                'likes': author['likes'],
+                                'replies': author['replies'],
+                                'author_followers_at_time': profile.get('followers_count', 0),
+                                'author_verified_at_time': profile.get('is_verified', False)
+                            })
+                            logger.info(f"💾 Сохранен новый профиль @{username} в БД ({profile.get('followers_count', 0):,} подписчиков)")
+                        except Exception as e:
+                            logger.error(f"❌ Ошибка сохранения профиля @{username}: {e}")
+                    
+                    # Обновляем существующие профили
+                    elif username in usernames_to_update:
+                        try:
+                            # Обновляем профиль в БД
+                            session = db_manager.Session()
+                            try:
+                                existing_author = session.query(TwitterAuthor).filter_by(username=username).first()
+                                if existing_author:
+                                    # Отслеживаем изменения для логирования
+                                    old_followers = existing_author.followers_count
+                                    new_followers = profile.get('followers_count', 0)
+                                    followers_change = new_followers - old_followers
+                                    
+                                    # Обновляем все поля
+                                    existing_author.display_name = profile.get('display_name', existing_author.display_name)
+                                    existing_author.followers_count = new_followers
+                                    existing_author.following_count = profile.get('following_count', existing_author.following_count)
+                                    existing_author.tweets_count = profile.get('tweets_count', existing_author.tweets_count)
+                                    existing_author.likes_count = profile.get('likes_count', existing_author.likes_count)
+                                    existing_author.bio = profile.get('bio', existing_author.bio)
+                                    existing_author.website = profile.get('website', existing_author.website)
+                                    existing_author.join_date = profile.get('join_date', existing_author.join_date)
+                                    existing_author.is_verified = profile.get('is_verified', existing_author.is_verified)
+                                    existing_author.avatar_url = profile.get('avatar_url', existing_author.avatar_url)
+                                    existing_author.last_updated = datetime.utcnow()
+                                    
+                                    session.commit()
+                                    
+                                    change_info = f" ({followers_change:+,} подписчиков)" if followers_change != 0 else ""
+                                    logger.info(f"🔄 Обновлен профиль @{username} в БД ({new_followers:,} подписчиков{change_info})")
+                            finally:
+                                session.close()
+                            
+                            # Сохраняем твит
+                            db_manager.save_tweet_mention({
+                                'mint': query if len(query) > 20 else None,
+                                'author_username': username,
+                                'tweet_text': author['tweet_text'],
+                                'search_query': query,
+                                'retweets': author['retweets'],
+                                'likes': author['likes'],
+                                'replies': author['replies'],
+                                'author_followers_at_time': profile.get('followers_count', 0),
+                                'author_verified_at_time': profile.get('is_verified', False)
+                            })
+                        except Exception as e:
+                            logger.error(f"❌ Ошибка обновления профиля @{username}: {e}")
+                    
+                    # Для существующих авторов (с актуальными данными) сохраняем только твит
+                    else:
+                        try:
+                            db_manager.save_tweet_mention({
+                                'mint': query if len(query) > 20 else None,
+                                'author_username': username,
+                                'tweet_text': author['tweet_text'],
+                                'search_query': query,
+                                'retweets': author['retweets'],
+                                'likes': author['likes'],
+                                'replies': author['replies'],
+                                'author_followers_at_time': profile.get('followers_count', 0),
+                                'author_verified_at_time': profile.get('is_verified', False)
+                            })
+                            logger.info(f"📱 Сохранен твит от автора @{username} (актуальные данные)")
+                        except Exception as e:
+                            logger.error(f"❌ Ошибка сохранения твита @{username}: {e}")
                 else:
-                    logger.warning(f"⚠️ Не удалось загрузить профиль @{username}")
+                    logger.warning(f"⚠️ Не удалось загрузить/найти профиль @{username}")
         
         return unique_authors
         
     except Exception as e:
         logger.error(f"❌ Ошибка парсинга авторов: {e}")
         return []
+
+async def twitter_analysis_worker():
+    """Фоновый обработчик для анализа Twitter (работает параллельно с основным потоком)"""
+    logger.info("🔄 Запущен фоновый обработчик анализа Twitter")
+    
+    while True:
+        try:
+            # Получаем токен из очереди
+            token_data = await twitter_analysis_queue.get()
+            
+            if token_data is None:  # Сигнал для завершения
+                break
+                
+            mint = token_data['mint']
+            symbol = token_data['symbol']
+            
+            logger.info(f"🔍 Начинаем фоновый анализ токена {symbol} в Twitter...")
+            
+            # Выполняем анализ Twitter
+            twitter_analysis = await analyze_token_sentiment(mint, symbol)
+            
+            # Сохраняем результат
+            twitter_analysis_results[mint] = twitter_analysis
+            
+            # Обновляем данные в БД
+            try:
+                db_manager = get_db_manager()
+                session = db_manager.Session()
+                
+                # Ищем токен по mint адресу
+                db_token = session.query(Token).filter_by(mint=mint).first()
+                if db_token:
+                    # Обновляем Twitter данные
+                    db_token.twitter_score = twitter_analysis['score']
+                    db_token.twitter_rating = twitter_analysis['rating']
+                    db_token.twitter_tweets = twitter_analysis['tweets']
+                    db_token.twitter_engagement = twitter_analysis['engagement']
+                    db_token.twitter_symbol_tweets = twitter_analysis['symbol_tweets']
+                    db_token.twitter_contract_tweets = twitter_analysis['contract_tweets']
+                    db_token.twitter_contract_found = twitter_analysis['contract_found']
+                    db_token.updated_at = datetime.utcnow()
+                    
+                    session.commit()
+                    logger.info(f"✅ Обновлены Twitter данные для токена {symbol} в БД")
+                else:
+                    logger.warning(f"⚠️ Токен {symbol} ({mint}) не найден в БД для обновления")
+                
+                session.close()
+                
+                # Проверяем нужно ли отправить отложенное уведомление
+                if should_send_delayed_notification(twitter_analysis, symbol):
+                    await send_delayed_twitter_notification(token_data, twitter_analysis)
+                    
+            except Exception as e:
+                logger.error(f"❌ Ошибка обновления Twitter данных для {symbol}: {e}")
+                
+            # Помечаем задачу как выполненную
+            twitter_analysis_queue.task_done()
+            
+            # Небольшая пауза между анализами
+            await asyncio.sleep(2)
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка в фоновом анализе Twitter: {e}")
+            await asyncio.sleep(5)
+
+def should_send_delayed_notification(twitter_analysis, symbol):
+    """Проверяет нужно ли отправить отложенное уведомление после анализа Twitter"""
+    if not twitter_analysis['contract_found']:
+        return False
+        
+    # Критерии для отложенного уведомления
+    high_activity = (
+        twitter_analysis['score'] >= 10 or
+        twitter_analysis['tweets'] >= 5 or
+        'высокий' in twitter_analysis['rating'].lower()
+    )
+    
+    if high_activity:
+        logger.info(f"📢 Токен {symbol} показал высокую активность в Twitter - отправляем отложенное уведомление")
+        return True
+        
+    return False
+
+async def send_delayed_twitter_notification(token_data, twitter_analysis):
+    """Отправляет отложенное уведомление после анализа Twitter"""
+    try:
+        mint = token_data['mint']
+        symbol = token_data['symbol']
+        name = token_data.get('name', 'Unknown Token')
+        
+        message = (
+            f"🔥 <b>ВЫСОКАЯ АКТИВНОСТЬ В TWITTER!</b>\n\n"
+            f"<b>💎 {name} ({symbol})</b>\n"
+            f"<b>📍 Mint:</b> <code>{mint}</code>\n\n"
+            f"<b>🐦 Twitter анализ:</b> {twitter_analysis['rating']}\n"
+            f"<b>📈 Твиты:</b> {twitter_analysis['tweets']} | <b>Активность:</b> {twitter_analysis['engagement']} | <b>Скор:</b> {twitter_analysis['score']}\n"
+            f"<b>🔍 Поиск:</b> Символ: {twitter_analysis['symbol_tweets']} | Контракт: {twitter_analysis['contract_tweets']} ✅\n\n"
+            f"⚡ <b>Обнаружена повышенная активность после анализа!</b>\n"
+            f"<b>🕐 Время:</b> {datetime.now().strftime('%H:%M:%S')}"
+        )
+        
+        # Кнопки
+        bonding_curve_key = token_data.get('bondingCurveKey', mint)
+        keyboard = [
+            [
+                {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/meme/{bonding_curve_key}"},
+                {"text": "⚡ QUICK BUY", "url": f"https://t.me/alpha_web3_bot?start=call-dex_men-SO-{mint}"}
+            ],
+            [
+                {"text": "📊 DexScreener", "url": f"https://dexscreener.com/solana/{mint}"}
+            ]
+        ]
+        
+        send_telegram(message, keyboard)
+        logger.info(f"📤 Отправлено отложенное уведомление для {symbol}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки отложенного уведомления: {e}")
 
 async def main():
     """Основная функция с автоматическим реконнектом"""
@@ -758,6 +1056,10 @@ async def main():
     first_connection = True
     last_stats_day = None
     last_heartbeat = datetime.now()
+    
+    # Запускаем фоновый обработчик анализа Twitter
+    twitter_worker_task = asyncio.create_task(twitter_analysis_worker())
+    logger.info("🔄 Запущен фоновый обработчик анализа Twitter")
     
     while True:
         try:
@@ -790,12 +1092,13 @@ async def main():
                 # Уведомляем о запуске только при первом подключении
                 if first_connection:
                     start_message = (
-                        "🚀 <b>PUMP.FUN БОТ ЗАПУЩЕН!</b>\n\n"
-                        "✅ Мониторинг новых токенов с Twitter анализом\n"
-                        "✅ Умная фильтрация мусорных токенов\n"
+                        "🚀 <b>PUMP.FUN БОТ v3.0 ЗАПУЩЕН!</b>\n\n"
+                        "✅ Мониторинг новых токенов БЕЗ ПОТЕРЬ\n"
+                        "🔄 Асинхронный Twitter анализ в фоне\n"
+                        "⚡ НИКАКОЙ блокировки при анализе\n"
                         "✅ Отслеживание крупных сделок (>5 SOL)\n"
                         "✅ Кнопки для быстрой покупки\n\n"
-                        "💎 Готов ловить качественные токены!"
+                        "💎 Ни один токен не будет потерян!"
                     )
                     send_telegram(start_message)
                     first_connection = False

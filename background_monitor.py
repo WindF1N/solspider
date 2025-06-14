@@ -8,7 +8,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 from database import get_db_manager, Token
-from pump_bot import search_single_query, send_telegram, extract_tweet_authors
+from pump_bot import search_single_query, send_telegram, extract_tweet_authors, TWITTER_AUTHOR_BLACKLIST
 from cookie_rotation import background_cookie_rotator
 from logger_config import setup_logging
 from twitter_profile_parser import TwitterProfileParser
@@ -41,20 +41,24 @@ class BackgroundTokenMonitor:
         }
     
     def get_tokens_to_monitor(self):
-        """Получает токены для мониторинга (без контракта в Twitter)"""
+        """Получает токены для мониторинга (продолжает мониторить даже найденные)"""
         session = self.db_manager.Session()
         try:
-            # Токены созданные не более 1 часа назад и без упоминаний контракта в Twitter
+            # Токены созданные не более 1 часа назад (убираем фильтр по twitter_contract_tweets)
             cutoff_time = datetime.utcnow() - timedelta(hours=self.max_token_age_hours)
             
             tokens = session.query(Token).filter(
                 Token.created_at >= cutoff_time,           # Не старше 1 часа
-                Token.twitter_contract_tweets == 0,        # Нет твитов с контрактом
+                # УБРАЛИ ФИЛЬТР: Token.twitter_contract_tweets == 0,  # Теперь мониторим ВСЕ токены
                 Token.mint.isnot(None),                    # Есть адрес контракта
                 Token.symbol.isnot(None)                   # Есть символ
             ).order_by(Token.created_at.desc()).all()
             
-            logger.info(f"📊 Найдено {len(tokens)} токенов для фонового мониторинга")
+            # Разделяем токены на новые и уже найденные для статистики
+            new_tokens = [t for t in tokens if t.twitter_contract_tweets == 0]
+            found_tokens = [t for t in tokens if t.twitter_contract_tweets > 0]
+            
+            logger.info(f"📊 Мониторинг: {len(new_tokens)} новых + {len(found_tokens)} найденных = {len(tokens)} токенов")
             return tokens
             
         except Exception as e:
@@ -64,7 +68,7 @@ class BackgroundTokenMonitor:
             session.close()
     
     async def check_contract_mentions(self, token, cycle_cookie):
-        """Проверяет появление упоминаний контракта в Twitter (с кавычками и без) с парсингом авторов"""
+        """Проверяет появление НОВЫХ упоминаний контракта в Twitter с парсингом авторов"""
         try:
             # Получаем данные с авторами
             tweets_count, engagement, authors = await self.get_contract_mentions_with_authors(token, cycle_cookie)
@@ -72,9 +76,14 @@ class BackgroundTokenMonitor:
             # Проверяем если возвращается 0,0 - возможно блокировка
             if tweets_count == 0 and engagement == 0:
                 logger.debug(f"🔍 Контракт {token.symbol} не найден в Twitter (или блокировка)")
+                return False
             
-            if tweets_count > 0:
-                logger.info(f"🎯 НАЙДЕН контракт {token.symbol} в Twitter! Уникальных твитов: {tweets_count}, активность: {engagement}, авторов: {len(authors)}")
+            # Сравниваем с предыдущими данными
+            previous_tweets = token.twitter_contract_tweets or 0
+            new_tweets_found = tweets_count - previous_tweets
+            
+            if new_tweets_found > 0:
+                logger.info(f"🎯 НОВЫЕ твиты для {token.symbol}! Было: {previous_tweets}, стало: {tweets_count} (+{new_tweets_found}), авторов: {len(authors)}")
                 
                 # Обновляем данные в БД
                 session = self.db_manager.Session()
@@ -86,10 +95,11 @@ class BackgroundTokenMonitor:
                         db_token.updated_at = datetime.utcnow()
                         session.commit()
                         
-                        logger.info(f"✅ Обновлена БД для токена {token.symbol}")
+                        logger.info(f"✅ Обновлена БД для токена {token.symbol}: {previous_tweets} → {tweets_count}")
                         
-                        # Отправляем уведомление с информацией об авторах
-                        await self.send_contract_alert(token, tweets_count, engagement, authors)
+                        # Отправляем уведомление только о НОВЫХ твитах
+                        is_first_discovery = previous_tweets == 0
+                        await self.send_contract_alert(token, tweets_count, engagement, authors, is_first_discovery)
                         
                 except Exception as e:
                     session.rollback()
@@ -98,6 +108,9 @@ class BackgroundTokenMonitor:
                     session.close()
                     
                 return True
+            elif tweets_count == previous_tweets and tweets_count > 0:
+                logger.debug(f"🔍 {token.symbol}: количество твитов не изменилось ({tweets_count})")
+                return False
             else:
                 logger.debug(f"🔍 Контракт {token.symbol} пока не найден в Twitter")
                 return False
@@ -106,29 +119,45 @@ class BackgroundTokenMonitor:
             logger.error(f"❌ Ошибка проверки контракта {token.symbol}: {e}")
             return False
     
-    async def send_contract_alert(self, token, tweets_count, engagement, authors=None):
-        """Отправляет уведомление о найденном контракте с информацией об авторах"""
+    async def send_contract_alert(self, token, tweets_count, engagement, authors, is_first_discovery=True):
+        """Отправляет уведомление о найденном контракте в Twitter"""
         try:
-            # Вычисляем возраст токена
-            age = datetime.utcnow() - token.created_at
-            age_hours = age.total_seconds() / 3600
+            emoji = "🔥" if is_first_discovery else "🚨"
+            title = "КОНТРАКТ НАЙДЕН В TWITTER!" if is_first_discovery else f"НОВАЯ АКТИВНОСТЬ ПО КОНТРАКТУ! +{tweets_count - (token.twitter_contract_tweets or 0)} новых твитов!"
             
             message = (
-                f"🔥 <b>КОНТРАКТ НАЙДЕН В TWITTER!</b>\n\n"
-                f"💎 <b><a href='https://pump.fun/{token.mint}'>{token.name}</a></b>\n"
-                f"🏷️ <b>Символ:</b> {token.symbol}\n"
-                f"📍 <b>Mint:</b> <code>{token.mint}</code>\n"
-                f"⏰ <b>Возраст токена:</b> {age_hours:.1f} часов\n"
-                f"🐦 <b>Твиты с контрактом:</b> {tweets_count}\n"
-                f"📊 <b>Активность:</b> {engagement}\n"
+                f"{emoji} <b>{title}</b>\n\n"
+                f"🪙 <b>Токен:</b> {token.symbol or 'Unknown'}\n"
+                f"💰 <b>Название:</b> {token.name or 'N/A'}\n"
+                f"📄 <b>Контракт:</b> <code>{token.mint}</code>\n"
+            )
+            
+            # Добавляем информацию о твитах
+            if is_first_discovery:
+                action_text = f"📱 <b>Твитов с контрактом:</b> {tweets_count}"
+            else:
+                previous_tweets = token.twitter_contract_tweets or 0
+                new_tweets = tweets_count - previous_tweets
+                action_text = f"📱 <b>Всего твитов:</b> {tweets_count} (+{new_tweets} новых)"
+            
+            message += (
+                f"\n📊 <b>Активность:</b> {engagement}\n"
                 f"📈 <b>Текущий Market Cap:</b> ${token.market_cap:,.0f}\n\n"
-                f"🚀 <b>Пользователи начали делиться контрактом!</b>\n"
+                f"{action_text}\n"
                 f"📈 <b>Возможен рост интереса к токену</b>\n\n"
             )
             
             # Добавляем информацию об авторах твитов
             if authors:
-                message += f"<b>👥 АВТОРЫ ТВИТОВ С КОНТРАКТОМ:</b>\n"
+                total_followers = sum([author.get('followers_count', 0) for author in authors])
+                verified_count = sum([1 for author in authors if author.get('is_verified', False)])
+                
+                message += f"<b>👥 АВТОРЫ ТВИТОВ С КОНТРАКТОМ ({len(authors)} авторов):</b>\n"
+                message += f"   📊 Общий охват: {total_followers:,} подписчиков\n"
+                if verified_count > 0:
+                    message += f"   ✅ Верифицированных: {verified_count}\n"
+                message += "\n"
+                
                 for i, author in enumerate(authors[:3]):  # Показываем максимум 3 авторов
                     username = author.get('username', 'Unknown')
                     display_name = author.get('display_name', username)
@@ -146,7 +175,7 @@ class BackgroundTokenMonitor:
             
             message += f"⚡ <b>Время действовать!</b>"
             
-            # Кнопки для быстрых действий
+            # Создаем кнопки для уведомления
             keyboard = [
                 [
                     {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/meme/{token.bonding_curve_key or token.mint}"},
@@ -154,14 +183,14 @@ class BackgroundTokenMonitor:
                 ],
                 [
                     {"text": "📊 DexScreener", "url": f"https://dexscreener.com/solana/{token.mint}"}
-                ]
+                ],
             ]
             
             send_telegram(message, keyboard)
-            logger.info(f"📨 Отправлено уведомление о контракте {token.symbol}")
+            logger.info(f"📤 Отправлено уведомление о контракте {token.symbol} в Telegram")
             
         except Exception as e:
-            logger.error(f"❌ Ошибка отправки уведомления о контракте {token.symbol}: {e}")
+            logger.error(f"❌ Ошибка отправки уведомления: {e}")
     
     async def monitor_cycle(self):
         """Один цикл мониторинга"""
@@ -217,11 +246,12 @@ class BackgroundTokenMonitor:
         # Отправляем уведомление о запуске
         start_message = (
             f"🤖 <b>НЕПРЕРЫВНЫЙ ФОНОВЫЙ МОНИТОРИНГ ЗАПУЩЕН!</b>\n\n"
-            f"🔍 <b>Отслеживаем:</b> появление адресов контрактов в Twitter\n"
-            f"⚡ <b>Режим:</b> непрерывный мониторинг (без пауз)\n"
+            f"🔍 <b>Отслеживаем:</b> все упоминания адресов контрактов в Twitter\n"
+            f"⚡ <b>Режим:</b> непрерывный мониторинг каждого нового твита\n"
             f"📊 <b>Мониторим токены:</b> не старше {self.max_token_age_hours} часа\n"
-            f"🔄 <b>Ротация:</b> 5 cookies + 7 прокси серверов\n"
-            f"🎯 <b>Цель:</b> мгновенное обнаружение растущего интереса\n\n"
+            f"🔄 <b>Ротация:</b> 10 cookies для фонового мониторинга\n"
+            f"🚨 <b>Уведомления:</b> каждый новый уникальный твит с контрактом\n"
+            f"🎯 <b>Цель:</b> полный охват растущего интереса\n\n"
             f"🚀 <b>Готов ловить каждый момент роста!</b>"
         )
         send_telegram(start_message)
@@ -270,7 +300,7 @@ class BackgroundTokenMonitor:
                                 # Проверяем на блокировку
                                 title = soup.find('title')
                                 if title and 'Making sure you\'re not a bot!' in title.get_text():
-                                    logger.error(f"🚫 NITTER ЗАБЛОКИРОВАН! Контракт: {token.mint}")
+                                    logger.error(f"🚫 NITTER ЗАБЛОКИРОВАН! Контракт: {token.mint} куки '{cycle_cookie}'")
                                     continue
                                 
                                 # Подсчитываем твиты
@@ -297,14 +327,25 @@ class BackgroundTokenMonitor:
                     logger.error(f"❌ Ошибка запроса к {url}: {e}")
                     continue
             
-            # Убираем дубликаты авторов
+            # Убираем дубликаты авторов и проверяем черный список
             unique_authors = []
             seen_usernames = set()
+            blacklisted_count = 0
+            
             for author in all_authors:
                 username = author.get('username', '')
                 if username and username not in seen_usernames:
+                    # Дополнительная проверка черного списка
+                    if username.lower() in TWITTER_AUTHOR_BLACKLIST:
+                        logger.info(f"🚫 Автор @{username} из фонового мониторинга исключен (черный список)")
+                        blacklisted_count += 1
+                        continue
+                    
                     unique_authors.append(author)
                     seen_usernames.add(username)
+            
+            if blacklisted_count > 0:
+                logger.info(f"🚫 Исключено {blacklisted_count} авторов из черного списка для токена {token.symbol}")
             
             return tweets_count, engagement, unique_authors
             
