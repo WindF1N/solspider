@@ -27,7 +27,9 @@ class BackgroundTokenMonitor:
         self.db_manager = get_db_manager()
         self.running = False
         self.max_token_age_hours = 1  # Мониторим токены не старше 1 часа
-        self.batch_delay = 0  # Задержка между батчами 10 секунд
+        self.batch_delay = 0  # Задержка между батчами (адаптивная)
+        self.consecutive_errors = 0  # Счетчик последовательных ошибок
+        self.batch_mode = False  # Режим пакетной обработки
         # Парсер профилей Twitter (будет создан в async функциях)
         
         # Базовые заголовки для Nitter запросов (cookie будет добавлен автоматически)
@@ -127,6 +129,8 @@ class BackgroundTokenMonitor:
                 
         except Exception as e:
             logger.error(f"❌ Ошибка проверки контракта {token.symbol}: {e}")
+            # Увеличиваем счетчик ошибок для адаптивного режима
+            self.consecutive_errors += 1
             return False
     
     def should_notify_based_on_authors(self, authors):
@@ -309,8 +313,19 @@ class BackgroundTokenMonitor:
                 logger.debug("📭 Нет токенов для мониторинга в данный момент")
                 return
             
-            # Проверяем токены батчами по 900 штук (чтобы не перегружать Nitter)
-            batch_size = 900
+            # ОПТИМИЗАЦИЯ: увеличенные батчи для повышения производительности
+            if self.consecutive_errors > 10:
+                batch_size = 50  # Увеличены батчи при ошибках: 20→50
+                self.batch_mode = True
+                logger.warning(f"🚨 Активирован режим восстановления: батчи по {batch_size} токенов")
+            elif len(tokens) > 20:
+                batch_size = 100  # Увеличен оптимальный размер: 30→100
+                self.batch_mode = True
+                logger.info(f"⚡ Пакетный режим: батчи по {batch_size} токенов (очередь: {len(tokens)})")
+            else:
+                batch_size = len(tokens)  # Обрабатываем все сразу
+                self.batch_mode = False
+            
             found_contracts = 0
             
             for i in range(0, len(tokens), batch_size):
@@ -321,24 +336,70 @@ class BackgroundTokenMonitor:
                 tasks = [self.check_contract_mentions(token, cycle_cookie) for token in batch]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 
-                # Подсчитываем найденные контракты
+                # Подсчитываем найденные контракты и ошибки
+                batch_errors = 0
                 for result in results:
                     if result is True:
                         found_contracts += 1
+                        # Сбрасываем счетчик ошибок при успехе
+                        self.consecutive_errors = max(0, self.consecutive_errors - 1)
+                    elif isinstance(result, Exception):
+                        batch_errors += 1
                 
-                # УБИРАЕМ ПАУЗЫ - максимальная скорость мониторинга
-                # if i + batch_size < len(tokens):
-                #     await asyncio.sleep(1)
+                # Адаптивные паузы между батчами
+                if i + batch_size < len(tokens):
+                    if self.batch_mode:
+                        # В пакетном режиме - минимальные паузы
+                        pause = 0.1 if batch_errors < len(batch) // 2 else 0.5
+                    else:
+                        # Обычный режим - без пауз
+                        pause = 0
+                    
+                    if pause > 0:
+                        await asyncio.sleep(pause)
                 
             elapsed = time.time() - start_time
-            logger.info(f"✅ Цикл мониторинга завершен за {elapsed:.1f}с. Найдено контрактов: {found_contracts}")
-
-            # Пауза между циклами
-            # await asyncio.sleep(10)
             
+            # Логируем статистику производительности
+            tokens_per_second = len(tokens) / elapsed if elapsed > 0 else 0
+            mode_info = f"[{'ПАКЕТНЫЙ' if self.batch_mode else 'ОБЫЧНЫЙ'} режим]"
+            
+            logger.info(f"✅ Цикл мониторинга завершен за {elapsed:.1f}с {mode_info}")
+            logger.info(f"📊 Производительность: {tokens_per_second:.1f} токенов/сек, найдено: {found_contracts}")
+            logger.info(f"🔧 Ошибки подряд: {self.consecutive_errors}")
+
         except Exception as e:
             logger.error(f"❌ Ошибка в цикле мониторинга: {e}")
+            self.consecutive_errors += 1
     
+    async def emergency_clear_monitor_overload(self):
+        """Экстренная очистка при перегрузке фонового мониторинга"""
+        try:
+            # Если слишком много последовательных ошибок
+            if self.consecutive_errors > 50:  # Больше 50 = критическая ситуация
+                logger.warning(f"🚨 КРИТИЧЕСКАЯ ПЕРЕГРУЗКА МОНИТОРИНГА: {self.consecutive_errors} ошибок подряд!")
+                
+                # Сбрасываем счетчик ошибок наполовину
+                self.consecutive_errors = self.consecutive_errors // 2
+                
+                # Активируем режим восстановления
+                self.batch_mode = True
+                
+                logger.warning(f"🚨 ЭКСТРЕННОЕ ВОССТАНОВЛЕНИЕ: сброшено до {self.consecutive_errors} ошибок, активирован режим восстановления")
+                
+                # Отправляем уведомление
+                alert_message = (
+                    f"🚨 <b>ЭКСТРЕННОЕ ВОССТАНОВЛЕНИЕ МОНИТОРИНГА</b>\n\n"
+                    f"⚠️ <b>Проблема:</b> критическая перегрузка ошибок\n"
+                    f"🔧 <b>Действие:</b> активирован режим восстановления\n"
+                    f"📊 <b>Ошибки сброшены:</b> {self.consecutive_errors * 2} → {self.consecutive_errors}\n\n"
+                    f"🔄 <b>Мониторинг продолжается в усиленном режиме</b>"
+                )
+                send_telegram(alert_message)
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка экстренной очистки мониторинга: {e}")
+
     async def start_monitoring(self):
         """Запускает непрерывный фоновый мониторинг"""
         self.running = True
@@ -357,17 +418,24 @@ class BackgroundTokenMonitor:
         )
         send_telegram(start_message)
         
+        monitor_cycle_count = 0
         while self.running:
             try:
                 await self.monitor_cycle()
+                monitor_cycle_count += 1
+                
+                # Проверяем перегрузку каждые 10 циклов
+                if monitor_cycle_count % 10 == 0:
+                    await self.emergency_clear_monitor_overload()
                 
                 # Небольшая пауза только если нет токенов для мониторинга
                 # Иначе сразу переходим к следующему циклу
-                logger.info(f"⚡ Переход к следующему циклу мониторинга...")
+                logger.info(f"⚡ Переход к следующему циклу мониторинга... (#{monitor_cycle_count})")
                 
             except Exception as e:
                 logger.error(f"❌ Критическая ошибка в мониторинге: {e}")
-                await asyncio.sleep(30)  # Пауза при ошибке
+                self.consecutive_errors += 1
+                await asyncio.sleep(5)  # Пауза при ошибке
     
     def stop_monitoring(self):
         """Останавливает мониторинг"""
@@ -375,12 +443,15 @@ class BackgroundTokenMonitor:
         logger.info("🛑 Остановка фонового мониторинга...")
 
     async def get_contract_mentions_with_authors(self, token, cycle_cookie):
-        """Получает HTML ответы для парсинга авторов"""
+        """Получает HTML ответы для парсинга авторов С БЫСТРЫМИ ТАЙМАУТАМИ"""
         try:
-            # Делаем запросы с получением HTML
+            # Добавляем вчерашнюю дату и убираем поиск с кавычками
+            from datetime import datetime, timedelta
+            yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+            
+            # Делаем только один запрос без кавычек
             urls = [
-                f"https://nitter.tiekoetter.com/search?f=tweets&q=%22{token.mint}%22&since=&until=&near=",  # С кавычками
-                f"https://nitter.tiekoetter.com/search?f=tweets&q={token.mint}&since=&until=&near="  # Без кавычек
+                f"https://nitter.tiekoetter.com/search?f=tweets&q={token.mint}&since={yesterday}&until=&near="
             ]
             
             headers_with_cookie = self.headers.copy()
@@ -392,8 +463,9 @@ class BackgroundTokenMonitor:
             
             for url in urls:
                 try:
+                    # ОПТИМИЗАЦИЯ: быстрый таймаут 8 секунд (быстрее чем pump_bot)
                     async with aiohttp.ClientSession() as session:
-                        async with session.get(url, headers=headers_with_cookie, timeout=20) as response:
+                        async with session.get(url, headers=headers_with_cookie, timeout=5) as response:
                             if response.status == 200:
                                 html = await response.text()
                                 soup = BeautifulSoup(html, 'html.parser')
@@ -401,7 +473,10 @@ class BackgroundTokenMonitor:
                                 # Проверяем на блокировку
                                 title = soup.find('title')
                                 if title and 'Making sure you\'re not a bot!' in title.get_text():
-                                    logger.error(f"🚫 NITTER ЗАБЛОКИРОВАН! Контракт: {token.mint} куки '{cycle_cookie}'")
+                                    logger.error(f"🤖 ФОНОВЫЙ МОНИТОРИНГ: БЛОКИРОВКА для {token.symbol}")
+                                    logger.error(f"📋 ПРИЧИНА: защита Nitter от ботов ('Making sure you're not a bot!')")
+                                    logger.error(f"🔧 ДЕЙСТВИЕ: требуется обновление cookie")
+                                    logger.error(f"🍪 Cookie: {cycle_cookie}")
                                     continue
                                 
                                 # Подсчитываем твиты
@@ -424,8 +499,48 @@ class BackgroundTokenMonitor:
                                                 if numbers:
                                                     engagement += int(numbers[0])
                                 
+                                # УСПЕХ: сбрасываем счетчик ошибок
+                                self.consecutive_errors = max(0, self.consecutive_errors - 1)
+                                
+                            elif response.status == 429:
+                                logger.warning(f"🚫 ФОНОВЫЙ МОНИТОРИНГ: 429 ОШИБКА для {token.symbol}")
+                                logger.warning(f"📋 ПРИЧИНА: слишком много запросов к Nitter серверу")
+                                logger.warning(f"🔧 ДЕЙСТВИЕ: быстрый пропуск токена")
+                                self.consecutive_errors += 1
+                                continue
+                            else:
+                                logger.warning(f"⚠️ Статус {response.status} для {token.symbol}")
+                                self.consecutive_errors += 1
+                                continue
+                                
+                except asyncio.TimeoutError:
+                    logger.warning(f"⏰ ФОНОВЫЙ МОНИТОРИНГ: ТАЙМАУТ для {token.symbol}")
+                    logger.warning(f"📋 ПРИЧИНА: медленный ответ Nitter сервера (>5 секунд)")
+                    logger.warning(f"🔧 ДЕЙСТВИЕ: пропускаем токен и переходим к следующему")
+                    self.consecutive_errors += 1
+                    continue
                 except Exception as e:
-                    logger.error(f"❌ Ошибка запроса к {url}: {e}")
+                    # ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ОШИБОК В ФОНОВОМ МОНИТОРЕ
+                    error_type = type(e).__name__
+                    error_msg = str(e)
+                    
+                    if "ConnectionError" in error_type:
+                        logger.error(f"🔌 ФОНОВЫЙ МОНИТОРИНГ: ОШИБКА СОЕДИНЕНИЯ для {token.symbol}")
+                        logger.error(f"📋 ПРИЧИНА: сеть недоступна или Nitter сервер недоступен")
+                    elif "SSLError" in error_type:
+                        logger.error(f"🔒 ФОНОВЫЙ МОНИТОРИНГ: SSL ОШИБКА для {token.symbol}")
+                        logger.error(f"📋 ПРИЧИНА: проблемы с HTTPS сертификатом")
+                    elif "HTTPError" in error_type:
+                        logger.error(f"🌐 ФОНОВЫЙ МОНИТОРИНГ: HTTP ОШИБКА для {token.symbol}")
+                        logger.error(f"📋 ПРИЧИНА: ошибка HTTP протокола")
+                    else:
+                        logger.error(f"❓ ФОНОВЫЙ МОНИТОРИНГ: НЕИЗВЕСТНАЯ ОШИБКА для {token.symbol}")
+                        logger.error(f"📋 ТИП: {error_type}")
+                    
+                    logger.error(f"📄 ДЕТАЛИ: {error_msg}")
+                    logger.error(f"🔧 ДЕЙСТВИЕ: пропускаем токен и переходим к следующему")
+                    
+                    self.consecutive_errors += 1
                     continue
             
             # Убираем дубликаты авторов и проверяем черный список
@@ -452,6 +567,7 @@ class BackgroundTokenMonitor:
             
         except Exception as e:
             logger.error(f"❌ Ошибка получения данных для {token.symbol}: {e}")
+            self.consecutive_errors += 1
             return 0, 0, []
 
 async def main():

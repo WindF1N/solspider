@@ -5,6 +5,7 @@
 
 import asyncio
 from pump_bot import search_single_query, analyze_token_sentiment
+from datetime import datetime, timedelta
 
 async def check_specific_token():
     """Проверяет конкретный токен который не был обработан"""
@@ -25,7 +26,8 @@ async def check_specific_token():
     }
     
     print(f"📍 Mint адрес: {mint}")
-    print(f"🔗 Nitter URL: https://nitter.tiekoetter.com/search?f=tweets&q={mint}&since=&until=&near=")
+    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+    print(f"🔗 Nitter URL: https://nitter.tiekoetter.com/search?f=tweets&q={mint}&since={yesterday}&until=&near=")
     print()
     
     # Тест 1: Прямой поиск по адресу контракта
@@ -33,7 +35,10 @@ async def check_specific_token():
     print("-" * 50)
     
     try:
-        tweets, engagement = await search_single_query(mint, headers)
+        tweet_data_list = await search_single_query(mint, headers)
+        tweets = len(tweet_data_list)
+        engagement = sum(tweet.get('engagement', 0) for tweet in tweet_data_list)
+        
         print(f"📊 Результат:")
         print(f"   • Найдено твитов: {tweets}")
         print(f"   • Общая активность: {engagement}")

@@ -269,8 +269,8 @@ class TwitterProfileParser:
             logger.error(f"❌ Ошибка извлечения твитов: {e}")
             return []
     
-    async def get_profile_with_tweets(self, username):
-        """Получает данные профиля пользователя вместе с твитами"""
+    async def get_profile_with_tweets(self, username, retry_count=0, max_retries=3):
+        """Получает данные профиля пользователя вместе с твитами с механизмом повторных попыток"""
         try:
             # Убираем @ если есть
             username = username.replace('@', '')
@@ -310,7 +310,10 @@ class TwitterProfileParser:
                 'Upgrade-Insecure-Requests': '1'
             }
             
-            logger.info(f"🔍 Загружаем профиль с твитами @{username}")
+            if retry_count == 0:
+                logger.info(f"🔍 Загружаем профиль с твитами @{username}")
+            else:
+                logger.warning(f"🔄 Повторная попытка {retry_count}/{max_retries} загрузки профиля @{username}")
             
             # Проверяем что session инициализирована
             if not self.session:
@@ -353,8 +356,24 @@ class TwitterProfileParser:
                     return None, []
                     
         except Exception as e:
-            logger.error(f"❌ Ошибка получения профиля с твитами @{username}: {e}")
-            return None, []
+            # Проверяем на сетевые ошибки
+            is_network_error = (
+                "Cannot connect to host" in str(e) or
+                "Network is unreachable" in str(e) or
+                "Connection timeout" in str(e) or
+                "TimeoutError" in str(e) or
+                "ClientConnectorError" in str(e)
+            )
+            
+            if is_network_error and retry_count < max_retries:
+                retry_delay = 2 + retry_count  # Увеличиваем задержку с каждой попыткой
+                logger.warning(f"🌐 Сетевая ошибка для @{username}: {e}")
+                logger.info(f"🔄 Повторная попытка через {retry_delay}с (попытка {retry_count + 1}/{max_retries})")
+                await asyncio.sleep(retry_delay)
+                return await self.get_profile_with_tweets(username, retry_count + 1, max_retries)
+            else:
+                logger.error(f"❌ Ошибка получения профиля с твитами @{username}: {e}")
+                return None, []
 
     async def get_multiple_profiles(self, usernames, delay=1.0):
         """Получает профили нескольких пользователей"""

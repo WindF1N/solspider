@@ -118,12 +118,13 @@ def send_telegram(message, inline_keyboard=None):
         logger.error("❌ Не удалось отправить сообщение ни в один чат")
         return False
 
-async def search_single_query(query, headers, retry_count=0, use_quotes=True, cycle_cookie=None):
+async def search_single_query(query, headers, retry_count=0, use_quotes=False, cycle_cookie=None):
     """Выполняет одиночный поисковый запрос к Nitter с повторными попытками при 429 и ротацией cookies"""
-    if use_quotes:
-        url = f"https://nitter.tiekoetter.com/search?f=tweets&q=%22{query}%22&since=&until=&near="
-    else:
-        url = f"https://nitter.tiekoetter.com/search?f=tweets&q={quote(query)}&since=&until=&near="
+    # Добавляем вчерашнюю дату в параметр since
+    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+    
+    # Убираем поиск с кавычками - используем только без кавычек
+    url = f"https://nitter.tiekoetter.com/search?f=tweets&q={quote(query)}&since={yesterday}&until=&near="
     
     # Используем переданный cookie для цикла или получаем новый
     if cycle_cookie:
@@ -236,7 +237,7 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=True, cy
                 elif response.status == 429:
                     # Ошибка 429 - Too Many Requests, увеличиваем паузу
                     if retry_count < 2:  # Максимум 2 попытки с увеличивающимися паузами
-                        pause_time = 1  # МИНИМАЛЬНАЯ пауза при 429
+                        pause_time = 0.1  # МИНИМАЛЬНАЯ пауза при 429
                         logger.warning(f"⚠️ Nitter 429 (Too Many Requests) для '{query}', ждём {pause_time}с (попытка {retry_count + 1}/2)")
                         await asyncio.sleep(pause_time)
                         return await search_single_query(query, headers, retry_count + 1, use_quotes, cycle_cookie)
@@ -252,21 +253,40 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=True, cy
                     return []
                     
     except Exception as e:
-        logger.error(f"Ошибка запроса к Nitter для '{query}': {type(e).__name__}: {e}")
+        # ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ОШИБОК
+        error_type = type(e).__name__
+        error_msg = str(e)
+        
+        # Определяем тип ошибки для детального логирования
+        if "TimeoutError" in error_type or "timeout" in error_msg.lower():
+            logger.error(f"⏰ ТАЙМАУТ для '{query}': {error_type} - {error_msg}")
+            error_category = "TIMEOUT"
+        elif "ConnectionError" in error_type or "connection" in error_msg.lower():
+            logger.error(f"🔌 ОШИБКА СОЕДИНЕНИЯ для '{query}': {error_type} - {error_msg}")
+            error_category = "CONNECTION"
+        elif "429" in error_msg or "too many requests" in error_msg.lower():
+            logger.error(f"🚫 ПРЕВЫШЕН ЛИМИТ для '{query}': {error_type} - {error_msg}")
+            error_category = "RATE_LIMIT"
+        elif "blocked" in error_msg.lower() or "bot" in error_msg.lower():
+            logger.error(f"🤖 БЛОКИРОВКА для '{query}': {error_type} - {error_msg}")
+            error_category = "BLOCKED"
+        else:
+            logger.error(f"❓ НЕИЗВЕСТНАЯ ОШИБКА для '{query}': {error_type} - {error_msg}")
+            error_category = "UNKNOWN"
         
         # Повторная попытка при любых ошибках (не только 429)
         if retry_count < 3:
-            logger.warning(f"⚠️ Повторная попытка для '{query}' после ошибки {type(e).__name__} (попытка {retry_count + 1}/3)")
-            # await asyncio.sleep(1)  # УБИРАЕМ ПАУЗЫ
+            logger.warning(f"⚠️ Повторная попытка для '{query}' после {error_category} (попытка {retry_count + 1}/3)")
             return await search_single_query(query, headers, retry_count + 1, use_quotes, cycle_cookie)
         else:
-            logger.error(f"❌ Превышено количество попыток для '{query}' - возвращаем пустой результат")
-            return []
+            logger.error(f"❌ Превышено количество попыток для '{query}' после {error_category} - возвращаем пустой результат")
+            # Возвращаем информацию об ошибке для анализа
+            return {"error": error_category, "message": error_msg, "type": error_type}
 
 async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
-    """Анализ упоминаний токена в Twitter через Nitter (4 запроса с дедупликацией)"""
+    """Анализ упоминаний токена в Twitter через Nitter (2 запроса без кавычек с дедупликацией)"""
     try:
-        # Получаем один cookie для всего анализа токена (4 запроса)
+        # Получаем один cookie для всего анализа токена (2 запроса)
         if not cycle_cookie:
             cycle_cookie = cookie_rotator.get_cycle_cookie()
             logger.debug(f"🍪 Используем один cookie для анализа токена {symbol}")
@@ -281,22 +301,39 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
             'Upgrade-Insecure-Requests': '1',
         }
         
-        # 4 запроса: символ и контракт, каждый с кавычками и без
+        # 2 запроса: символ и контракт, только без кавычек
         search_queries = [
-            (f'${symbol}', True),   # Символ с кавычками
             (f'${symbol}', False),  # Символ без кавычек
-            (mint, True),           # Контракт с кавычками
             (mint, False)           # Контракт без кавычек
         ]
         
         # Выполняем запросы последовательно с паузами для избежания блокировки
         results = []
+        error_details = []
         for i, (query, use_quotes) in enumerate(search_queries):
             try:
                 result = await search_single_query(query, headers, use_quotes=use_quotes, cycle_cookie=cycle_cookie)
-                results.append(result)
+                
+                # Проверяем если результат содержит информацию об ошибке
+                if isinstance(result, dict) and "error" in result:
+                    error_details.append({
+                        "query": query,
+                        "error_category": result["error"],
+                        "error_message": result["message"],
+                        "error_type": result["type"]
+                    })
+                    logger.warning(f"⚠️ Ошибка запроса {i+1} для '{query}': {result['error']} - {result['message']}")
+                    results.append([])  # Пустой результат
+                else:
+                    results.append(result)
             except Exception as e:
-                logger.warning(f"⚠️ Ошибка запроса {i+1}: {e}")
+                logger.warning(f"⚠️ Неожиданная ошибка запроса {i+1}: {e}")
+                error_details.append({
+                    "query": query,
+                    "error_category": "UNEXPECTED",
+                    "error_message": str(e),
+                    "error_type": type(e).__name__
+                })
                 results.append(e)
         
         # Собираем все твиты в один словарь для дедупликации
@@ -321,9 +358,9 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
                     all_tweets[tweet_id] = engagement
                     
                     # Подсчитываем уникальные твиты по категориям
-                    if i < 2:  # Первые 2 запроса - символ
+                    if i == 0:  # Первый запрос - символ
                         symbol_tweets_count += 1
-                    else:  # Последние 2 запроса - контракт
+                    else:  # Второй запрос - контракт
                         contract_tweets_count += 1
                         # Добавляем авторов контрактных твитов
                         contract_authors.extend(authors)
@@ -336,16 +373,17 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
         
         # Рассчитываем рейтинг токена
         if total_tweets == 0:
-                    return {
-            'tweets': 0,
-            'symbol_tweets': 0,
-            'contract_tweets': 0,
-            'engagement': 0,
-            'score': 0,
-            'rating': '🔴 Мало внимания',
-            'contract_found': False,
-            'contract_authors': []
-        }
+            return {
+                'tweets': 0,
+                'symbol_tweets': 0,
+                'contract_tweets': 0,
+                'engagement': 0,
+                'score': 0,
+                'rating': '🔴 Мало внимания',
+                'contract_found': False,
+                'contract_authors': [],
+                'error_details': error_details  # Добавляем детали ошибок
+            }
         
         # Средняя активность на твит
         avg_engagement = total_engagement / total_tweets if total_tweets > 0 else 0
@@ -371,7 +409,8 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
             'score': round(score, 1),
             'rating': rating,
             'contract_found': contract_tweets_count > 0,
-            'contract_authors': contract_authors
+            'contract_authors': contract_authors,
+            'error_details': error_details  # Добавляем детали ошибок
         }
         
     except Exception as e:
@@ -384,7 +423,8 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
             'score': 0,
             'rating': '❓ Ошибка анализа',
             'contract_found': False,
-            'contract_authors': []
+            'contract_authors': [],
+            'error_details': [{"query": symbol, "error_category": "SYSTEM_ERROR", "error_message": str(e), "error_type": type(e).__name__}]
         }
 
 async def format_new_token(data):
@@ -665,7 +705,7 @@ async def check_connection_health(websocket):
     try:
         # Отправляем простой ping
         pong_waiter = await websocket.ping()
-        await asyncio.wait_for(pong_waiter, timeout=10)
+        await asyncio.wait_for(pong_waiter, timeout=5)
         return True
     except Exception as e:
         logger.warning(f"⚠️ Проблема с соединением: {e}")
@@ -850,11 +890,20 @@ async def extract_tweet_authors(soup, query, contract_found):
                     
                     # Проверяем что получили достаточно данных
                     total_analyzed_tweets = page_analysis['total_tweets_on_page']
+                    
+                    # Обрабатываем разные случаи недостатка данных
                     if total_analyzed_tweets < 3:
-                        logger.warning(f"⚠️ @{username}: недостаточно твитов для анализа ({total_analyzed_tweets}) - помечаем как подозрительного")
-                        page_analysis['is_spam_likely'] = True
-                        page_analysis['spam_analysis'] = f"Недостаточно данных: только {total_analyzed_tweets} твитов"
-                        page_analysis['recommendation'] = "⚠️ ПОДОЗРИТЕЛЬНЫЙ - мало твитов"
+                        if page_analysis['diversity_category'] == 'Сетевая ошибка':
+                            # Сетевая ошибка - НЕ помечаем как подозрительного
+                            logger.warning(f"🌐 @{username}: сетевая ошибка при анализе - пропускаем без блокировки")
+                            page_analysis['is_spam_likely'] = False
+                            page_analysis['recommendation'] = "🌐 Сетевая ошибка - повторить позже"
+                        else:
+                            # ИСПРАВЛЕННАЯ ЛОГИКА: мало твитов = потенциальный сигнал (новый аккаунт)
+                            logger.info(f"🆕 @{username}: новый аккаунт с {total_analyzed_tweets} твитами - потенциальный сигнал!")
+                            page_analysis['is_spam_likely'] = False  # НЕ спамер!
+                            page_analysis['spam_analysis'] = f"Новый аккаунт: {total_analyzed_tweets} твитов (потенциальный сигнал)"
+                            page_analysis['recommendation'] = "🆕 НОВЫЙ АККАУНТ - хороший сигнал"
                     
                     author.update({
                         'contract_diversity': page_analysis['contract_diversity_percent'],
@@ -994,7 +1043,41 @@ async def extract_tweet_authors(soup, query, contract_found):
                     except Exception as e:
                         logger.error(f"❌ Ошибка сохранения твита @{username}: {e}")
         
-        return unique_authors
+        # НОВАЯ ФИЛЬТРАЦИЯ: исключаем спамеров и аккаунты с подозрительными метриками
+        filtered_authors = []
+        excluded_count = 0
+        
+        for author in unique_authors:
+            username = author.get('username', 'Unknown')
+            
+            # Проверяем подозрительные метрики лайков/подписчиков
+            if is_account_suspicious_by_metrics(author):
+                excluded_count += 1
+                logger.info(f"🚫 Автор @{username} исключен из результатов - подозрительные метрики")
+                continue
+            
+            # Проверяем является ли автор спамером
+            if author.get('is_spam_likely', False):
+                excluded_count += 1
+                recommendation = author.get('diversity_recommendation', 'Спамер')
+                logger.info(f"🚫 Автор @{username} исключен из результатов - {recommendation}")
+                continue
+            
+            # Дополнительная проверка по разнообразию контрактов
+            diversity_percent = author.get('contract_diversity', 0)
+            if diversity_percent >= 50:  # 50%+ разных контрактов = спам
+                excluded_count += 1
+                logger.info(f"🚫 Автор @{username} исключен из результатов - слишком много разных контрактов ({diversity_percent:.1f}%)")
+                continue
+            
+            # Автор прошел все фильтры
+            filtered_authors.append(author)
+            logger.info(f"✅ Автор @{username} прошел фильтрацию - включен в результаты")
+        
+        if excluded_count > 0:
+            logger.info(f"🎯 ФИЛЬТРАЦИЯ ЗАВЕРШЕНА: исключено {excluded_count} спамеров/подозрительных, оставлено {len(filtered_authors)} качественных авторов")
+        
+        return filtered_authors
         
     except Exception as e:
         logger.error(f"❌ Ошибка парсинга авторов: {e}")
@@ -1004,10 +1087,25 @@ async def twitter_analysis_worker():
     """Фоновый обработчик для анализа Twitter (работает параллельно с основным потоком)"""
     logger.info("🔄 Запущен фоновый обработчик анализа Twitter")
     
+    # Счетчики для оптимизации
+    consecutive_errors = 0
+    batch_mode = False
+    
     while True:
         try:
             # Получаем токен из очереди
             token_data = await twitter_analysis_queue.get()
+            
+            # Проверяем размер очереди для пакетной обработки
+            queue_size = twitter_analysis_queue.qsize()
+            if queue_size > 50:  # Увеличено с 20 до 50 токенов
+                if not batch_mode:
+                    batch_mode = True
+                    logger.warning(f"⚡ ПАКЕТНЫЙ РЕЖИМ: очередь {queue_size} токенов - ускоряем обработку")
+            elif queue_size < 25:
+                if batch_mode:
+                    batch_mode = False
+                    logger.info(f"✅ Обычный режим: очередь {queue_size} токенов")
             
             if token_data is None:  # Сигнал для завершения
                 break
@@ -1017,8 +1115,89 @@ async def twitter_analysis_worker():
             
             logger.info(f"🔍 Начинаем фоновый анализ токена {symbol} в Twitter...")
             
-            # Выполняем анализ Twitter
-            twitter_analysis = await analyze_token_sentiment(mint, symbol)
+            # Выполняем анализ Twitter с быстрым фолбэком при ошибках
+            try:
+                twitter_analysis = await analyze_token_sentiment(mint, symbol)
+                
+                # Проверяем если анализ провалился из-за Nitter проблем
+                if twitter_analysis['tweets'] == 0 and twitter_analysis['engagement'] == 0:
+                    # Анализируем причины фолбэка на основе error_details из результата анализа
+                    fallback_reason = "НЕИЗВЕСТНАЯ ПРИЧИНА"
+                    error_details = twitter_analysis.get('error_details', [])
+                    
+                    if error_details:
+                        # Определяем основную причину
+                        error_categories = [err['error_category'] for err in error_details]
+                        if 'TIMEOUT' in error_categories:
+                            fallback_reason = "ТАЙМАУТ (медленный ответ сервера)"
+                        elif 'RATE_LIMIT' in error_categories:
+                            fallback_reason = "429 ОШИБКА (слишком много запросов)"
+                        elif 'BLOCKED' in error_categories:
+                            fallback_reason = "БЛОКИРОВКА ('Making sure you're not a bot!')"
+                        elif 'CONNECTION' in error_categories:
+                            fallback_reason = "ОШИБКА СОЕДИНЕНИЯ (сервер недоступен)"
+                        elif 'SYSTEM_ERROR' in error_categories:
+                            fallback_reason = "СИСТЕМНАЯ ОШИБКА (внутренняя проблема)"
+                        elif 'UNEXPECTED' in error_categories:
+                            fallback_reason = "НЕОЖИДАННАЯ ОШИБКА (исключение Python)"
+                        else:
+                            fallback_reason = f"ОШИБКИ: {', '.join(set(error_categories))}"
+                        
+                        # Детальное логирование
+                        logger.warning(f"⚡ БЫСТРЫЙ ФОЛБЭК для {symbol}")
+                        logger.warning(f"📋 ПРИЧИНА: {fallback_reason}")
+                        for err in error_details:
+                            logger.warning(f"   🔸 {err['query']}: {err['error_category']} - {err['error_message']}")
+                    else:
+                        # Если нет error_details и нет данных - возможно Nitter просто не нашел твиты
+                        if twitter_analysis['rating'] == '🔴 Мало внимания':
+                            logger.info(f"✅ Токен {symbol} проанализирован - твиты не найдены (норма)")
+                        else:
+                            logger.warning(f"⚡ БЫСТРЫЙ ФОЛБЭК для {symbol} - ПРИЧИНА: {fallback_reason}")
+                    
+                    # Обновляем analysis без error_details для сохранения в БД
+                    twitter_analysis = {
+                        'tweets': 0,
+                        'symbol_tweets': 0, 
+                        'contract_tweets': 0,
+                        'engagement': 0,
+                        'score': 0,
+                        'rating': '🔴 Мало внимания',
+                        'contract_found': False,
+                        'contract_authors': []
+                    }
+            except Exception as e:
+                # ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ИСКЛЮЧЕНИЙ
+                error_type = type(e).__name__
+                error_msg = str(e)
+                
+                logger.error(f"❌ ИСКЛЮЧЕНИЕ при анализе {symbol}: {error_type}")
+                logger.error(f"📋 ДЕТАЛИ: {error_msg}")
+                
+                # Определяем причину исключения
+                if "TimeoutError" in error_type:
+                    fallback_reason = "ГЛОБАЛЬНЫЙ ТАЙМАУТ (превышено время ожидания)"
+                elif "ConnectionError" in error_type:
+                    fallback_reason = "ОШИБКА ПОДКЛЮЧЕНИЯ (сеть недоступна)"
+                elif "HTTPError" in error_type:
+                    fallback_reason = "HTTP ОШИБКА (проблема с сервером)"
+                else:
+                    fallback_reason = f"СИСТЕМНАЯ ОШИБКА ({error_type})"
+                
+                logger.warning(f"⚡ БЫСТРЫЙ ФОЛБЭК для {symbol}")
+                logger.warning(f"📋 ПРИЧИНА: {fallback_reason}")
+                
+                # Быстрый фолбэк при ошибке
+                twitter_analysis = {
+                    'tweets': 0,
+                    'symbol_tweets': 0,
+                    'contract_tweets': 0, 
+                    'engagement': 0,
+                    'score': 0,
+                    'rating': '❓ Ошибка анализа',
+                    'contract_found': False,
+                    'contract_authors': []
+                }
             
             # Сохраняем результат
             twitter_analysis_results[mint] = twitter_analysis
@@ -1043,6 +1222,7 @@ async def twitter_analysis_worker():
                     
                     session.commit()
                     logger.info(f"✅ Обновлены Twitter данные для токена {symbol} в БД")
+                    consecutive_errors = 0  # Сбрасываем счетчик ошибок при успехе
                 else:
                     logger.warning(f"⚠️ Токен {symbol} ({mint}) не найден в БД для обновления")
                 
@@ -1067,17 +1247,211 @@ async def twitter_analysis_worker():
             # Помечаем задачу как выполненную
             twitter_analysis_queue.task_done()
             
-            # УБИРАЕМ ПАУЗЫ - максимальная скорость
-            # await asyncio.sleep(2)
+            # Адаптивные паузы в зависимости от загрузки
+            if batch_mode:
+                # В пакетном режиме - без пауз
+                pass  
+            else:
+                # В обычном режиме - микропауза для стабильности
+                await asyncio.sleep(0.1)
             
         except Exception as e:
             logger.error(f"❌ Ошибка в фоновом анализе Twitter: {e}")
-            await asyncio.sleep(1)  # Минимальная пауза только при ошибке
+            consecutive_errors += 1
+            
+            # Адаптивная пауза при ошибках
+            if consecutive_errors > 5:
+                logger.warning(f"⚠️ Много ошибок подряд ({consecutive_errors}) - возможно Nitter недоступен")
+                await asyncio.sleep(5)  # Длинная пауза при массовых ошибках
+            else:
+                await asyncio.sleep(0.5)  # Короткая пауза при единичных ошибках
+
+
+def reset_analyzing_tokens_timeout():
+    """Находит старые токены в статусе анализа и добавляет их обратно в очередь (НЕ сбрасывает рейтинг)"""
+    try:
+        db_manager = get_db_manager()
+        session = db_manager.Session()
+        
+        # Находим токены в статусе анализа старше 2 часов (увеличено с 1 часа)
+        two_hours_ago = datetime.utcnow() - timedelta(hours=2)
+        
+        stuck_tokens = session.query(Token).filter(
+            Token.twitter_rating == '⏳ Анализируется...',
+            Token.created_at < two_hours_ago
+        ).all()
+        
+        if stuck_tokens:
+            logger.warning(f"🔄 Найдено {len(stuck_tokens)} токенов в анализе старше 2 часов")
+            
+            for token in stuck_tokens:
+                logger.info(f"🔄 Повторная постановка в очередь: {token.symbol} (возраст: {datetime.utcnow() - token.created_at})")
+                
+                # НЕ сбрасываем рейтинг! Добавляем в очередь для анализа
+                retry_data = {
+                    'mint': token.mint,
+                    'symbol': token.symbol,
+                    'name': token.name
+                }
+                
+                # Добавляем в глобальную очередь для анализа
+                import asyncio
+                try:
+                    # Если есть активный event loop, используем его
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(twitter_analysis_queue.put(retry_data))
+                    logger.info(f"📋 {token.symbol} добавлен в очередь повторного анализа")
+                except RuntimeError:
+                    # Если нет активного event loop, просто логируем
+                    logger.warning(f"⚠️ {token.symbol} требует повторного анализа (будет обработан при следующем запуске)")
+                    
+            logger.info(f"✅ Поставлено в очередь {len(stuck_tokens)} токенов для повторного анализа")
+        else:
+            logger.debug("✅ Нет старых токенов в статусе анализа")
+        
+        session.close()
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка повторной постановки токенов в очередь: {e}")
+
+
+async def emergency_clear_overloaded_queue():
+    """ОТКЛЮЧЕНА: Мониторинг перегрузки без удаления токенов"""
+    try:
+        db_manager = get_db_manager()
+        session = db_manager.Session()
+        
+        # Считаем токены в анализе
+        analyzing_count = session.query(Token).filter(
+            Token.twitter_rating == '⏳ Анализируется...'
+        ).count()
+        
+        # Размер очереди в памяти
+        queue_size = twitter_analysis_queue.qsize()
+        
+        logger.info(f"📊 МОНИТОРИНГ ОЧЕРЕДИ:")
+        logger.info(f"   📋 В БД (анализируется): {analyzing_count} токенов")
+        logger.info(f"   ⏳ В очереди (ожидание): {queue_size} токенов")
+        logger.info(f"   🎯 ПОЛИТИКА: анализируем ВСЕ токены, никого не удаляем")
+        
+        # ТОЛЬКО логирование, НЕ удаляем токены!
+        if analyzing_count > 1000:
+            logger.warning(f"⚠️ ВЫСОКАЯ НАГРУЗКА: {analyzing_count} токенов в анализе")
+            logger.warning(f"📝 РЕКОМЕНДАЦИЯ: дождаться завершения анализа или добавить воркеров")
+        
+        if queue_size > 100:
+            logger.warning(f"⚠️ БОЛЬШАЯ ОЧЕРЕДЬ: {queue_size} токенов ожидают анализа") 
+            logger.warning(f"📝 СИСТЕМА: продолжает работать, все токены будут проанализированы")
+        
+        session.close()
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка мониторинга очереди: {e}")
+
+async def check_queue_overload():
+    """Мониторинг очереди без экстренной очистки"""
+    try:
+        queue_size = twitter_analysis_queue.qsize()
+        
+        # Только мониторинг, без удаления
+        if queue_size > 200:  # Просто предупреждение
+            logger.warning(f"📊 БОЛЬШАЯ ОЧЕРЕДЬ: {queue_size} токенов - система продолжает работать")
+            await emergency_clear_overloaded_queue()  # Только для логирования статистики
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка мониторинга очереди: {e}")
+
+
+async def check_and_retry_failed_analysis():
+    """ОТКЛЮЧЕНА: Мониторинг токенов в анализе без повторного добавления в очередь"""
+    try:
+        db_manager = get_db_manager()
+        session = db_manager.Session()
+        
+        # Находим токены в статусе анализа старше 30 минут
+        thirty_min_ago = datetime.utcnow() - timedelta(minutes=30)
+        
+        retry_tokens = session.query(Token).filter(
+            Token.twitter_rating == '⏳ Анализируется...',
+            Token.created_at < thirty_min_ago
+        ).all()
+        
+        if retry_tokens:
+            logger.info(f"📊 МОНИТОРИНГ: {len(retry_tokens)} токенов в анализе более 30 минут")
+            
+            # Группируем по возрасту для статистики
+            old_count = len([t for t in retry_tokens if datetime.utcnow() - t.created_at > timedelta(hours=1)])
+            very_old_count = len([t for t in retry_tokens if datetime.utcnow() - t.created_at > timedelta(hours=2)])
+            
+            logger.info(f"   ⏰ >30мин: {len(retry_tokens)} токенов")
+            logger.info(f"   ⏰ >1час: {old_count} токенов") 
+            logger.info(f"   ⏰ >2часа: {very_old_count} токенов")
+            logger.info(f"   🎯 ПОЛИТИКА: ждем завершения анализа, не дублируем в очереди")
+        else:
+            logger.debug("✅ Нет токенов в длительном анализе")
+        
+        session.close()
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка мониторинга анализа: {e}")
+
+
+def is_account_suspicious_by_metrics(author):
+    """Проверяет аккаунт на подозрительные метрики (накрутка)"""
+    followers = author.get('followers_count', 0)
+    likes = author.get('likes_count', 0)
+    username = author.get('username', 'Unknown')
+    
+    # Если нет данных - не можем проверить
+    if followers == 0 or likes == 0:
+        return False
+    
+    # Вычисляем соотношение лайков к подписчикам
+    likes_to_followers_ratio = likes / followers
+    
+    # ПОДОЗРИТЕЛЬНО: лайков в 10+ раз меньше чем подписчиков
+    if likes_to_followers_ratio < 0.1:  # Менее 10% лайков от количества подписчиков
+        logger.warning(f"🚫 @{username}: ПОДОЗРИТЕЛЬНЫЕ МЕТРИКИ - {likes:,} лайков при {followers:,} подписчиках (соотношение: {likes_to_followers_ratio:.3f})")
+        return True
+    
+    # КРИТИЧЕСКИ ПОДОЗРИТЕЛЬНО: лайков в 50+ раз меньше чем подписчиков  
+    if likes_to_followers_ratio < 0.02:  # Менее 2% лайков от количества подписчиков
+        logger.error(f"❌ @{username}: НАКРУЧЕННЫЙ АККАУНТ - {likes:,} лайков при {followers:,} подписчиках (соотношение: {likes_to_followers_ratio:.3f})")
+        return True
+    
+    return False
+
+def is_author_spam_by_analysis(author):
+    """Проверяет является ли автор спамером по анализу контрактов"""
+    username = author.get('username', 'Unknown')
+    
+    # Получаем анализ разнообразия контрактов
+    try:
+        analysis = analyze_author_contract_diversity(username)
+        diversity_percent = analysis.get('contract_diversity_percent', 0)
+        
+        # Если автор определен как спамер
+        if analysis.get('is_spam_likely', False):
+            recommendation = analysis.get('recommendation', '')
+            
+            logger.warning(f"🚫 @{username}: СПАМЕР ПО АНАЛИЗУ - {recommendation} (разнообразие: {diversity_percent:.1f}%)")
+            return True
+            
+        # Дополнительная проверка: если слишком много разных контрактов
+        if diversity_percent >= 50:  # 50%+ разных контрактов = точно спам
+            logger.warning(f"🚫 @{username}: ВЫСОКОЕ РАЗНООБРАЗИЕ КОНТРАКТОВ - {diversity_percent:.1f}% разных контрактов")
+            return True
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка анализа спама для @{username}: {e}")
+        return False
+    
+    return False
 
 def should_notify_based_on_authors_quality(authors):
     """
     Проверяет качество авторов для отложенных уведомлений
-    ИСПРАВЛЕННАЯ ЛОГИКА: фокус на одном контракте = хорошо, много разных = плохо
+    УЛУЧШЕННАЯ ЛОГИКА: фильтруем накрученные аккаунты и спамеров
     """
     if not authors:
         return False  # Нет авторов - не отправляем
@@ -1086,12 +1460,25 @@ def should_notify_based_on_authors_quality(authors):
     good_authors = 0       # Хорошие авторы (≥40%)
     new_accounts = 0       # Новые аккаунты (≤2 твитов)
     spam_authors = 0       # Спамеры разных контрактов
+    suspicious_authors = 0 # Аккаунты с подозрительными метриками
     
     for author in authors:
         diversity_percent = author.get('contract_diversity', 0)
         spam_percent = author.get('max_contract_spam', 0)
         total_tweets = author.get('total_contract_tweets', 0)
         username = author.get('username', 'Unknown')
+        
+        # НОВЫЙ ФИЛЬТР 1: Проверяем подозрительные метрики (накрутка)
+        if is_account_suspicious_by_metrics(author):
+            suspicious_authors += 1
+            logger.info(f"🚫 @{username}: ИСКЛЮЧЕН - подозрительные метрики лайков/подписчиков")
+            continue
+        
+        # НОВЫЙ ФИЛЬТР 2: Проверяем на спам по анализу контрактов
+        if is_author_spam_by_analysis(author):
+            spam_authors += 1
+            logger.info(f"🚫 @{username}: ИСКЛЮЧЕН - определен как спамер")
+            continue
         
         # ПРОВЕРКА НА ОТСУТСТВИЕ ДАННЫХ АНАЛИЗА
         if total_tweets == 0 and spam_percent == 0 and diversity_percent == 0:
@@ -1124,18 +1511,19 @@ def should_notify_based_on_authors_quality(authors):
             spam_authors += 1
             logger.info(f"🚫 @{username}: НИЗКОЕ КАЧЕСТВО ({spam_percent:.1f}% концентрация, {diversity_percent:.1f}% разнообразие) - отклоняем")
     
-    # СМЯГЧЕННЫЕ КРИТЕРИИ: отправляем если есть хорошие сигналы
+    # УЖЕСТОЧЕННЫЕ КРИТЕРИИ: отправляем только при наличии качественных авторов
     should_notify = excellent_authors > 0 or good_authors > 0 or new_accounts > 0
     
-    logger.info(f"📊 ИСПРАВЛЕННЫЙ АНАЛИЗ АВТОРОВ (отложенные уведомления):")
+    logger.info(f"📊 УЛУЧШЕННЫЙ АНАЛИЗ АВТОРОВ (отложенные уведомления):")
     logger.info(f"   🔥 Вспышки (≥80%): {excellent_authors}")
     logger.info(f"   ⭐ Хорошие (≥40%): {good_authors}")
     logger.info(f"   🆕 Новые аккаунты (≤2 твитов): {new_accounts}")
     logger.info(f"   🚫 Спамеры разных токенов: {spam_authors}")
+    logger.info(f"   ⚠️ Подозрительные метрики: {suspicious_authors}")
     logger.info(f"   🎯 РЕШЕНИЕ: {'ОТПРАВИТЬ' if should_notify else 'ЗАБЛОКИРОВАТЬ'}")
     
     if not should_notify:
-        logger.info(f"🚫 Отложенное уведомление заблокировано - только спамеры разных токенов")
+        logger.info(f"🚫 Отложенное уведомление заблокировано - нет качественных авторов")
     
     return should_notify
 
@@ -1361,6 +1749,9 @@ async def analyze_author_page_contracts(author_username, tweets_on_page=None, lo
     if load_from_profile and (not tweets_on_page or len(tweets_on_page) < 5):
         logger.info(f"🔍 Загружаем твиты с профиля @{author_username} для анализа")
         
+        profile_load_failed = False
+        network_error = False
+        
         try:
             from twitter_profile_parser import TwitterProfileParser
             
@@ -1372,22 +1763,49 @@ async def analyze_author_page_contracts(author_username, tweets_on_page=None, lo
                     logger.info(f"📱 Загружено {len(profile_tweets)} твитов с профиля @{author_username}")
                 else:
                     logger.warning(f"⚠️ Не удалось загрузить твиты с профиля @{author_username}")
+                    profile_load_failed = True
                     
         except Exception as e:
-            logger.error(f"❌ Ошибка загрузки твитов с профиля @{author_username}: {e}")
+            # Проверяем на сетевые ошибки
+            if ("Cannot connect to host" in str(e) or 
+                "Network is unreachable" in str(e) or
+                "Connection timeout" in str(e) or
+                "TimeoutError" in str(e) or
+                "ClientConnectorError" in str(e)):
+                logger.warning(f"🌐 Сетевая ошибка при загрузке твитов @{author_username}: {e}")
+                network_error = True
+            else:
+                logger.error(f"❌ Ошибка загрузки твитов с профиля @{author_username}: {e}")
+            profile_load_failed = True
     
+    # Обрабатываем случай когда не удалось загрузить твиты
     if not tweets_on_page:
-        return {
-            'total_tweets_on_page': 0,
-            'unique_contracts_on_page': 0,
-            'contract_diversity_percent': 0,
-            'max_contract_spam_percent': 0,
-            'is_spam_likely': False,
-            'recommendation': 'Нет твитов на странице',
-            'contracts_list': [],
-            'diversity_category': 'Нет данных',
-            'spam_analysis': 'Нет твитов на странице'
-        }
+        if network_error:
+            # Сетевая ошибка - не помечаем как подозрительного, просто пропускаем
+            return {
+                'total_tweets_on_page': 0,
+                'unique_contracts_on_page': 0,
+                'contract_diversity_percent': 0,
+                'max_contract_spam_percent': 0,
+                'is_spam_likely': False,
+                'recommendation': '🌐 Сетевая ошибка - повторить позже',
+                'contracts_list': [],
+                'diversity_category': 'Сетевая ошибка',
+                'spam_analysis': 'Не удалось загрузить из-за сетевой ошибки'
+            }
+        else:
+            # Нет твитов или другая ошибка
+            return {
+                'total_tweets_on_page': 0,
+                'unique_contracts_on_page': 0,
+                'contract_diversity_percent': 0,
+                'max_contract_spam_percent': 0,
+                'is_spam_likely': False,
+                'recommendation': 'Нет твитов на странице',
+                'contracts_list': [],
+                'diversity_category': 'Нет данных',
+                'spam_analysis': 'Нет твитов на странице'
+            }
     
     # Извлекаем контракты из твитов на странице
     all_contracts = set()
@@ -1485,7 +1903,29 @@ async def main():
     
     # Запускаем фоновый обработчик анализа Twitter
     twitter_worker_task = asyncio.create_task(twitter_analysis_worker())
+    
+    # Сбрасываем старые "Анализируется..." при запуске
+    reset_analyzing_tokens_timeout()
+    
+    # Запускаем задачу повторного анализа каждые 10 минут
+    async def retry_analysis_scheduler():
+        while True:
+            await asyncio.sleep(600)  # 10 минут
+            
+            # Проверяем перегрузку очереди
+            await check_queue_overload()
+            
+            # Стандартная очистка
+            await check_and_retry_failed_analysis()
+            reset_analyzing_tokens_timeout()
+    
+    retry_task = asyncio.create_task(retry_analysis_scheduler())
+    logger.info("🔄 Запущен планировщик повторного анализа")
     logger.info("🔄 Запущен фоновый обработчик анализа Twitter")
+    
+    # Счетчики для оптимизации
+    consecutive_errors = 0
+    batch_mode = False
     
     while True:
         try:
