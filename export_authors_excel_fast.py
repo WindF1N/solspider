@@ -22,6 +22,7 @@ except ImportError:
 
 from database import get_db_manager, TwitterAuthor, TweetMention, Token
 from sqlalchemy import desc, func, text
+from pump_bot import analyze_author_contract_diversity
 
 def clean_excel_text(text):
     """Очищает текст от символов, недопустимых в Excel"""
@@ -154,6 +155,29 @@ def export_authors_to_excel_fast():
                 'Ratio подписчики/подписки': f"{((row.followers_count or 0) / max(row.following_count or 1, 1)):.2f}" if (row.following_count or 0) > 0 else 'N/A',
                 'Engagement rate': f"{((row.likes_count or 0) / max(row.tweets_count or 1, 1)):.2f}" if (row.tweets_count or 0) > 0 else 'N/A'
             }
+            
+            # Добавляем анализ качества для pump.fun
+            if row.total_mentions and row.total_mentions > 0:
+                diversity_analysis = analyze_author_contract_diversity(row.username, db_manager)
+                author_data.update({
+                    'Разнообразие контрактов (%)': f"{diversity_analysis['contract_diversity_percent']:.1f}%",
+                    'Концентрация на топ-контракте (%)': f"{diversity_analysis['max_contract_spam_percent']:.1f}%",
+                    'Уникальных контрактов': diversity_analysis['unique_contracts'],
+                    'Категория качества': diversity_analysis['diversity_category'],
+                    'Анализ качества': diversity_analysis['spam_analysis'],
+                    'Рекомендация': diversity_analysis['recommendation'],
+                    'Фильтровать': 'ДА' if diversity_analysis['is_spam_likely'] else 'НЕТ'
+                })
+            else:
+                author_data.update({
+                    'Разнообразие контрактов (%)': 'N/A',
+                    'Концентрация на топ-контракте (%)': 'N/A',
+                    'Уникальных контрактов': 0,
+                    'Категория качества': 'Нет данных',
+                    'Анализ качества': 'Нет данных',
+                    'Рекомендация': 'Нет твитов',
+                    'Фильтровать': 'НЕТ'
+                })
             
             authors_data.append(author_data)
         

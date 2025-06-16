@@ -81,7 +81,11 @@ class TwitterProfileParser:
             # Ищем блок профиля
             profile_card = soup.find('div', class_='profile-card')
             if not profile_card:
-                logger.warning("⚠️ Блок profile-card не найден")
+                # Проверяем на блокировку Nitter
+                if "Making sure you're not a bot!" in html_content:
+                    logger.warning("⚠️ Nitter заблокирован - требуется обновление cookies")
+                else:
+                    logger.warning("⚠️ Блок profile-card не найден")
                 return None
             
             # Извлекаем имя пользователя и отображаемое имя
@@ -242,6 +246,116 @@ class TwitterProfileParser:
             logger.error(f"❌ Ошибка получения профиля @{username}: {e}")
             return None
     
+    def extract_tweets_from_profile(self, html_content):
+        """Извлекает твиты с профиля пользователя"""
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            tweets = []
+            
+            # Ищем все твиты в timeline
+            timeline_items = soup.find_all('div', class_='timeline-item')
+            
+            for item in timeline_items:
+                tweet_content = item.find('div', class_='tweet-content')
+                if tweet_content:
+                    tweet_text = tweet_content.get_text(strip=True)
+                    if tweet_text:
+                        tweets.append(tweet_text)
+            
+            logger.info(f"📱 Извлечено {len(tweets)} твитов с профиля")
+            return tweets
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка извлечения твитов: {e}")
+            return []
+    
+    async def get_profile_with_tweets(self, username):
+        """Получает данные профиля пользователя вместе с твитами"""
+        try:
+            # Убираем @ если есть
+            username = username.replace('@', '')
+            
+            # Получаем актуальные cookies
+            if not self.cookie_rotator:
+                logger.error(f"❌ Cookie rotator не инициализирован для @{username}")
+                return None, []
+                
+            cookies_string = self.cookie_rotator.get_next_cookie()
+            
+            # Проверяем что cookies_string не None
+            if not cookies_string:
+                logger.error(f"❌ Не удалось получить cookies для @{username}")
+                return None, []
+            
+            # Парсим строку cookies в словарь для aiohttp
+            cookies = {}
+            try:
+                for cookie_part in cookies_string.split(';'):
+                    if '=' in cookie_part:
+                        key, value = cookie_part.strip().split('=', 1)
+                        cookies[key] = value
+            except Exception as e:
+                logger.error(f"❌ Ошибка парсинга cookies для @{username}: {e}")
+                return None, []
+            
+            url = f"https://nitter.tiekoetter.com/{username}"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1'
+            }
+            
+            logger.info(f"🔍 Загружаем профиль с твитами @{username}")
+            
+            # Проверяем что session инициализирована
+            if not self.session:
+                logger.error(f"❌ Session не инициализирована для @{username}")
+                return None, []
+            
+            async with self.session.get(url, headers=headers, cookies=cookies) as response:
+                if response.status == 200:
+                    html_content = await response.text()
+                    
+                    # Извлекаем данные профиля
+                    profile_data = self.extract_profile_data(html_content)
+                    
+                    # Извлекаем твиты
+                    tweets = self.extract_tweets_from_profile(html_content)
+                    
+                    if profile_data and profile_data.get('username'):
+                        return profile_data, tweets
+                    else:
+                        logger.warning(f"⚠️ Не удалось извлечь данные профиля @{username}")
+                        return None, tweets
+                        
+                elif response.status == 429:
+                    logger.warning(f"⚠️ Rate limit при загрузке профиля @{username}")
+                    # Помечаем текущий cookie как заблокированный
+                    try:
+                        if hasattr(self.cookie_rotator, 'mark_cookie_failed'):
+                            self.cookie_rotator.mark_cookie_failed(cookies_string)
+                    except Exception as e:
+                        logger.warning(f"⚠️ Ошибка при отметке cookie как неудачный: {e}")
+                    await asyncio.sleep(2)
+                    return None, []
+                    
+                elif response.status == 404:
+                    logger.warning(f"⚠️ Профиль @{username} не найден")
+                    return None, []
+                    
+                else:
+                    logger.warning(f"⚠️ Ошибка загрузки профиля @{username}: {response.status}")
+                    return None, []
+                    
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения профиля с твитами @{username}: {e}")
+            return None, []
+
     async def get_multiple_profiles(self, usernames, delay=1.0):
         """Получает профили нескольких пользователей"""
         profiles = {}

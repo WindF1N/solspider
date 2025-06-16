@@ -1,0 +1,5 @@
+# Конфигурация режима работы без профилей
+PROFILE_LOADING_DISABLED=true
+FALLBACK_MODE=true
+SKIP_PROFILE_ERRORS=true
+CONTINUE_WITHOUT_PROFILES=true

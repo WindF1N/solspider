@@ -4,7 +4,7 @@ import json
 import requests
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 import re
 import time
@@ -13,6 +13,14 @@ import ssl
 from logging.handlers import RotatingFileHandler
 import colorlog
 import threading
+import aiohttp
+from urllib.parse import quote
+from database import get_db_manager, TwitterAuthor, Token, Trade, Migration, TweetMention
+from logger_config import setup_logging, log_token_analysis, log_trade_activity, log_database_operation, log_daily_stats
+from connection_monitor import connection_monitor
+from cookie_rotation import cookie_rotator, background_cookie_rotator
+from twitter_profile_parser import TwitterProfileParser
+
 
 # Загрузка переменных окружения из .env файла
 try:
@@ -21,13 +29,6 @@ try:
 except ImportError:
     # dotenv не установлен, используем системные переменные окружения
     pass
-
-# Импорт модулей проекта
-from logger_config import setup_logging, log_token_analysis, log_trade_activity, log_database_operation, log_daily_stats
-from database import get_db_manager, TwitterAuthor, Token, Trade, Migration
-from connection_monitor import connection_monitor
-from cookie_rotation import cookie_rotator, background_cookie_rotator
-from twitter_profile_parser import TwitterProfileParser
 
 # Настройка логирования
 setup_logging()
@@ -65,8 +66,10 @@ NITTER_COOKIE = "techaro.lol-anubis-auth-for-nitter.tiekoetter.com=eyJhbGciOiJFZ
 # Черный список авторов Twitter (исключаем из анализа)
 TWITTER_AUTHOR_BLACKLIST = {
     'launchonpump',    # @LaunchOnPump - официальный аккаунт платформы
-    'fake_aio'
-    'cheeznytrashiny',
+    'fake_aio',        # Спам-аккаунт
+    'cheeznytrashiny', # Спам-аккаунт
+    'drvfh54737952',   # @drvfh54737952 - спамер контрактов (много разных токенов)
+    'cvxej15391531',   # @cvxej15391531 - спамер контрактов (каждый твит = контракт)
     # Добавьте других нежелательных авторов здесь
 }
 
@@ -120,7 +123,7 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=True, cy
     if use_quotes:
         url = f"https://nitter.tiekoetter.com/search?f=tweets&q=%22{query}%22&since=&until=&near="
     else:
-        url = f"https://nitter.tiekoetter.com/search?f=tweets&q={query}&since=&until=&near="
+        url = f"https://nitter.tiekoetter.com/search?f=tweets&q={quote(query)}&since=&until=&near="
     
     # Используем переданный cookie для цикла или получаем новый
     if cycle_cookie:
@@ -233,7 +236,7 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=True, cy
                 elif response.status == 429:
                     # Ошибка 429 - Too Many Requests, увеличиваем паузу
                     if retry_count < 2:  # Максимум 2 попытки с увеличивающимися паузами
-                        pause_time = (retry_count + 1) * 3  # 3, 6 секунд
+                        pause_time = 1  # МИНИМАЛЬНАЯ пауза при 429
                         logger.warning(f"⚠️ Nitter 429 (Too Many Requests) для '{query}', ждём {pause_time}с (попытка {retry_count + 1}/2)")
                         await asyncio.sleep(pause_time)
                         return await search_single_query(query, headers, retry_count + 1, use_quotes, cycle_cookie)
@@ -254,7 +257,7 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=True, cy
         # Повторная попытка при любых ошибках (не только 429)
         if retry_count < 3:
             logger.warning(f"⚠️ Повторная попытка для '{query}' после ошибки {type(e).__name__} (попытка {retry_count + 1}/3)")
-            await asyncio.sleep(1)  # Пауза перед повтором
+            # await asyncio.sleep(1)  # УБИРАЕМ ПАУЗЫ
             return await search_single_query(query, headers, retry_count + 1, use_quotes, cycle_cookie)
         else:
             logger.error(f"❌ Превышено количество попыток для '{query}' - возвращаем пустой результат")
@@ -500,7 +503,7 @@ async def format_new_token(data):
     
     # НОВАЯ ЛОГИКА: быстрое сохранение, анализ Twitter в фоне
     # Немедленного уведомления нет - Twitter анализ идет в фоне
-    immediate_notify = False
+    immediate_notify = False  # ОТКЛЮЧАЕМ немедленные уведомления - только с анализом Twitter
     
     # Все токены сохраняются в БД и добавляются в фоновый мониторинг
     logger.info(f"⚡ Токен {symbol} - быстро сохранен, Twitter анализ запущен в фоне")
@@ -597,11 +600,11 @@ async def handle_message(message):
                 logger.error(f"❌ Ошибка сохранения торговой операции в БД: {e}")
                 log_database_operation("SAVE_TRADE", "trades", "ERROR", str(e))
             
-            # Отправляем уведомления о крупных сделках (больше 5 SOL)
+            # ТОРГОВЫЕ УВЕДОМЛЕНИЯ ОТКЛЮЧЕНЫ - только логируем
             if sol_amount >= 5.0:
-                logger.info(f"💰 Крупная {'покупка' if is_buy else 'продажа'}: {sol_amount:.2f} SOL")
-                msg, keyboard = format_trade_alert(data)
-                notification_sent = send_telegram(msg, keyboard)
+                logger.info(f"💰 Крупная {'покупка' if is_buy else 'продажа'}: {sol_amount:.2f} SOL (уведомление отключено)")
+                # msg, keyboard = format_trade_alert(data)
+                # notification_sent = send_telegram(msg, keyboard)
             
             # Логируем торговую активность
             log_trade_activity(data, notification_sent)
@@ -814,7 +817,7 @@ async def extract_tweet_authors(soup, query, contract_found):
             else:
                 logger.info(f"✅ Все авторы найдены в БД с актуальными данными - пропускаем загрузку профилей")
             
-            # Обогащаем данные авторов профилями
+                                # Обогащаем данные авторов профилями
             for author in unique_authors:
                 username = author['username']
                 
@@ -834,6 +837,37 @@ async def extract_tweet_authors(soup, query, contract_found):
                         'is_verified': profile.get('is_verified', False),
                         'avatar_url': profile.get('avatar_url', '')
                     })
+                    
+                    # Собираем все твиты этого автора с текущей страницы
+                    author_tweets_on_page = []
+                    for author_data in authors_data:
+                        if author_data['username'] == username:
+                            author_tweets_on_page.append(author_data['tweet_text'])
+                    
+                    # ВСЕГДА загружаем полные данные с профиля для точного анализа
+                    logger.info(f"🔍 Анализируем контракты автора @{username} (загружаем с профиля)")
+                    page_analysis = await analyze_author_page_contracts(username, tweets_on_page=None, load_from_profile=True)
+                    
+                    # Проверяем что получили достаточно данных
+                    total_analyzed_tweets = page_analysis['total_tweets_on_page']
+                    if total_analyzed_tweets < 3:
+                        logger.warning(f"⚠️ @{username}: недостаточно твитов для анализа ({total_analyzed_tweets}) - помечаем как подозрительного")
+                        page_analysis['is_spam_likely'] = True
+                        page_analysis['spam_analysis'] = f"Недостаточно данных: только {total_analyzed_tweets} твитов"
+                        page_analysis['recommendation'] = "⚠️ ПОДОЗРИТЕЛЬНЫЙ - мало твитов"
+                    
+                    author.update({
+                        'contract_diversity': page_analysis['contract_diversity_percent'],
+                        'max_contract_spam': page_analysis['max_contract_spam_percent'],
+                        'diversity_recommendation': page_analysis['recommendation'],
+                        'is_spam_likely': page_analysis['is_spam_likely'],
+                        'diversity_category': page_analysis['diversity_category'],
+                        'spam_analysis': page_analysis['spam_analysis'],
+                        'total_contract_tweets': page_analysis['total_tweets_on_page'],
+                        'unique_contracts_count': page_analysis['unique_contracts_on_page']
+                    })
+                    
+                    logger.info(f"📊 @{username}: {page_analysis['total_tweets_on_page']} твитов, {page_analysis['max_contract_spam_percent']:.1f}% концентрация - {page_analysis['recommendation']}")
                     
                     # Сохраняем в базу данных новые профили
                     if username in usernames_to_parse:
@@ -920,7 +954,45 @@ async def extract_tweet_authors(soup, query, contract_found):
                         except Exception as e:
                             logger.error(f"❌ Ошибка сохранения твита @{username}: {e}")
                 else:
+                    # Если профиль не загрузился, используем базовые данные
                     logger.warning(f"⚠️ Не удалось загрузить/найти профиль @{username}")
+                    author.update({
+                        'display_name': f'@{username}',
+                        'followers_count': 0,
+                        'following_count': 0,
+                        'tweets_count': 0,
+                        'likes_count': 0,
+                        'bio': '',
+                        'website': '',
+                        'join_date': '',
+                        'is_verified': False,
+                        'avatar_url': '',
+                        'contract_diversity': 0,
+                        'max_contract_spam': 0,
+                        'diversity_recommendation': 'Профиль недоступен',
+                        'is_spam_likely': False,
+                        'diversity_category': 'Неизвестно',
+                        'spam_analysis': 'Профиль недоступен',
+                        'total_contract_tweets': 0,
+                        'unique_contracts_count': 0
+                    })
+                    
+                    # Все равно сохраняем твит с базовыми данными
+                    try:
+                        db_manager.save_tweet_mention({
+                            'mint': query if len(query) > 20 else None,
+                            'author_username': username,
+                            'tweet_text': author['tweet_text'],
+                            'search_query': query,
+                            'retweets': author['retweets'],
+                            'likes': author['likes'],
+                            'replies': author['replies'],
+                            'author_followers_at_time': 0,
+                            'author_verified_at_time': False
+                        })
+                        logger.info(f"📱 Сохранен твит от автора @{username} (без профиля)")
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка сохранения твита @{username}: {e}")
         
         return unique_authors
         
@@ -977,8 +1049,17 @@ async def twitter_analysis_worker():
                 session.close()
                 
                 # Проверяем нужно ли отправить отложенное уведомление
-                if should_send_delayed_notification(twitter_analysis, symbol):
+                if should_send_delayed_notification(twitter_analysis, symbol, mint):
                     await send_delayed_twitter_notification(token_data, twitter_analysis)
+                    
+                    # ПОМЕЧАЕМ ЧТО УВЕДОМЛЕНИЕ ОТПРАВЛЕНО - избегаем дублирования
+                    try:
+                        if db_token:
+                            db_token.notification_sent = True
+                            session.commit()
+                            logger.info(f"✅ Помечено уведомление как отправленное для {symbol}")
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка обновления флага уведомления для {symbol}: {e}")
                     
             except Exception as e:
                 logger.error(f"❌ Ошибка обновления Twitter данных для {symbol}: {e}")
@@ -986,16 +1067,103 @@ async def twitter_analysis_worker():
             # Помечаем задачу как выполненную
             twitter_analysis_queue.task_done()
             
-            # Небольшая пауза между анализами
-            await asyncio.sleep(2)
+            # УБИРАЕМ ПАУЗЫ - максимальная скорость
+            # await asyncio.sleep(2)
             
         except Exception as e:
             logger.error(f"❌ Ошибка в фоновом анализе Twitter: {e}")
-            await asyncio.sleep(5)
+            await asyncio.sleep(1)  # Минимальная пауза только при ошибке
 
-def should_send_delayed_notification(twitter_analysis, symbol):
+def should_notify_based_on_authors_quality(authors):
+    """
+    Проверяет качество авторов для отложенных уведомлений
+    ИСПРАВЛЕННАЯ ЛОГИКА: фокус на одном контракте = хорошо, много разных = плохо
+    """
+    if not authors:
+        return False  # Нет авторов - не отправляем
+    
+    excellent_authors = 0  # Вспышки активности (≥80%)
+    good_authors = 0       # Хорошие авторы (≥40%)
+    new_accounts = 0       # Новые аккаунты (≤2 твитов)
+    spam_authors = 0       # Спамеры разных контрактов
+    
+    for author in authors:
+        diversity_percent = author.get('contract_diversity', 0)
+        spam_percent = author.get('max_contract_spam', 0)
+        total_tweets = author.get('total_contract_tweets', 0)
+        username = author.get('username', 'Unknown')
+        
+        # ПРОВЕРКА НА ОТСУТСТВИЕ ДАННЫХ АНАЛИЗА
+        if total_tweets == 0 and spam_percent == 0 and diversity_percent == 0:
+            logger.warning(f"⚠️ @{username}: недостаточно данных для анализа ({total_tweets} твитов) - пропускаем")
+            continue
+        
+        # НОВАЯ ЛОГИКА: малое количество твитов = потенциально хороший сигнал
+        if total_tweets <= 2:
+            new_accounts += 1
+            logger.info(f"🆕 @{username}: новый аккаунт ({total_tweets} твитов) - потенциальный сигнал")
+            continue
+        
+        # Анализируем концентрацию на одном контракте
+        if spam_percent >= 80:
+            excellent_authors += 1
+            logger.info(f"🔥 @{username}: ВСПЫШКА! ({spam_percent:.1f}% концентрация на одном контракте)")
+        elif spam_percent >= 40:
+            good_authors += 1
+            logger.info(f"⭐ @{username}: ХОРОШИЙ ({spam_percent:.1f}% концентрация на одном контракте)")
+        elif diversity_percent >= 30:
+            # Много РАЗНЫХ контрактов = плохо
+            spam_authors += 1
+            logger.info(f"🚫 @{username}: СПАМЕР РАЗНЫХ ТОКЕНОВ ({diversity_percent:.1f}% разных контрактов)")
+        elif spam_percent >= 20:
+            # Умеренная концентрация - принимаем
+            good_authors += 1
+            logger.info(f"🟡 @{username}: умеренная концентрация ({spam_percent:.1f}%) - принимаем")
+        else:
+            # НИЗКАЯ концентрация И низкое разнообразие = подозрительно
+            spam_authors += 1
+            logger.info(f"🚫 @{username}: НИЗКОЕ КАЧЕСТВО ({spam_percent:.1f}% концентрация, {diversity_percent:.1f}% разнообразие) - отклоняем")
+    
+    # СМЯГЧЕННЫЕ КРИТЕРИИ: отправляем если есть хорошие сигналы
+    should_notify = excellent_authors > 0 or good_authors > 0 or new_accounts > 0
+    
+    logger.info(f"📊 ИСПРАВЛЕННЫЙ АНАЛИЗ АВТОРОВ (отложенные уведомления):")
+    logger.info(f"   🔥 Вспышки (≥80%): {excellent_authors}")
+    logger.info(f"   ⭐ Хорошие (≥40%): {good_authors}")
+    logger.info(f"   🆕 Новые аккаунты (≤2 твитов): {new_accounts}")
+    logger.info(f"   🚫 Спамеры разных токенов: {spam_authors}")
+    logger.info(f"   🎯 РЕШЕНИЕ: {'ОТПРАВИТЬ' if should_notify else 'ЗАБЛОКИРОВАТЬ'}")
+    
+    if not should_notify:
+        logger.info(f"🚫 Отложенное уведомление заблокировано - только спамеры разных токенов")
+    
+    return should_notify
+
+def should_send_delayed_notification(twitter_analysis, symbol, mint):
     """Проверяет нужно ли отправить отложенное уведомление после анализа Twitter"""
     if not twitter_analysis['contract_found']:
+        return False
+    
+    # ПРОВЕРЯЕМ НА ДУБЛИРОВАНИЕ - уже отправлялось ли уведомление
+    try:
+        db_manager = get_db_manager()
+        session = db_manager.Session()
+        
+        # Ищем токен в БД
+        db_token = session.query(Token).filter_by(mint=mint).first()
+        if db_token and db_token.notification_sent:
+            logger.info(f"🚫 Отложенное уведомление для {symbol} уже отправлялось ранее - пропускаем дублирование")
+            session.close()
+            return False
+        
+        session.close()
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки дублирования уведомления для {symbol}: {e}")
+    
+    # Проверяем качество авторов
+    authors = twitter_analysis.get('contract_authors', [])
+    if not should_notify_based_on_authors_quality(authors):
+        logger.info(f"🚫 Отложенное уведомление для {symbol} заблокировано - все авторы являются спамерами")
         return False
         
     # Критерии для отложенного уведомления
@@ -1046,6 +1214,264 @@ async def send_delayed_twitter_notification(token_data, twitter_analysis):
         
     except Exception as e:
         logger.error(f"❌ Ошибка отправки отложенного уведомления: {e}")
+
+def analyze_author_contract_diversity(author_username, db_manager=None):
+    """
+    Анализирует качество автора для pump.fun мониторинга
+    ХОРОШИЕ = высокая концентрация на одном контракте (вспышка активности)
+    ПЛОХИЕ = много разных контрактов (нет фокуса, низкий интерес)
+    """
+    if not db_manager:
+        db_manager = get_db_manager()
+    
+    session = db_manager.Session()
+    try:
+        # Получаем все твиты автора с контрактами
+        tweet_mentions = session.query(TweetMention).filter_by(
+            author_username=author_username
+        ).all()
+        
+        if not tweet_mentions:
+            return {
+                'total_tweets': 0,
+                'unique_contracts': 0,
+                'contract_diversity_percent': 0,
+                'max_contract_spam_percent': 0,
+                'is_spam_likely': False,
+                'recommendation': 'Нет данных о твитах',
+                'contracts_list': [],
+                'diversity_category': 'Нет данных',
+                'spam_analysis': 'Нет данных'
+            }
+        
+        # Извлекаем все контракты из твитов
+        all_contracts = set()
+        contract_mentions = {}  # контракт -> количество упоминаний
+        
+        for mention in tweet_mentions:
+            # Ищем контракты в тексте твита (адреса длиной 32-44 символа)
+            contracts_in_tweet = re.findall(r'\b[A-Za-z0-9]{32,44}\b', mention.tweet_text)
+            
+            # Также добавляем контракт из поля mint если есть
+            if mention.mint:
+                contracts_in_tweet.append(mention.mint)
+            
+            # Добавляем найденные контракты
+            for contract in contracts_in_tweet:
+                # Проверяем что это похоже на Solana адрес
+                if len(contract) >= 32 and contract.isalnum():
+                    all_contracts.add(contract)
+                    contract_mentions[contract] = contract_mentions.get(contract, 0) + 1
+        
+        total_tweets = len(tweet_mentions)
+        unique_contracts = len(all_contracts)
+        
+        # Вычисляем процент разнообразия контрактов
+        if total_tweets == 0:
+            diversity_percent = 0
+            max_contract_spam_percent = 0
+        else:
+            diversity_percent = (unique_contracts / total_tweets) * 100
+            
+            # Находим контракт с максимальным количеством упоминаний
+            if contract_mentions:
+                max_mentions = max(contract_mentions.values())
+                max_contract_spam_percent = (max_mentions / total_tweets) * 100
+            else:
+                max_contract_spam_percent = 0
+        
+        # ЛОГИКА ДЛЯ PUMP.FUN: Ищем вспышки активности (высокая концентрация = хорошо)
+        is_spam_likely = False
+        recommendation = "✅ Качественный автор"
+        spam_analysis = ""
+        
+        if unique_contracts == 0:
+            recommendation = "⚪ Нет контрактов в твитах"
+            spam_analysis = "Нет контрактов для анализа"
+        elif max_contract_spam_percent >= 80:
+            recommendation = "🔥 ОТЛИЧНЫЙ - вспышка активности об одном контракте!"
+            spam_analysis = f"ВСПЫШКА! {max_contract_spam_percent:.1f}% твитов об одном контракте - сильный сигнал к покупке"
+        elif max_contract_spam_percent >= 60:
+            recommendation = "⭐ ХОРОШИЙ - высокая концентрация на контракте"
+            spam_analysis = f"Хорошая концентрация: {max_contract_spam_percent:.1f}% на одном контракте - интерес растет"
+        elif max_contract_spam_percent >= 40:
+            recommendation = "🟡 СРЕДНИЙ - умеренная концентрация"
+            spam_analysis = f"Умеренная концентрация: {max_contract_spam_percent:.1f}% на топ-контракте"
+        elif diversity_percent >= 50:
+            is_spam_likely = True
+            recommendation = "🚫 ПЛОХОЙ - слишком много разных контрактов"
+            spam_analysis = f"Низкое качество: {diversity_percent:.1f}% разных контрактов - нет фокуса"
+        else:
+            is_spam_likely = True
+            recommendation = "⚠️ ПОДОЗРИТЕЛЬНЫЙ - много разных контрактов"
+            spam_analysis = f"Подозрительно: {diversity_percent:.1f}% разнообразия - нет концентрации интереса"
+        
+        # Топ-5 наиболее упоминаемых контрактов
+        top_contracts = sorted(contract_mentions.items(), key=lambda x: x[1], reverse=True)[:5]
+        
+        return {
+            'total_tweets': total_tweets,
+            'unique_contracts': unique_contracts,
+            'contract_diversity_percent': round(diversity_percent, 1),
+            'max_contract_spam_percent': round(max_contract_spam_percent, 1),
+            'is_spam_likely': is_spam_likely,
+            'recommendation': recommendation,
+            'contracts_list': [{'contract': contract, 'mentions': count} for contract, count in top_contracts],
+            'diversity_category': get_diversity_category(max_contract_spam_percent),
+            'spam_analysis': spam_analysis
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка анализа разнообразия контрактов для @{author_username}: {e}")
+        return {
+            'total_tweets': 0,
+            'unique_contracts': 0,
+            'contract_diversity_percent': 0,
+            'max_contract_spam_percent': 0,
+            'is_spam_likely': False,
+            'recommendation': f'Ошибка анализа: {e}',
+            'contracts_list': [],
+            'diversity_category': 'Ошибка',
+            'spam_analysis': f'Ошибка: {e}'
+        }
+    finally:
+        session.close()
+
+def get_diversity_category(concentration_percent):
+    """Возвращает категорию качества по концентрации на одном контракте"""
+    if concentration_percent >= 80:
+        return "🔥 Вспышка активности"
+    elif concentration_percent >= 60:
+        return "⭐ Высокая концентрация"
+    elif concentration_percent >= 40:
+        return "🟡 Умеренная концентрация"
+    elif concentration_percent >= 20:
+        return "🟢 Низкая концентрация"
+    else:
+        return "⚠️ Нет концентрации"
+
+async def analyze_author_page_contracts(author_username, tweets_on_page=None, load_from_profile=True):
+    """
+    Анализирует контракты автора на основе ТЕКУЩЕЙ СТРАНИЦЫ твитов или загружает с профиля
+    tweets_on_page - список твитов с текущей загруженной страницы (опционально)
+    load_from_profile - загружать ли твиты с профиля автора для более точного анализа
+    """
+    
+    # Если нужно загрузить твиты с профиля
+    if load_from_profile and (not tweets_on_page or len(tweets_on_page) < 5):
+        logger.info(f"🔍 Загружаем твиты с профиля @{author_username} для анализа")
+        
+        try:
+            from twitter_profile_parser import TwitterProfileParser
+            
+            async with TwitterProfileParser() as profile_parser:
+                profile_data, profile_tweets = await profile_parser.get_profile_with_tweets(author_username)
+                
+                if profile_tweets:
+                    tweets_on_page = profile_tweets
+                    logger.info(f"📱 Загружено {len(profile_tweets)} твитов с профиля @{author_username}")
+                else:
+                    logger.warning(f"⚠️ Не удалось загрузить твиты с профиля @{author_username}")
+                    
+        except Exception as e:
+            logger.error(f"❌ Ошибка загрузки твитов с профиля @{author_username}: {e}")
+    
+    if not tweets_on_page:
+        return {
+            'total_tweets_on_page': 0,
+            'unique_contracts_on_page': 0,
+            'contract_diversity_percent': 0,
+            'max_contract_spam_percent': 0,
+            'is_spam_likely': False,
+            'recommendation': 'Нет твитов на странице',
+            'contracts_list': [],
+            'diversity_category': 'Нет данных',
+            'spam_analysis': 'Нет твитов на странице'
+        }
+    
+    # Извлекаем контракты из твитов на странице
+    all_contracts = set()
+    contract_mentions = {}
+    
+    for tweet_text in tweets_on_page:
+        # Ищем контракты в тексте твита (адреса длиной 32-44 символа)
+        contracts_in_tweet = re.findall(r'\b[A-Za-z0-9]{32,44}\b', tweet_text)
+        
+        for contract in contracts_in_tweet:
+            # Проверяем что это похоже на Solana адрес
+            if len(contract) >= 32 and contract.isalnum():
+                all_contracts.add(contract)
+                contract_mentions[contract] = contract_mentions.get(contract, 0) + 1
+    
+    total_tweets = len(tweets_on_page)
+    unique_contracts = len(all_contracts)
+    
+    # Вычисляем процент разнообразия контрактов
+    if total_tweets == 0:
+        diversity_percent = 0
+        max_contract_spam_percent = 0
+    else:
+        diversity_percent = (unique_contracts / total_tweets) * 100
+        
+        # Находим контракт с максимальным количеством упоминаний
+        if contract_mentions:
+            max_mentions = max(contract_mentions.values())
+            max_contract_spam_percent = (max_mentions / total_tweets) * 100
+        else:
+            max_contract_spam_percent = 0
+    
+    # ЛОГИКА ДЛЯ PUMP.FUN: Ищем вспышки активности (высокая концентрация = хорошо)
+    is_spam_likely = False
+    recommendation = "✅ Качественный автор"
+    spam_analysis = ""
+    
+    if unique_contracts == 0:
+        recommendation = "⚪ Нет контрактов на странице"
+        spam_analysis = "Нет контрактов для анализа"
+    elif max_contract_spam_percent >= 80:
+        recommendation = "🔥 ОТЛИЧНЫЙ - вспышка активности об одном контракте!"
+        spam_analysis = f"ВСПЫШКА! {max_contract_spam_percent:.1f}% твитов об одном контракте - сильный сигнал к покупке"
+    elif max_contract_spam_percent >= 60:
+        recommendation = "⭐ ХОРОШИЙ - высокая концентрация на контракте"
+        spam_analysis = f"Хорошая концентрация: {max_contract_spam_percent:.1f}% на одном контракте - интерес растет"
+    elif max_contract_spam_percent >= 40:
+        recommendation = "🟡 СРЕДНИЙ - умеренная концентрация"
+        spam_analysis = f"Умеренная концентрация: {max_contract_spam_percent:.1f}% на топ-контракте"
+    elif diversity_percent >= 80:
+        is_spam_likely = True
+        recommendation = "🚫 СПАМЕР - каждый твит новый контракт!"
+        spam_analysis = f"СПАМ! {diversity_percent:.1f}% разных контрактов на странице - явный спамер"
+    elif diversity_percent >= 50:
+        is_spam_likely = True
+        recommendation = "🚫 ПЛОХОЙ - слишком много разных контрактов"
+        spam_analysis = f"Низкое качество: {diversity_percent:.1f}% разных контрактов - нет фокуса"
+    else:
+        is_spam_likely = True
+        recommendation = "⚠️ ПОДОЗРИТЕЛЬНЫЙ - много разных контрактов"
+        spam_analysis = f"Подозрительно: {diversity_percent:.1f}% разнообразия - нет концентрации интереса"
+    
+    # Топ-5 наиболее упоминаемых контрактов
+    top_contracts = sorted(contract_mentions.items(), key=lambda x: x[1], reverse=True)[:5]
+    
+    return {
+        'total_tweets_on_page': total_tweets,
+        'unique_contracts_on_page': unique_contracts,
+        'contract_diversity_percent': round(diversity_percent, 1),
+        'max_contract_spam_percent': round(max_contract_spam_percent, 1),
+        'is_spam_likely': is_spam_likely,
+        'recommendation': recommendation,
+        'contracts_list': [{'contract': contract, 'mentions': count} for contract, count in top_contracts],
+        'diversity_category': get_diversity_category(max_contract_spam_percent),
+        'spam_analysis': spam_analysis
+    }
+
+def should_filter_author_by_diversity(author_username, diversity_threshold=30):
+    """
+    Проверяет, нужно ли фильтровать автора по разнообразию контрактов
+    diversity_threshold - порог в процентах разнообразия, выше которого автор фильтруется (много разных контрактов = плохо)
+    """
+    analysis = analyze_author_contract_diversity(author_username)
+    return analysis['contract_diversity_percent'] >= diversity_threshold
 
 async def main():
     """Основная функция с автоматическим реконнектом"""
