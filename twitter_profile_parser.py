@@ -9,7 +9,7 @@ import asyncio
 from bs4 import BeautifulSoup
 from datetime import datetime
 import logging
-from cookie_rotation import BackgroundCookieRotator
+from cookie_rotation import background_proxy_cookie_rotator
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ class TwitterProfileParser:
     def __init__(self):
         self.session = None
         try:
-            self.cookie_rotator = BackgroundCookieRotator()
+            self.cookie_rotator = background_proxy_cookie_rotator
         except Exception as e:
             logger.error(f"❌ Ошибка инициализации cookie_rotator: {e}")
             self.cookie_rotator = None

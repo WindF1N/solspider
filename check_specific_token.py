@@ -26,7 +26,7 @@ async def check_specific_token():
     }
     
     print(f"📍 Mint адрес: {mint}")
-    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+    yesterday = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
     print(f"🔗 Nitter URL: https://nitter.tiekoetter.com/search?f=tweets&q={mint}&since={yesterday}&until=&near=")
     print()
     

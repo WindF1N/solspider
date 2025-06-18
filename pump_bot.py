@@ -18,7 +18,7 @@ from urllib.parse import quote
 from database import get_db_manager, TwitterAuthor, Token, Trade, Migration, TweetMention
 from logger_config import setup_logging, log_token_analysis, log_trade_activity, log_database_operation, log_daily_stats
 from connection_monitor import connection_monitor
-from cookie_rotation import cookie_rotator, background_cookie_rotator
+from cookie_rotation import proxy_cookie_rotator, background_proxy_cookie_rotator, cookie_rotator
 from twitter_profile_parser import TwitterProfileParser
 
 
@@ -120,17 +120,23 @@ def send_telegram(message, inline_keyboard=None):
 
 async def search_single_query(query, headers, retry_count=0, use_quotes=False, cycle_cookie=None):
     """Выполняет одиночный поисковый запрос к Nitter с повторными попытками при 429 и ротацией cookies"""
-    # Добавляем вчерашнюю дату в параметр since
-    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+    # Добавляем вчерашнюю дату в параметр since (UTC)
+    yesterday = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
     
     # Убираем поиск с кавычками - используем только без кавычек
     url = f"https://nitter.tiekoetter.com/search?f=tweets&q={quote(query)}&since={yesterday}&until=&near="
     
-    # Используем переданный cookie для цикла или получаем новый
+    # Используем переданные прокси+cookie для цикла или получаем новые
     if cycle_cookie:
+        # Если передан cycle_cookie, ищем соответствующую связку прокси
+        proxy = None
         current_cookie = cycle_cookie
+        for pair in proxy_cookie_rotator.proxy_cookie_pairs:
+            if pair['cookie'] == cycle_cookie:
+                proxy = pair['proxy']
+                break
     else:
-        current_cookie = cookie_rotator.get_next_cookie()
+        proxy, current_cookie = proxy_cookie_rotator.get_next_proxy_cookie()
     
     # Обновляем заголовки с cookie
     headers_with_cookie = headers.copy()
@@ -140,8 +146,24 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=False, c
         # Используем asyncio совместимую библиотеку
         import aiohttp
         
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers_with_cookie, timeout=20) as response:
+        # Настройка прокси если требуется
+        connector = None
+        request_kwargs = {}
+        if proxy:
+            try:
+                # Пробуем новый API (aiohttp 3.8+)
+                connector = aiohttp.ProxyConnector.from_url(proxy)
+                proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
+                logger.debug(f"🌐 Используем прокси через ProxyConnector: {proxy_info}")
+            except AttributeError:
+                # Для aiohttp 3.9.1 - прокси передается напрямую в get()
+                connector = aiohttp.TCPConnector()
+                request_kwargs['proxy'] = proxy
+                proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
+                logger.debug(f"🌐 Используем прокси напрямую: {proxy_info}")
+        
+        async with aiohttp.ClientSession(connector=connector) as session:
+            async with session.get(url, headers=headers_with_cookie, timeout=20, **request_kwargs) as response:
                 if response.status == 200:
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
@@ -242,10 +264,10 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=False, c
                         await asyncio.sleep(pause_time)
                         return await search_single_query(query, headers, retry_count + 1, use_quotes, cycle_cookie)
                     else:
-                        # Только после 2 попыток помечаем cookie как временно недоступный
+                        # Только после 2 попыток помечаем связку как временно недоступную
                         if not cycle_cookie:  # Помечаем только если НЕ используется cycle_cookie
-                            cookie_rotator.mark_cookie_failed(current_cookie)
-                            logger.warning(f"❌ [PUMP_BOT] Cookie помечен как неработающий после 429 ошибок")
+                            proxy_cookie_rotator.mark_pair_failed(proxy, current_cookie)
+                            logger.warning(f"❌ [PUMP_BOT] Связка прокси+cookie помечена как неработающая после 429 ошибок")
                         logger.error(f"❌ Nitter 429 (Too Many Requests) для '{query}' - превышено количество попыток")
                         return []
                 else:
@@ -288,8 +310,8 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
     try:
         # Получаем один cookie для всего анализа токена (2 запроса)
         if not cycle_cookie:
-            cycle_cookie = cookie_rotator.get_cycle_cookie()
-            logger.debug(f"🍪 Используем один cookie для анализа токена {symbol}")
+            _, cycle_cookie = proxy_cookie_rotator.get_cycle_proxy_cookie()
+            logger.debug(f"🍪 Используем одну связку для анализа токена {symbol}")
             
         # Базовые заголовки без cookie (cookie будет добавлен в search_single_query)
         headers = {
@@ -373,17 +395,17 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
         
         # Рассчитываем рейтинг токена
         if total_tweets == 0:
-            return {
-                'tweets': 0,
-                'symbol_tweets': 0,
-                'contract_tweets': 0,
-                'engagement': 0,
-                'score': 0,
-                'rating': '🔴 Мало внимания',
+                    return {
+            'tweets': 0,
+            'symbol_tweets': 0,
+            'contract_tweets': 0,
+            'engagement': 0,
+            'score': 0,
+            'rating': '🔴 Мало внимания',
                 'contract_found': False,
                 'contract_authors': [],
                 'error_details': error_details  # Добавляем детали ошибок
-            }
+        }
         
         # Средняя активность на твит
         avg_engagement = total_engagement / total_tweets if total_tweets > 0 else 0
@@ -622,7 +644,7 @@ async def handle_message(message):
                     logger.error(f"❌ Ошибка обновления статуса уведомления: {e}")
             else:
                 logger.info(f"❌ Токен {symbol} не прошел фильтрацию - пропускаем")
-        
+            
         # Проверяем, это ли торговое событие
         elif 'mint' in data and 'traderPublicKey' in data and 'sol_amount' in data:
             sol_amount = float(data.get('sol_amount', 0))
@@ -916,7 +938,7 @@ async def extract_tweet_authors(soup, query, contract_found):
                         'unique_contracts_count': page_analysis['unique_contracts_on_page']
                     })
                     
-                    logger.info(f"📊 @{username}: {page_analysis['total_tweets_on_page']} твитов, {page_analysis['max_contract_spam_percent']:.1f}% концентрация - {page_analysis['recommendation']}")
+                    logger.info(f"📊 @{username}: {page_analysis['total_tweets_on_page']} твитов, концентрация: {page_analysis['max_contract_spam_percent']:.1f}%, разнообразие: {page_analysis['contract_diversity_percent']:.1f}% - {page_analysis['recommendation']}")
                     
                     # Сохраняем в базу данных новые профили
                     if username in usernames_to_parse:
@@ -1050,11 +1072,11 @@ async def extract_tweet_authors(soup, query, contract_found):
         for author in unique_authors:
             username = author.get('username', 'Unknown')
             
-            # Проверяем подозрительные метрики лайков/подписчиков
-            if is_account_suspicious_by_metrics(author):
-                excluded_count += 1
-                logger.info(f"🚫 Автор @{username} исключен из результатов - подозрительные метрики")
-                continue
+            # ФИЛЬТР 1 ОТКЛЮЧЕН: Проверка метрик лайков/подписчиков отключена
+            # if is_account_suspicious_by_metrics(author):
+            #     excluded_count += 1
+            #     logger.info(f"🚫 Автор @{username} исключен из результатов - подозрительные метрики")
+            #     continue
             
             # Проверяем является ли автор спамером
             if author.get('is_spam_likely', False):
@@ -1075,7 +1097,7 @@ async def extract_tweet_authors(soup, query, contract_found):
             logger.info(f"✅ Автор @{username} прошел фильтрацию - включен в результаты")
         
         if excluded_count > 0:
-            logger.info(f"🎯 ФИЛЬТРАЦИЯ ЗАВЕРШЕНА: исключено {excluded_count} спамеров/подозрительных, оставлено {len(filtered_authors)} качественных авторов")
+            logger.info(f"🎯 ФИЛЬТРАЦИЯ ЗАВЕРШЕНА: исключено {excluded_count} спамеров, оставлено {len(filtered_authors)} качественных авторов")
         
         return filtered_authors
         
@@ -1098,11 +1120,11 @@ async def twitter_analysis_worker():
             
             # Проверяем размер очереди для пакетной обработки
             queue_size = twitter_analysis_queue.qsize()
-            if queue_size > 50:  # Увеличено с 20 до 50 токенов
+            if queue_size > 15:  # Уменьшено с 50 до 15 токенов
                 if not batch_mode:
                     batch_mode = True
                     logger.warning(f"⚡ ПАКЕТНЫЙ РЕЖИМ: очередь {queue_size} токенов - ускоряем обработку")
-            elif queue_size < 25:
+            elif queue_size < 8:  # Уменьшено с 25 до 8 токенов
                 if batch_mode:
                     batch_mode = False
                     logger.info(f"✅ Обычный режим: очередь {queue_size} токенов")
@@ -1339,12 +1361,10 @@ async def emergency_clear_overloaded_queue():
             logger.warning(f"⚠️ ВЫСОКАЯ НАГРУЗКА: {analyzing_count} токенов в анализе")
             logger.warning(f"📝 РЕКОМЕНДАЦИЯ: дождаться завершения анализа или добавить воркеров")
         
-        if queue_size > 100:
-            logger.warning(f"⚠️ БОЛЬШАЯ ОЧЕРЕДЬ: {queue_size} токенов ожидают анализа") 
-            logger.warning(f"📝 СИСТЕМА: продолжает работать, все токены будут проанализированы")
-        
+        if queue_size > 60:  # Уменьшено с 200 до 60 токенов - просто предупреждение
+            logger.warning(f"📊 БОЛЬШАЯ ОЧЕРЕДЬ: {queue_size} токенов - система продолжает работать")
+            
         session.close()
-        
     except Exception as e:
         logger.error(f"❌ Ошибка мониторинга очереди: {e}")
 
@@ -1354,7 +1374,7 @@ async def check_queue_overload():
         queue_size = twitter_analysis_queue.qsize()
         
         # Только мониторинг, без удаления
-        if queue_size > 200:  # Просто предупреждение
+        if queue_size > 60:  # Уменьшено с 200 до 60 токенов - просто предупреждение
             logger.warning(f"📊 БОЛЬШАЯ ОЧЕРЕДЬ: {queue_size} токенов - система продолжает работать")
             await emergency_clear_overloaded_queue()  # Только для логирования статистики
             
@@ -1397,29 +1417,14 @@ async def check_and_retry_failed_analysis():
 
 
 def is_account_suspicious_by_metrics(author):
-    """Проверяет аккаунт на подозрительные метрики (накрутка)"""
-    followers = author.get('followers_count', 0)
-    likes = author.get('likes_count', 0)
+    """ОТКЛЮЧЕНА: Проверка лайков к подписчикам может быть неточной"""
     username = author.get('username', 'Unknown')
     
-    # Если нет данных - не можем проверить
-    if followers == 0 or likes == 0:
-        return False
+    # ОТКЛЮЧЕНО: проверка лайков к подписчикам
+    # Эта метрика может быть неточной и исключать валидных авторов
+    logger.debug(f"✅ @{username}: проверка метрик отключена - автор принимается")
     
-    # Вычисляем соотношение лайков к подписчикам
-    likes_to_followers_ratio = likes / followers
-    
-    # ПОДОЗРИТЕЛЬНО: лайков в 10+ раз меньше чем подписчиков
-    if likes_to_followers_ratio < 0.1:  # Менее 10% лайков от количества подписчиков
-        logger.warning(f"🚫 @{username}: ПОДОЗРИТЕЛЬНЫЕ МЕТРИКИ - {likes:,} лайков при {followers:,} подписчиках (соотношение: {likes_to_followers_ratio:.3f})")
-        return True
-    
-    # КРИТИЧЕСКИ ПОДОЗРИТЕЛЬНО: лайков в 50+ раз меньше чем подписчиков  
-    if likes_to_followers_ratio < 0.02:  # Менее 2% лайков от количества подписчиков
-        logger.error(f"❌ @{username}: НАКРУЧЕННЫЙ АККАУНТ - {likes:,} лайков при {followers:,} подписчиках (соотношение: {likes_to_followers_ratio:.3f})")
-        return True
-    
-    return False
+    return False  # Всегда принимаем автора
 
 def is_author_spam_by_analysis(author):
     """Проверяет является ли автор спамером по анализу контрактов"""
@@ -1460,7 +1465,7 @@ def should_notify_based_on_authors_quality(authors):
     good_authors = 0       # Хорошие авторы (≥40%)
     new_accounts = 0       # Новые аккаунты (≤2 твитов)
     spam_authors = 0       # Спамеры разных контрактов
-    suspicious_authors = 0 # Аккаунты с подозрительными метриками
+    # suspicious_authors = 0 # Удалено - проверка лайков/подписчиков отключена
     
     for author in authors:
         diversity_percent = author.get('contract_diversity', 0)
@@ -1468,13 +1473,13 @@ def should_notify_based_on_authors_quality(authors):
         total_tweets = author.get('total_contract_tweets', 0)
         username = author.get('username', 'Unknown')
         
-        # НОВЫЙ ФИЛЬТР 1: Проверяем подозрительные метрики (накрутка)
-        if is_account_suspicious_by_metrics(author):
-            suspicious_authors += 1
-            logger.info(f"🚫 @{username}: ИСКЛЮЧЕН - подозрительные метрики лайков/подписчиков")
-            continue
+        # ФИЛЬТР 1 ОТКЛЮЧЕН: Проверка метрик лайков/подписчиков отключена
+        # if is_account_suspicious_by_metrics(author):
+        #     suspicious_authors += 1
+        #     logger.info(f"🚫 @{username}: ИСКЛЮЧЕН - подозрительные метрики лайков/подписчиков")
+        #     continue
         
-        # НОВЫЙ ФИЛЬТР 2: Проверяем на спам по анализу контрактов
+        # ФИЛЬТР 2: Проверяем на спам по анализу контрактов
         if is_author_spam_by_analysis(author):
             spam_authors += 1
             logger.info(f"🚫 @{username}: ИСКЛЮЧЕН - определен как спамер")
@@ -1519,7 +1524,6 @@ def should_notify_based_on_authors_quality(authors):
     logger.info(f"   ⭐ Хорошие (≥40%): {good_authors}")
     logger.info(f"   🆕 Новые аккаунты (≤2 твитов): {new_accounts}")
     logger.info(f"   🚫 Спамеры разных токенов: {spam_authors}")
-    logger.info(f"   ⚠️ Подозрительные метрики: {suspicious_authors}")
     logger.info(f"   🎯 РЕШЕНИЕ: {'ОТПРАВИТЬ' if should_notify else 'ЗАБЛОКИРОВАТЬ'}")
     
     if not should_notify:
@@ -1654,19 +1658,18 @@ def analyze_author_contract_diversity(author_username, db_manager=None):
         total_tweets = len(tweet_mentions)
         unique_contracts = len(all_contracts)
         
-        # Вычисляем процент разнообразия контрактов
+        # Вычисляем ПРАВИЛЬНУЮ концентрацию контрактов
         if total_tweets == 0:
             diversity_percent = 0
-            max_contract_spam_percent = 0
+            concentration_percent = 0
         else:
+            # РАЗНООБРАЗИЕ = уникальные контракты / твиты * 100%
+            # Чем больше процент, тем больше разных контрактов (плохо)
             diversity_percent = (unique_contracts / total_tweets) * 100
             
-            # Находим контракт с максимальным количеством упоминаний
-            if contract_mentions:
-                max_mentions = max(contract_mentions.values())
-                max_contract_spam_percent = (max_mentions / total_tweets) * 100
-            else:
-                max_contract_spam_percent = 0
+            # КОНЦЕНТРАЦИЯ = 100% - разнообразие
+            # Чем выше концентрация, тем меньше разных контрактов (хорошо)
+            concentration_percent = 100 - diversity_percent
         
         # ЛОГИКА ДЛЯ PUMP.FUN: Ищем вспышки активности (высокая концентрация = хорошо)
         is_spam_likely = False
@@ -1674,38 +1677,48 @@ def analyze_author_contract_diversity(author_username, db_manager=None):
         spam_analysis = ""
         
         if unique_contracts == 0:
-            recommendation = "⚪ Нет контрактов в твитах"
+            recommendation = "⚪ Нет контрактов на странице"
             spam_analysis = "Нет контрактов для анализа"
-        elif max_contract_spam_percent >= 80:
-            recommendation = "🔥 ОТЛИЧНЫЙ - вспышка активности об одном контракте!"
-            spam_analysis = f"ВСПЫШКА! {max_contract_spam_percent:.1f}% твитов об одном контракте - сильный сигнал к покупке"
-        elif max_contract_spam_percent >= 60:
-            recommendation = "⭐ ХОРОШИЙ - высокая концентрация на контракте"
-            spam_analysis = f"Хорошая концентрация: {max_contract_spam_percent:.1f}% на одном контракте - интерес растет"
-        elif max_contract_spam_percent >= 40:
+        elif concentration_percent >= 95:  # ≤5% разных контрактов
+            recommendation = "🔥 ОТЛИЧНЫЙ - максимальная концентрация!"
+            spam_analysis = f"ВСПЫШКА! {concentration_percent:.1f}% концентрация (только {diversity_percent:.1f}% разных контрактов)"
+        elif concentration_percent >= 80:  # ≤20% разных контрактов  
+            recommendation = "⭐ ХОРОШИЙ - высокая концентрация"
+            spam_analysis = f"Хорошая концентрация: {concentration_percent:.1f}% ({diversity_percent:.1f}% разных контрактов)"
+        elif concentration_percent >= 60:  # ≤40% разных контрактов
             recommendation = "🟡 СРЕДНИЙ - умеренная концентрация"
-            spam_analysis = f"Умеренная концентрация: {max_contract_spam_percent:.1f}% на топ-контракте"
-        elif diversity_percent >= 50:
+            spam_analysis = f"Умеренная концентрация: {concentration_percent:.1f}% ({diversity_percent:.1f}% разных контрактов)"
+        elif diversity_percent >= 80:  # ≥80% разных контрактов
+            is_spam_likely = True
+            recommendation = "🚫 СПАМЕР - каждый твит новый контракт!"
+            spam_analysis = f"СПАМ! {diversity_percent:.1f}% разных контрактов - явный спамер"
+        elif diversity_percent >= 50:  # ≥50% разных контрактов
             is_spam_likely = True
             recommendation = "🚫 ПЛОХОЙ - слишком много разных контрактов"
             spam_analysis = f"Низкое качество: {diversity_percent:.1f}% разных контрактов - нет фокуса"
         else:
-            is_spam_likely = True
-            recommendation = "⚠️ ПОДОЗРИТЕЛЬНЫЙ - много разных контрактов"
-            spam_analysis = f"Подозрительно: {diversity_percent:.1f}% разнообразия - нет концентрации интереса"
+            # ИСПРАВЛЕННАЯ ЛОГИКА: низкое разнообразие = хорошо
+            if diversity_percent <= 30:  # ≤30% разных контрактов = хорошо
+                is_spam_likely = False
+                recommendation = "🟡 ПРИЕМЛЕМЫЙ - низкое разнообразие контрактов"
+                spam_analysis = f"Приемлемо: {diversity_percent:.1f}% разнообразия - низкая концентрация но фокус есть"
+            else:
+                is_spam_likely = True
+                recommendation = "⚠️ ПОДОЗРИТЕЛЬНЫЙ - много разных контрактов"
+                spam_analysis = f"Подозрительно: {diversity_percent:.1f}% разнообразия - нет концентрации интереса"
         
         # Топ-5 наиболее упоминаемых контрактов
         top_contracts = sorted(contract_mentions.items(), key=lambda x: x[1], reverse=True)[:5]
         
         return {
-            'total_tweets': total_tweets,
-            'unique_contracts': unique_contracts,
+            'total_tweets_on_page': total_tweets,
+            'unique_contracts_on_page': unique_contracts,
             'contract_diversity_percent': round(diversity_percent, 1),
-            'max_contract_spam_percent': round(max_contract_spam_percent, 1),
+            'max_contract_spam_percent': round(concentration_percent, 1),
             'is_spam_likely': is_spam_likely,
             'recommendation': recommendation,
             'contracts_list': [{'contract': contract, 'mentions': count} for contract, count in top_contracts],
-            'diversity_category': get_diversity_category(max_contract_spam_percent),
+            'diversity_category': get_diversity_category(concentration_percent),
             'spam_analysis': spam_analysis
         }
         
@@ -1864,9 +1877,15 @@ async def analyze_author_page_contracts(author_username, tweets_on_page=None, lo
         recommendation = "🚫 ПЛОХОЙ - слишком много разных контрактов"
         spam_analysis = f"Низкое качество: {diversity_percent:.1f}% разных контрактов - нет фокуса"
     else:
-        is_spam_likely = True
-        recommendation = "⚠️ ПОДОЗРИТЕЛЬНЫЙ - много разных контрактов"
-        spam_analysis = f"Подозрительно: {diversity_percent:.1f}% разнообразия - нет концентрации интереса"
+        # ИСПРАВЛЕННАЯ ЛОГИКА: низкое разнообразие = хорошо
+        if diversity_percent <= 30:  # ≤30% разных контрактов = хорошо
+            is_spam_likely = False
+            recommendation = "🟡 ПРИЕМЛЕМЫЙ - низкое разнообразие контрактов"
+            spam_analysis = f"Приемлемо: {diversity_percent:.1f}% разнообразия - низкая концентрация но фокус есть"
+        else:
+            is_spam_likely = True
+            recommendation = "⚠️ ПОДОЗРИТЕЛЬНЫЙ - много разных контрактов"
+            spam_analysis = f"Подозрительно: {diversity_percent:.1f}% разнообразия - нет концентрации интереса"
     
     # Топ-5 наиболее упоминаемых контрактов
     top_contracts = sorted(contract_mentions.items(), key=lambda x: x[1], reverse=True)[:5]

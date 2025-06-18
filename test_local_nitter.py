@@ -13,7 +13,7 @@ async def test_nitter_instance(url, test_query="bitcoin"):
     try:
         # Тестовый поисковый URL
         from datetime import datetime, timedelta
-        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        yesterday = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
         search_url = f"{url}/search?f=tweets&q={test_query}&since={yesterday}&until=&near="
         
         print(f"🔍 Тестируем: {url}")
@@ -100,7 +100,7 @@ async def test_search_functionality():
     print("-" * 40)
     
     test_queries = ["bitcoin", "F4ALfBc8QpkgDJ1KK6YkcqqPUZbJTazAsnD4GGnApump"]
-    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+    yesterday = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
     
     for query in test_queries:
         print(f"\n🔍 Поиск: {query}")
@@ -127,7 +127,7 @@ if __name__ == "__main__":
     from datetime import datetime, timedelta
     
     print("🧪 ТЕСТ NITTER КОНФИГУРАЦИИ")
-    print(f"⏰ Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"⏰ Время: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
     print(f"🔧 Текущие инстансы: {len(nitter_config.nitter_instances)}")
     
     asyncio.run(test_all_nitter_instances())

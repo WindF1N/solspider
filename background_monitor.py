@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timedelta
 from database import get_db_manager, Token
 from pump_bot import search_single_query, send_telegram, extract_tweet_authors, TWITTER_AUTHOR_BLACKLIST, analyze_author_contract_diversity
-from cookie_rotation import background_cookie_rotator
+from cookie_rotation import background_proxy_cookie_rotator, background_cookie_rotator
 from logger_config import setup_logging
 from twitter_profile_parser import TwitterProfileParser
 import re
@@ -69,11 +69,11 @@ class BackgroundTokenMonitor:
         finally:
             session.close()
     
-    async def check_contract_mentions(self, token, cycle_cookie):
+    async def check_contract_mentions(self, token, proxy, cycle_cookie):
         """Проверяет появление НОВЫХ упоминаний контракта в Twitter с парсингом авторов"""
         try:
             # Получаем данные с авторами
-            tweets_count, engagement, authors = await self.get_contract_mentions_with_authors(token, cycle_cookie)
+            tweets_count, engagement, authors = await self.get_contract_mentions_with_authors(token, proxy, cycle_cookie)
             
             # Проверяем если возвращается 0,0 - возможно блокировка
             if tweets_count == 0 and engagement == 0:
@@ -302,9 +302,9 @@ class BackgroundTokenMonitor:
         try:
             start_time = time.time()
             
-            # Получаем cookie для всего цикла
-            cycle_cookie = background_cookie_rotator.get_cycle_cookie()
-            logger.info("🔄 Начинаем цикл фонового мониторинга с новым cookie...")
+            # Получаем связку прокси+cookie для всего цикла
+            proxy, cycle_cookie = background_proxy_cookie_rotator.get_cycle_proxy_cookie()
+            logger.info("🔄 Начинаем цикл фонового мониторинга с новой связкой прокси+cookie...")
             
             # Получаем токены для проверки
             tokens = self.get_tokens_to_monitor()
@@ -315,11 +315,11 @@ class BackgroundTokenMonitor:
             
             # ОПТИМИЗАЦИЯ: увеличенные батчи для повышения производительности
             if self.consecutive_errors > 10:
-                batch_size = 50  # Увеличены батчи при ошибках: 20→50
+                batch_size = 15  # Уменьшены батчи при ошибках: 50→15
                 self.batch_mode = True
                 logger.warning(f"🚨 Активирован режим восстановления: батчи по {batch_size} токенов")
             elif len(tokens) > 20:
-                batch_size = 100  # Увеличен оптимальный размер: 30→100
+                batch_size = 30  # Уменьшен оптимальный размер: 100→30
                 self.batch_mode = True
                 logger.info(f"⚡ Пакетный режим: батчи по {batch_size} токенов (очередь: {len(tokens)})")
             else:
@@ -332,8 +332,8 @@ class BackgroundTokenMonitor:
                 batch = tokens[i:i + batch_size]
                 logger.info(f"🔍 Проверяем батч {i//batch_size + 1}: токены {i+1}-{min(i+batch_size, len(tokens))}")
                 
-                # Проверяем батч параллельно с одним cookie для всего цикла
-                tasks = [self.check_contract_mentions(token, cycle_cookie) for token in batch]
+                # Проверяем батч параллельно с одной связкой прокси+cookie для всего цикла
+                tasks = [self.check_contract_mentions(token, proxy, cycle_cookie) for token in batch]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 
                 # Подсчитываем найденные контракты и ошибки
@@ -442,12 +442,12 @@ class BackgroundTokenMonitor:
         self.running = False
         logger.info("🛑 Остановка фонового мониторинга...")
 
-    async def get_contract_mentions_with_authors(self, token, cycle_cookie):
+    async def get_contract_mentions_with_authors(self, token, proxy, cycle_cookie):
         """Получает HTML ответы для парсинга авторов С БЫСТРЫМИ ТАЙМАУТАМИ"""
         try:
-            # Добавляем вчерашнюю дату и убираем поиск с кавычками
+            # Добавляем вчерашнюю дату и убираем поиск с кавычками (UTC)
             from datetime import datetime, timedelta
-            yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+            yesterday = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
             
             # Делаем только один запрос без кавычек
             urls = [
@@ -463,9 +463,25 @@ class BackgroundTokenMonitor:
             
             for url in urls:
                 try:
-                    # ОПТИМИЗАЦИЯ: быстрый таймаут 8 секунд (быстрее чем pump_bot)
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(url, headers=headers_with_cookie, timeout=5) as response:
+                    # ОПТИМИЗАЦИЯ: быстрый таймаут 5 секунд (быстрее чем pump_bot)
+                    # Настройка прокси если требуется
+                    connector = None
+                    request_kwargs = {}
+                    if proxy:
+                        try:
+                            # Пробуем новый API (aiohttp 3.8+)
+                            connector = aiohttp.ProxyConnector.from_url(proxy)
+                            proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
+                            logger.debug(f"🌐 Фоновый мониторинг использует прокси через ProxyConnector: {proxy_info}")
+                        except AttributeError:
+                            # Для aiohttp 3.9.1 - прокси передается напрямую в get()
+                            connector = aiohttp.TCPConnector()
+                            request_kwargs['proxy'] = proxy
+                            proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
+                            logger.debug(f"🌐 Фоновый мониторинг использует прокси напрямую: {proxy_info}")
+                    
+                    async with aiohttp.ClientSession(connector=connector) as session:
+                        async with session.get(url, headers=headers_with_cookie, timeout=5, **request_kwargs) as response:
                             if response.status == 200:
                                 html = await response.text()
                                 soup = BeautifulSoup(html, 'html.parser')
