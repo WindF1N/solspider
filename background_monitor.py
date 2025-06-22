@@ -274,10 +274,8 @@ class BackgroundTokenMonitor:
                     type_emoji = "💬" if tweet_type == "Ответ" else "🐦"
                     message += f"   {type_emoji} Тип: {tweet_type}\n"
                     
-                    # Добавляем исторические данные автора
-                    from database import get_db_manager
-                    db_manager = get_db_manager()
-                    historical_data = db_manager.get_author_historical_data(username)
+                    # Добавляем исторические данные автора (используем уже загруженные данные)
+                    historical_data = author.get('historical_data', {})
                     if historical_data and historical_data.get('total_mentions', 0) > 0:
                         total_mentions = historical_data.get('total_mentions', 0)
                         unique_tokens = historical_data.get('unique_tokens', 0)
@@ -627,6 +625,134 @@ class BackgroundTokenMonitor:
             
             if blacklisted_count > 0:
                 logger.info(f"🚫 Исключено {blacklisted_count} авторов из черного списка для токена {token.symbol}")
+            
+            # ЗАГРУЖАЕМ ПРОФИЛИ АВТОРОВ (как в pump_bot.py)
+            if unique_authors:
+                logger.info(f"👥 Загружаем профили {len(unique_authors)} авторов для фонового мониторинга...")
+                
+                # Проверяем существующих авторов в БД
+                from database import get_db_manager, TwitterAuthor
+                from twitter_profile_parser import TwitterProfileParser
+                from datetime import datetime
+                
+                db_manager = get_db_manager()
+                usernames_to_parse = []
+                usernames_to_update = []
+                existing_authors = {}
+                
+                for author in unique_authors:
+                    username = author['username']
+                    
+                    # Проверяем в БД
+                    session = db_manager.Session()
+                    try:
+                        existing_author = session.query(TwitterAuthor).filter_by(username=username).first()
+                        if existing_author:
+                            # Проверяем возраст данных (обновляем если старше 24 часов)
+                            time_since_update = datetime.utcnow() - existing_author.last_updated
+                            hours_since_update = time_since_update.total_seconds() / 3600
+                            
+                            if hours_since_update >= 24:
+                                # Данные устарели - нужно обновить
+                                usernames_to_update.append(username)
+                                existing_authors[username] = {
+                                    'username': existing_author.username,
+                                    'display_name': existing_author.display_name,
+                                    'followers_count': existing_author.followers_count,
+                                    'following_count': existing_author.following_count,
+                                    'tweets_count': existing_author.tweets_count,
+                                    'likes_count': existing_author.likes_count,
+                                    'bio': existing_author.bio,
+                                    'website': existing_author.website,
+                                    'join_date': existing_author.join_date,
+                                    'is_verified': existing_author.is_verified,
+                                    'avatar_url': existing_author.avatar_url
+                                }
+                                logger.info(f"🔄 Автор @{username} найден в БД, но данные устарели ({hours_since_update:.1f}ч) - нужно обновление")
+                            else:
+                                # Данные свежие - используем из БД
+                                existing_authors[username] = {
+                                    'username': existing_author.username,
+                                    'display_name': existing_author.display_name,
+                                    'followers_count': existing_author.followers_count,
+                                    'following_count': existing_author.following_count,
+                                    'tweets_count': existing_author.tweets_count,
+                                    'likes_count': existing_author.likes_count,
+                                    'bio': existing_author.bio,
+                                    'website': existing_author.website,
+                                    'join_date': existing_author.join_date,
+                                    'is_verified': existing_author.is_verified,
+                                    'avatar_url': existing_author.avatar_url
+                                }
+                                logger.info(f"📋 Автор @{username} найден в БД ({existing_author.followers_count:,} подписчиков, обновлен {hours_since_update:.1f}ч назад)")
+                        else:
+                            # Автор не найден - нужно загрузить профиль
+                            usernames_to_parse.append(username)
+                            logger.info(f"🔍 Автор @{username} не найден в БД - нужна загрузка")
+                    finally:
+                        session.close()
+                
+                # Загружаем новых авторов и обновляем устаревшие
+                new_profiles = {}
+                updated_profiles = {}
+                total_to_load = len(usernames_to_parse) + len(usernames_to_update)
+                
+                if total_to_load > 0:
+                    logger.info(f"📥 Загружаем {len(usernames_to_parse)} новых и обновляем {len(usernames_to_update)} устаревших профилей...")
+                    
+                    # Используем контекстный менеджер для парсера
+                    async with TwitterProfileParser() as profile_parser:
+                        # Загружаем новые профили
+                        if usernames_to_parse:
+                            new_profiles = await profile_parser.get_multiple_profiles(usernames_to_parse)
+                        
+                        # Обновляем устаревшие профили
+                        if usernames_to_update:
+                            updated_profiles = await profile_parser.get_multiple_profiles(usernames_to_update)
+                else:
+                    logger.info(f"✅ Все авторы найдены в БД с актуальными данными - пропускаем загрузку профилей")
+                
+                # Обогащаем данные авторов профилями
+                for author in unique_authors:
+                    username = author['username']
+                    
+                    # Приоритет: обновленные данные > новые данные > существующие в БД
+                    profile = updated_profiles.get(username) or new_profiles.get(username) or existing_authors.get(username)
+                    
+                    if profile and isinstance(profile, dict):
+                        # Получаем исторические данные автора
+                        historical_data = db_manager.get_author_historical_data(username)
+                        
+                        author.update({
+                            'display_name': profile.get('display_name', ''),
+                            'followers_count': profile.get('followers_count', 0),
+                            'following_count': profile.get('following_count', 0),
+                            'tweets_count': profile.get('tweets_count', 0),
+                            'likes_count': profile.get('likes_count', 0),
+                            'bio': profile.get('bio', ''),
+                            'website': profile.get('website', ''),
+                            'join_date': profile.get('join_date', ''),
+                            'is_verified': profile.get('is_verified', False),
+                            'avatar_url': profile.get('avatar_url', ''),
+                            # Исторические данные
+                            'historical_data': historical_data
+                        })
+                    else:
+                        # Если профиль не загрузился, используем базовые данные
+                        logger.warning(f"⚠️ Не удалось загрузить/найти профиль @{username}")
+                        author.update({
+                            'display_name': f'@{username}',
+                            'followers_count': 0,
+                            'following_count': 0,
+                            'tweets_count': 0,
+                            'likes_count': 0,
+                            'bio': '',
+                            'website': '',
+                            'join_date': '',
+                            'is_verified': False,
+                            'avatar_url': '',
+                            'historical_data': {}
+                        })
             
             return tweets_count, engagement, unique_authors
             
