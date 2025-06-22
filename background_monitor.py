@@ -8,7 +8,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 from database import get_db_manager, Token
-from pump_bot import search_single_query, send_telegram, extract_tweet_authors, TWITTER_AUTHOR_BLACKLIST, analyze_author_contract_diversity
+from pump_bot import search_single_query, send_telegram, send_telegram_photo, extract_tweet_authors, TWITTER_AUTHOR_BLACKLIST, analyze_author_contract_diversity
 from cookie_rotation import background_proxy_cookie_rotator, background_cookie_rotator
 from logger_config import setup_logging
 from twitter_profile_parser import TwitterProfileParser
@@ -26,7 +26,7 @@ class BackgroundTokenMonitor:
     def __init__(self):
         self.db_manager = get_db_manager()
         self.running = False
-        self.max_token_age_hours = 1  # Мониторим токены не старше 1 часа
+        self.max_token_age_minutes = 20  # Мониторим токены не старше 20 минут
         self.batch_delay = 0  # Задержка между батчами (адаптивная)
         self.consecutive_errors = 0  # Счетчик последовательных ошибок
         self.batch_mode = False  # Режим пакетной обработки
@@ -46,11 +46,11 @@ class BackgroundTokenMonitor:
         """Получает токены для мониторинга (продолжает мониторить даже найденные)"""
         session = self.db_manager.Session()
         try:
-            # Токены созданные не более 1 часа назад (убираем фильтр по twitter_contract_tweets)
-            cutoff_time = datetime.utcnow() - timedelta(hours=self.max_token_age_hours)
+            # Токены созданные не более 20 минут назад (убираем фильтр по twitter_contract_tweets)
+            cutoff_time = datetime.utcnow() - timedelta(minutes=self.max_token_age_minutes)
             
             tokens = session.query(Token).filter(
-                Token.created_at >= cutoff_time,           # Не старше 1 часа
+                Token.created_at >= cutoff_time,           # Не старше 20 минут
                 # УБРАЛИ ФИЛЬТР: Token.twitter_contract_tweets == 0,  # Теперь мониторим ВСЕ токены
                 Token.mint.isnot(None),                    # Есть адрес контракта
                 Token.symbol.isnot(None)                   # Есть символ
@@ -180,11 +180,15 @@ class BackgroundTokenMonitor:
             emoji = "🔥" if is_first_discovery else "🚨"
             title = "КОНТРАКТ НАЙДЕН В TWITTER!" if is_first_discovery else f"НОВАЯ АКТИВНОСТЬ ПО КОНТРАКТУ! +{tweets_count - (token.twitter_contract_tweets or 0)} новых твитов!"
             
+            # Получаем дату создания токена
+            token_created_at = token.created_at.strftime('%Y-%m-%d %H:%M:%S') if token.created_at else "Неизвестно"
+            
             message = (
                 f"{emoji} <b>{title}</b>\n\n"
                 f"🪙 <b>Токен:</b> {token.symbol or 'Unknown'}\n"
                 f"💰 <b>Название:</b> {token.name or 'N/A'}\n"
                 f"📄 <b>Контракт:</b> <code>{token.mint}</code>\n"
+                f"📅 <b>Создан:</b> {token_created_at}\n"
             )
             
             # Добавляем информацию о твитах
@@ -195,10 +199,14 @@ class BackgroundTokenMonitor:
                 new_tweets = tweets_count - previous_tweets
                 action_text = f"📱 <b>Всего твитов:</b> {tweets_count} (+{new_tweets} новых)"
             
+            message += f"\n📊 <b>Активность:</b> {engagement}\n"
+            
+            # Добавляем Market Cap только если он больше 0
+            if token.market_cap and token.market_cap > 0:
+                message += f"📈 <b>Текущий Market Cap:</b> ${token.market_cap:,.0f}\n"
+            
             message += (
-                f"\n📊 <b>Активность:</b> {engagement}\n"
-                f"📈 <b>Текущий Market Cap:</b> ${token.market_cap:,.0f}\n\n"
-                f"{action_text}\n"
+                f"\n{action_text}\n"
                 f"📈 <b>Возможен рост интереса к токену</b>\n\n"
             )
             
@@ -259,7 +267,26 @@ class BackgroundTokenMonitor:
                     
                     # Добавляем дату публикации если есть
                     if tweet_date:
-                        message += f"   📅 {tweet_date}\n"
+                        message += f"   📅 Опубликован: {tweet_date}\n"
+                    
+                    # Добавляем тип твита
+                    tweet_type = author.get('tweet_type', 'Твит')
+                    type_emoji = "💬" if tweet_type == "Ответ" else "🐦"
+                    message += f"   {type_emoji} Тип: {tweet_type}\n"
+                    
+                    # Добавляем исторические данные автора
+                    from database import get_db_manager
+                    db_manager = get_db_manager()
+                    historical_data = db_manager.get_author_historical_data(username)
+                    if historical_data and historical_data.get('total_mentions', 0) > 0:
+                        total_mentions = historical_data.get('total_mentions', 0)
+                        unique_tokens = historical_data.get('unique_tokens', 0)
+                        recent_7d = historical_data.get('recent_mentions_7d', 0)
+                        recent_30d = historical_data.get('recent_mentions_30d', 0)
+                        
+                        message += f"   📊 История: {total_mentions} упоминаний ({unique_tokens} токенов)\n"
+                        if recent_7d > 0 or recent_30d > 0:
+                            message += f"   📈 Активность: {recent_7d} за 7д, {recent_30d} за 30д\n"
                     
                     # Показываем анализ концентрации контрактов
                     if total_contract_tweets > 0:
@@ -284,7 +311,10 @@ class BackgroundTokenMonitor:
                 ],
             ]
             
-            send_telegram(message, keyboard)
+            # Получаем URL картинки токена
+            token_image_url = f"https://axiomtrading.sfo3.cdn.digitaloceanspaces.com/{token.mint}.webp"
+            
+            send_telegram_photo(token_image_url, message, keyboard)
             logger.info(f"📤 Отправлено уведомление о контракте {token.symbol} в Telegram")
             
         except Exception as e:
@@ -312,7 +342,7 @@ class BackgroundTokenMonitor:
                 self.batch_mode = True
                 logger.warning(f"🚨 Активирован режим восстановления: батчи по {batch_size} токенов")
             elif len(tokens) > 20:
-                batch_size = 30  # Уменьшен оптимальный размер: 100→30
+                batch_size = 60  # Увеличен оптимальный размер: 30→60
                 self.batch_mode = True
                 logger.info(f"⚡ Пакетный режим: батчи по {batch_size} токенов (очередь: {len(tokens)})")
             else:
@@ -403,7 +433,7 @@ class BackgroundTokenMonitor:
             f"🤖 <b>НЕПРЕРЫВНЫЙ ФОНОВЫЙ МОНИТОРИНГ ЗАПУЩЕН!</b>\n\n"
             f"🔍 <b>Отслеживаем:</b> все упоминания адресов контрактов в Twitter\n"
             f"⚡ <b>Режим:</b> непрерывный мониторинг каждого нового твита\n"
-            f"📊 <b>Мониторим токены:</b> не старше {self.max_token_age_hours} часа\n"
+            f"📊 <b>Мониторим токены:</b> не старше {self.max_token_age_minutes} минут\n"
             f"🔄 <b>Ротация:</b> 10 cookies для фонового мониторинга\n"
             f"🚨 <b>Уведомления:</b> каждый новый уникальный твит с контрактом\n"
             f"🎯 <b>Цель:</b> полный охват растущего интереса\n\n"
@@ -494,8 +524,34 @@ class BackgroundTokenMonitor:
                                 
                                 # Парсим авторов если найдены твиты
                                 if tweets:
-                                    authors = await extract_tweet_authors(soup, token.mint, True)
-                                    all_authors.extend(authors)
+                                    # Извлекаем авторов с дополнительной информацией о типе твита
+                                    for tweet in tweets:
+                                        # Проверяем наличие retweet-header - если есть, то это ретвит
+                                        retweet_header = tweet.find('div', class_='retweet-header')
+                                        if retweet_header:
+                                            continue  # Пропускаем ретвиты
+                                        
+                                        # Извлекаем имя автора
+                                        author_link = tweet.find('a', class_='username')
+                                        if author_link:
+                                            author_username = author_link.get_text(strip=True).replace('@', '')
+                                            
+                                            # Определяем тип твита
+                                            replying_to = tweet.find('div', class_='replying-to')
+                                            tweet_type = "Ответ" if replying_to else "Твит"
+                                            
+                                            # Извлекаем текст твита
+                                            tweet_content = tweet.find('div', class_='tweet-content')
+                                            tweet_text = tweet_content.get_text(strip=True) if tweet_content else ""
+                                            
+                                            # Проверяем наличие контракта в твите
+                                            if token.mint in tweet_text:
+                                                all_authors.append({
+                                                    'username': author_username,
+                                                    'tweet_text': tweet_text,
+                                                    'tweet_type': tweet_type,
+                                                    'query': token.mint
+                                                })
                                     
                                     # Подсчитываем активность
                                     for tweet in tweets:

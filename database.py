@@ -511,6 +511,55 @@ class DatabaseManager:
         finally:
             session.close()
 
+    def get_author_historical_data(self, username):
+        """Получение исторических данных автора из базы данных"""
+        session = self.Session()
+        try:
+            # Подсчитываем общее количество упоминаний
+            total_mentions = session.query(TweetMention).filter_by(author_username=username).count()
+            
+            # Подсчитываем уникальные токены
+            unique_tokens = session.query(TweetMention.mint).filter_by(author_username=username).distinct().count()
+            
+            # Получаем дату первого упоминания
+            first_mention = session.query(TweetMention).filter_by(author_username=username).order_by(TweetMention.discovered_at.asc()).first()
+            first_seen_date = first_mention.discovered_at if first_mention else None
+            
+            # Подсчитываем упоминания за последние 30 дней
+            from datetime import timedelta
+            thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+            recent_mentions = session.query(TweetMention).filter(
+                TweetMention.author_username == username,
+                TweetMention.discovered_at >= thirty_days_ago
+            ).count()
+            
+            # Подсчитываем упоминания за последние 7 дней
+            seven_days_ago = datetime.utcnow() - timedelta(days=7)
+            weekly_mentions = session.query(TweetMention).filter(
+                TweetMention.author_username == username,
+                TweetMention.discovered_at >= seven_days_ago
+            ).count()
+            
+            return {
+                'total_mentions': total_mentions,
+                'unique_tokens': unique_tokens,
+                'first_seen_date': first_seen_date,
+                'recent_mentions_30d': recent_mentions,
+                'recent_mentions_7d': weekly_mentions
+            }
+            
+        except SQLAlchemyError as e:
+            logger.error(f"❌ Ошибка получения исторических данных автора {username}: {e}")
+            return {
+                'total_mentions': 0,
+                'unique_tokens': 0,
+                'first_seen_date': None,
+                'recent_mentions_30d': 0,
+                'recent_mentions_7d': 0
+            }
+        finally:
+            session.close()
+
     def close(self):
         """Закрытие соединения с базой данных"""
         if self.engine:

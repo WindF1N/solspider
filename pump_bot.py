@@ -122,6 +122,67 @@ def send_telegram(message, inline_keyboard=None):
         logger.error("❌ Не удалось отправить сообщение ни в один чат")
         return False
 
+def send_telegram_photo(photo_url, caption, inline_keyboard=None):
+    """Отправка фото с подписью в Telegram во все чаты"""
+    success_count = 0
+    total_chats = 0
+    
+    for chat_id in CHAT_IDS:
+        # Пропускаем пустые или неверные chat_id
+        if not chat_id or chat_id in ["YOUR_CHAT_ID", ""]:
+            continue
+            
+        total_chats += 1
+        
+        try:
+            # Сначала пробуем отправить фото
+            photo_url_to_send = f"https://cf-ipfs.com/ipfs/{photo_url.split('/')[-1]}" if photo_url and not photo_url.startswith('http') else photo_url
+            
+            payload = {
+                "chat_id": chat_id,
+                "photo": photo_url_to_send,
+                "caption": caption,
+                "parse_mode": "HTML"
+            }
+            
+            if inline_keyboard:
+                payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
+            
+            photo_response = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto", json=payload)
+            
+            if photo_response.status_code == 200:
+                logger.info(f"✅ Фото отправлено в чат {chat_id}")
+                success_count += 1
+            else:
+                # Если фото не удалось отправить, отправляем обычное сообщение
+                logger.warning(f"⚠️ Не удалось отправить фото в чат {chat_id}, отправляю текст: {photo_response.text}")
+                text_payload = {
+                    "chat_id": chat_id,
+                    "text": caption,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": False
+                }
+                
+                if inline_keyboard:
+                    text_payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
+                
+                text_response = requests.post(TELEGRAM_URL, json=text_payload)
+                if text_response.status_code == 200:
+                    logger.info(f"✅ Текстовое сообщение отправлено в чат {chat_id}")
+                    success_count += 1
+                else:
+                    logger.error(f"❌ Ошибка отправки в чат {chat_id}: {text_response.text}")
+                
+        except Exception as e:
+            logger.error(f"Ошибка отправки в чат {chat_id}: {e}")
+    
+    if success_count > 0:
+        logger.info(f"📤 Сообщение отправлено в {success_count}/{total_chats} чатов")
+        return True
+    else:
+        logger.error("❌ Не удалось отправить сообщение ни в один чат")
+        return False
+
 async def search_single_query(query, headers, retry_count=0, use_quotes=False, cycle_cookie=None):
     """Выполняет одиночный поисковый запрос к Nitter с повторными попытками при 429 и ротацией cookies"""
     # Добавляем вчерашнюю дату в параметр since (UTC)
@@ -507,24 +568,36 @@ async def format_new_token(data):
     if len(description) > 200:
         description = description[:200] + "..."
     
-    # Получаем bondingCurveKey
+    # Получаем bondingCurveKey для кнопок
     bonding_curve_key = data.get('bondingCurveKey', 'Not available')
+    
+    # Получаем дату создания токена (для новых токенов используем текущее время)
+    token_created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
     message = (
         f"🚀 <b>НОВЫЙ ТОКЕН НА PUMP.FUN!</b>\n\n"
         f"<b>💎 <a href='https://pump.fun/{mint}'>{name}</a></b>\n"
         f"<b>🏷️ Символ:</b> {symbol}\n"
         f"<b>📍 Mint:</b> <code>{mint}</code>\n"
-        f"<b>🔗 Bonding Curve:</b> <code>{bonding_curve_key}</code>\n"
         f"<b>👤 Создатель:</b> <code>{creator[:8] if len(creator) > 8 else creator}...</code>\n"
+        f"<b>📅 Создан:</b> {token_created_at}\n"
         f"<b>💰 Начальная покупка:</b> {initial_buy} SOL\n"
-        f"<b>📊 Market Cap:</b> ${market_cap:,.0f}\n"
+    )
+    
+    # Добавляем Market Cap только если он больше 0
+    if market_cap > 0:
+        message += f"<b>📊 Market Cap:</b> ${market_cap:,.0f}\n"
+    
+    message += (
         f"<b>👨‍💼 Доля создателя:</b> {creator_percentage}%\n"
         f"<b>🐦 Twitter активность:</b> {twitter_analysis['rating']}\n"
         f"<b>📈 Твиты:</b> {twitter_analysis['tweets']} | <b>Активность:</b> {twitter_analysis['engagement']} | <b>Скор:</b> {twitter_analysis['score']}\n"
         f"<b>🔍 Поиск:</b> Символ: {twitter_analysis['symbol_tweets']} | Контракт: {twitter_analysis['contract_tweets']} {'✅' if twitter_analysis['contract_found'] else '❌'}\n"
-        f"<b>📝 Описание:</b> {description}\n"
     )
+    
+    # Добавляем описание только если оно не пустое и не "Нет описания"
+    if description and description.strip() and description.strip() != "Нет описания":
+        message += f"<b>📝 Описание:</b> {description}\n"
     
     # Добавляем социальные сети если есть
     if twitter:
@@ -590,9 +663,26 @@ async def format_new_token(data):
                 if join_date:
                     message += f"   📅 Создан: {join_date}\n"
             
-            # Добавляем дату публикации если есть
-            if tweet_date:
-                message += f"   📅 {tweet_date}\n"
+                            # Добавляем дату публикации если есть
+                if tweet_date:
+                    message += f"   📅 Опубликован: {tweet_date}\n"
+                
+                # Добавляем тип твита
+                tweet_type = author.get('tweet_type', 'Твит')
+                type_emoji = "💬" if tweet_type == "Ответ" else "🐦"
+                message += f"   {type_emoji} Тип: {tweet_type}\n"
+                
+                # Добавляем исторические данные автора
+                historical_data = db_manager.get_author_historical_data(author.get('username', ''))
+                if historical_data and historical_data.get('total_mentions', 0) > 0:
+                    total_mentions = historical_data.get('total_mentions', 0)
+                    unique_tokens = historical_data.get('unique_tokens', 0)
+                    recent_7d = historical_data.get('recent_mentions_7d', 0)
+                    recent_30d = historical_data.get('recent_mentions_30d', 0)
+                    
+                    message += f"   📊 История: {total_mentions} упоминаний ({unique_tokens} токенов)\n"
+                    if recent_7d > 0 or recent_30d > 0:
+                        message += f"   📈 Активность: {recent_7d} за 7д, {recent_30d} за 30д\n"
             
             # Показываем анализ концентрации контрактов
             if total_contract_tweets > 0:
@@ -631,7 +721,10 @@ async def format_new_token(data):
     # Логируем анализ токена
     log_token_analysis(data, twitter_analysis, should_notify)
     
-    return message, keyboard, should_notify
+    # Получаем URL картинки токена (используем ссылку Axiom)
+    token_image_url = f"https://axiomtrading.sfo3.cdn.digitaloceanspaces.com/{mint}.webp"
+    
+    return message, keyboard, should_notify, token_image_url
 
 def format_trade_alert(data):
     """Форматирование сообщения о крупной сделке"""
@@ -685,11 +778,11 @@ async def handle_message(message):
             logger.info(f"🚀 НОВЫЙ ТОКЕН: {token_name} ({symbol}) - {mint[:8]}...")
             
             # Анализируем токен и получаем сообщение
-            msg, keyboard, should_notify = await format_new_token(data)
+            msg, keyboard, should_notify, token_image_url = await format_new_token(data)
             
             if should_notify:
                 logger.info(f"✅ Токен {symbol} прошел фильтрацию - отправляем уведомление")
-                send_telegram(msg, keyboard)
+                send_telegram_photo(token_image_url, msg, keyboard)
                 
                 # Обновляем статус уведомления в БД
                 try:
@@ -817,6 +910,10 @@ async def extract_tweet_authors(soup, query, contract_found):
                     logger.info(f"🚫 Автор @{author_username} в черном списке - пропускаем")
                     continue
                 
+                # Определяем тип твита (обычный твит или ответ)
+                replying_to = tweet.find('div', class_='replying-to')
+                tweet_type = "Ответ" if replying_to else "Твит"
+                
                 # Извлекаем текст твита
                 tweet_content = tweet.find('div', class_='tweet-content')
                 tweet_text = tweet_content.get_text(strip=True) if tweet_content else ""
@@ -858,6 +955,7 @@ async def extract_tweet_authors(soup, query, contract_found):
                     'username': author_username,
                     'tweet_text': tweet_text,  # Полный текст твита для цитаты
                     'tweet_date': tweet_date_text,
+                    'tweet_type': tweet_type,  # Тип твита (Твит или Ответ)
                     'retweets': retweets,
                     'likes': likes,
                     'replies': replies,
@@ -961,6 +1059,9 @@ async def extract_tweet_authors(soup, query, contract_found):
                 profile = updated_profiles.get(username) or new_profiles.get(username) or existing_authors.get(username)
                 
                 if profile and isinstance(profile, dict):
+                    # Получаем исторические данные автора
+                    historical_data = db_manager.get_author_historical_data(username)
+                    
                     author.update({
                         'display_name': profile.get('display_name', ''),
                         'followers_count': profile.get('followers_count', 0),
@@ -971,7 +1072,9 @@ async def extract_tweet_authors(soup, query, contract_found):
                         'website': profile.get('website', ''),
                         'join_date': profile.get('join_date', ''),
                         'is_verified': profile.get('is_verified', False),
-                        'avatar_url': profile.get('avatar_url', '')
+                        'avatar_url': profile.get('avatar_url', ''),
+                        # Исторические данные
+                        'historical_data': historical_data
                     })
                     
                     # Собираем все твиты этого автора с текущей страницы
@@ -1599,6 +1702,21 @@ async def send_delayed_twitter_notification(token_data, twitter_analysis):
         description = token_data.get('description', 'Нет описания')
         market_cap = token_data.get('marketCap', 0)
         
+        # Получаем дату создания токена из БД
+        db_manager = get_db_manager()
+        session = db_manager.Session()
+        try:
+            db_token = session.query(Token).filter_by(mint=mint).first()
+            if db_token and db_token.created_at:
+                token_created_at = db_token.created_at.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                token_created_at = "Неизвестно"
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения даты создания токена: {e}")
+            token_created_at = "Неизвестно"
+        finally:
+            session.close()
+        
         # Обрезаем описание если слишком длинное
         if len(description) > 200:
             description = description[:200] + "..."
@@ -1607,9 +1725,19 @@ async def send_delayed_twitter_notification(token_data, twitter_analysis):
             f"🚀 <b>КОНТРАКТ НАЙДЕН В TWITTER!</b>\n\n"
             f"<b>💎 {name} ({symbol})</b>\n"
             f"<b>📍 Mint:</b> <code>{mint}</code>\n"
-            f"<b>💰 Market Cap:</b> ${market_cap:,.0f}\n"
-            f"<b>📝 Описание:</b> {description}\n\n"
-            f"<b>🐦 Twitter анализ:</b> {twitter_analysis['rating']}\n"
+            f"<b>📅 Создан:</b> {token_created_at}\n"
+        )
+        
+        # Добавляем Market Cap только если он больше 0
+        if market_cap > 0:
+            message += f"<b>💰 Market Cap:</b> ${market_cap:,.0f}\n"
+        
+        # Добавляем описание только если оно не пустое и не "Нет описания"
+        if description and description.strip() and description.strip() != "Нет описания":
+            message += f"<b>📝 Описание:</b> {description}\n"
+        
+        message += (
+            f"\n<b>🐦 Twitter анализ:</b> {twitter_analysis['rating']}\n"
             f"<b>📈 Твиты:</b> {twitter_analysis['tweets']} | <b>Активность:</b> {twitter_analysis['engagement']} | <b>Скор:</b> {twitter_analysis['score']}\n"
             f"<b>🔍 Поиск:</b> Символ: {twitter_analysis['symbol_tweets']} | Контракт: {twitter_analysis['contract_tweets']} ✅\n"
         )
@@ -1670,9 +1798,26 @@ async def send_delayed_twitter_notification(token_data, twitter_analysis):
                     if join_date:
                         message += f"   📅 Создан: {join_date}\n"
                 
-                # Добавляем дату публикации если есть
-                if tweet_date:
-                    message += f"   📅 {tweet_date}\n"
+                            # Добавляем дату публикации если есть
+            if tweet_date:
+                message += f"   📅 Опубликован: {tweet_date}\n"
+            
+            # Добавляем тип твита
+            tweet_type = author.get('tweet_type', 'Твит')
+            type_emoji = "💬" if tweet_type == "Ответ" else "🐦"
+            message += f"   {type_emoji} Тип: {tweet_type}\n"
+            
+            # Добавляем исторические данные автора
+            historical_data = author.get('historical_data', {})
+            if historical_data and historical_data.get('total_mentions', 0) > 0:
+                total_mentions = historical_data.get('total_mentions', 0)
+                unique_tokens = historical_data.get('unique_tokens', 0)
+                recent_7d = historical_data.get('recent_mentions_7d', 0)
+                recent_30d = historical_data.get('recent_mentions_30d', 0)
+                
+                message += f"   📊 История: {total_mentions} упоминаний ({unique_tokens} токенов)\n"
+                if recent_7d > 0 or recent_30d > 0:
+                    message += f"   📈 Активность: {recent_7d} за 7д, {recent_30d} за 30д\n"
                 
                 # Показываем анализ концентрации контрактов
                 if total_contract_tweets > 0:
@@ -1700,7 +1845,10 @@ async def send_delayed_twitter_notification(token_data, twitter_analysis):
             ]
         ]
         
-        send_telegram(message, keyboard)
+        # Получаем URL картинки токена
+        token_image_url = f"https://axiomtrading.sfo3.cdn.digitaloceanspaces.com/{mint}.webp"
+        
+        send_telegram_photo(token_image_url, message, keyboard)
         logger.info(f"📤 Отправлено отложенное уведомление для {symbol}")
         
     except Exception as e:
