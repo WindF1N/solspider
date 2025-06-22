@@ -71,7 +71,7 @@ TWITTER_AUTHOR_BLACKLIST = {
     'cvxej15391531',   # @cvxej15391531 - спамер контрактов (каждый твит = контракт)
     'cheeze_devs',
     'h1ghlysk1lled',
-    'LoafzSol',
+    'loafzsol',
     'moonminer100x',
     'mmifh46796833',
     'vkhzb26995951',
