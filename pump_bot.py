@@ -987,11 +987,11 @@ async def extract_tweet_authors(soup, query, contract_found):
                 try:
                     existing_author = session.query(TwitterAuthor).filter_by(username=username).first()
                     if existing_author:
-                        # Проверяем возраст данных (обновляем если старше 24 часов)
+                        # Проверяем возраст данных (обновляем если старше 20 минут)
                         time_since_update = datetime.utcnow() - existing_author.last_updated
-                        hours_since_update = time_since_update.total_seconds() / 3600
+                        minutes_since_update = time_since_update.total_seconds() / 60
                         
-                        if hours_since_update >= 24:
+                        if minutes_since_update >= 20:
                             # Данные устарели - нужно обновить
                             usernames_to_update.append(username)
                             existing_authors[username] = {
@@ -1007,7 +1007,7 @@ async def extract_tweet_authors(soup, query, contract_found):
                                 'is_verified': existing_author.is_verified,
                                 'avatar_url': existing_author.avatar_url
                             }
-                            logger.info(f"🔄 Автор @{username} найден в БД, но данные устарели ({hours_since_update:.1f}ч) - нужно обновление")
+                            logger.info(f"🔄 Автор @{username} найден в БД, но данные устарели ({minutes_since_update:.1f}мин) - нужно обновление")
                         else:
                             # Данные свежие - используем из БД
                             existing_authors[username] = {
@@ -1023,7 +1023,7 @@ async def extract_tweet_authors(soup, query, contract_found):
                                 'is_verified': existing_author.is_verified,
                                 'avatar_url': existing_author.avatar_url
                             }
-                            logger.info(f"📋 Автор @{username} найден в БД ({existing_author.followers_count:,} подписчиков, обновлен {hours_since_update:.1f}ч назад)")
+                            logger.info(f"📋 Автор @{username} найден в БД ({existing_author.followers_count:,} подписчиков, обновлен {minutes_since_update:.1f}мин назад)")
                     else:
                         # Автор не найден - нужно загрузить профиль
                         usernames_to_parse.append(username)
