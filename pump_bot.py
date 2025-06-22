@@ -45,8 +45,6 @@ TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 # Список чатов для отправки уведомлений
 CHAT_IDS = [
     CHAT_ID,  # Основной чат из .env
-    "5542434203",  # Дополнительный чат 1
-    "1424887871"   # Дополнительный чат 2
 ]
 
 # WebSocket конфигурация
@@ -70,9 +68,14 @@ TWITTER_AUTHOR_BLACKLIST = {
     'cheeznytrashiny', # Спам-аккаунт
     'drvfh54737952',   # @drvfh54737952 - спамер контрактов (много разных токенов)
     'cvxej15391531',   # @cvxej15391531 - спамер контрактов (каждый твит = контракт)
-    # Добавьте других нежелательных авторов здесь
+    'cheeze_devs',
+    'h1ghlysk1lled',
+    'LoafzSol',
+    'moonminer100x',
+    'mmifh46796833',
+    'vkhzb26995951',
+    'glvgw57181461',
 }
-
 # Очередь для асинхронной обработки анализа Twitter
 twitter_analysis_queue = asyncio.Queue()
 # Словарь для хранения результатов анализа
@@ -533,19 +536,71 @@ async def format_new_token(data):
     # Добавляем информацию об авторах твитов с контрактом
     if twitter_analysis.get('contract_authors'):
         authors = twitter_analysis['contract_authors']
-        message += f"\n\n<b>👥 АВТОРЫ ТВИТОВ С КОНТРАКТОМ:</b>\n"
+        total_followers = sum([author.get('followers_count', 0) for author in authors])
+        verified_count = sum([1 for author in authors if author.get('is_verified', False)])
+        
+        message += f"\n\n<b>👥 АВТОРЫ ТВИТОВ С КОНТРАКТОМ ({len(authors)} авторов):</b>\n"
+        message += f"   📊 Общий охват: {total_followers:,} подписчиков\n"
+        if verified_count > 0:
+            message += f"   ✅ Верифицированных: {verified_count}\n"
+        message += "\n"
+        
         for i, author in enumerate(authors[:3]):  # Показываем максимум 3 авторов
             username = author.get('username', 'Unknown')
             display_name = author.get('display_name', username)
             followers = author.get('followers_count', 0)
             verified = "✅" if author.get('is_verified', False) else ""
-            tweet_text = author.get('tweet_text', '')[:100] + "..." if len(author.get('tweet_text', '')) > 100 else author.get('tweet_text', '')
+            tweet_text = author.get('tweet_text', '')  # Полный текст твита
+            tweet_date = author.get('tweet_date', '')  # Дата твита
             
-            message += f"{i+1}. <b>@{username}</b> {verified}\n"
+            # Информация о спаме контрактов
+            diversity_percent = author.get('contract_diversity', 0)
+            spam_percent = author.get('max_contract_spam', 0)
+            diversity_recommendation = author.get('diversity_recommendation', 'Нет данных')
+            spam_analysis = author.get('spam_analysis', 'Нет данных')
+            is_spam_likely = author.get('is_spam_likely', False)
+            total_contract_tweets = author.get('total_contract_tweets', 0)
+            unique_contracts = author.get('unique_contracts_count', 0)
+            
+            # Эмодзи для статуса автора (высокая концентрация = хорошо)
+            spam_indicator = ""
+            if spam_percent >= 80:
+                spam_indicator = " 🔥"  # Вспышка активности
+            elif spam_percent >= 60:
+                spam_indicator = " ⭐"  # Высокая концентрация
+            elif spam_percent >= 40:
+                spam_indicator = " 🟡"  # Умеренная концентрация
+            elif is_spam_likely:
+                spam_indicator = " 🚫"  # Много разных контрактов
+            
+            message += f"{i+1}. <b>@{username}</b> {verified}{spam_indicator}\n"
             if display_name != username:
                 message += f"   📝 {display_name}\n"
-            message += f"   👥 {followers:,} подписчиков\n"
-            message += f"   💬 \"{tweet_text}\"\n"
+            
+            # Полная информация о профиле
+            following_count = author.get('following_count', 0)
+            tweets_count = author.get('tweets_count', 0)
+            likes_count = author.get('likes_count', 0)
+            join_date = author.get('join_date', '')
+            
+            if followers > 0 or following_count > 0 or tweets_count > 0:
+                message += f"   👥 {followers:,} подписчиков | {following_count:,} подписок\n"
+                message += f"   📝 {tweets_count:,} твитов | ❤️ {likes_count:,} лайков\n"
+                if join_date:
+                    message += f"   📅 Создан: {join_date}\n"
+            
+            # Добавляем дату публикации если есть
+            if tweet_date:
+                message += f"   📅 {tweet_date}\n"
+            
+            # Показываем анализ концентрации контрактов
+            if total_contract_tweets > 0:
+                message += f"   📊 Контракты: {unique_contracts} из {total_contract_tweets} твитов (концентрация: {spam_percent:.1f}%)\n"
+                message += f"   🎯 Анализ: {spam_analysis}\n"
+            
+            # Весь текст твита в цитате
+            if tweet_text:
+                message += f"   💬 <blockquote>{tweet_text}</blockquote>\n"
     
     message += f"\n<b>🕐 Время:</b> {datetime.now().strftime('%H:%M:%S')}"
     
@@ -742,8 +797,15 @@ async def extract_tweet_authors(soup, query, contract_found):
     
     try:
         tweets = soup.find_all('div', class_='timeline-item')
+        retweets_skipped = 0
         
         for tweet in tweets:
+            # Проверяем наличие retweet-header - если есть, то это ретвит
+            retweet_header = tweet.find('div', class_='retweet-header')
+            if retweet_header:
+                retweets_skipped += 1
+                continue  # Пропускаем ретвиты
+            
             # Извлекаем имя автора
             author_link = tweet.find('a', class_='username')
             if author_link:
@@ -760,7 +822,15 @@ async def extract_tweet_authors(soup, query, contract_found):
                 
                 # Извлекаем дату твита
                 tweet_date = tweet.find('span', class_='tweet-date')
-                tweet_date_text = tweet_date.get_text(strip=True) if tweet_date else ""
+                tweet_date_text = ""
+                if tweet_date:
+                    # Пытаемся получить полную дату из title атрибута ссылки
+                    date_link = tweet_date.find('a')
+                    if date_link and date_link.get('title'):
+                        tweet_date_text = date_link.get('title')
+                    else:
+                        # Если title нет, берем текст
+                        tweet_date_text = tweet_date.get_text(strip=True)
                 
                 # Извлекаем статистику твита
                 retweets = 0
@@ -785,7 +855,7 @@ async def extract_tweet_authors(soup, query, contract_found):
                 # Добавляем данные автора
                 authors_data.append({
                     'username': author_username,
-                    'tweet_text': tweet_text[:200],  # Ограничиваем длину
+                    'tweet_text': tweet_text,  # Полный текст твита для цитаты
                     'tweet_date': tweet_date_text,
                     'retweets': retweets,
                     'likes': likes,
@@ -794,6 +864,9 @@ async def extract_tweet_authors(soup, query, contract_found):
                 })
                 
                 logger.info(f"📝 Найден автор твита: @{author_username} для запроса '{query}'")
+        
+        if retweets_skipped > 0:
+            logger.info(f"🔄 Пропущено {retweets_skipped} ретвитов при парсинге авторов")
         
         # Парсим профили авторов (максимум 5 для производительности)
         unique_authors = list({author['username']: author for author in authors_data}.values())[:5]
@@ -1078,26 +1151,25 @@ async def extract_tweet_authors(soup, query, contract_found):
             #     logger.info(f"🚫 Автор @{username} исключен из результатов - подозрительные метрики")
             #     continue
             
-            # Проверяем является ли автор спамером
-            if author.get('is_spam_likely', False):
-                excluded_count += 1
-                recommendation = author.get('diversity_recommendation', 'Спамер')
-                logger.info(f"🚫 Автор @{username} исключен из результатов - {recommendation}")
-                continue
-            
-            # Дополнительная проверка по разнообразию контрактов
+            # УПРОЩЕННАЯ ЛОГИКА: исключаем только чистых спамеров (90%+ контрактов)
             diversity_percent = author.get('contract_diversity', 0)
-            if diversity_percent >= 50:  # 50%+ разных контрактов = спам
+            spam_percent = author.get('max_contract_spam', 0)
+            total_tweets = author.get('total_contract_tweets', 0)
+            
+            # ПРОСТАЯ ПРОВЕРКА: исключаем только если автор пишет контракты в 90%+ сообщений
+            if total_tweets >= 3 and (spam_percent >= 90 or diversity_percent >= 90):
                 excluded_count += 1
-                logger.info(f"🚫 Автор @{username} исключен из результатов - слишком много разных контрактов ({diversity_percent:.1f}%)")
+                logger.info(f"🚫 Автор @{username} исключен - ЧИСТЫЙ СПАМЕР (контракты в {max(spam_percent, diversity_percent):.1f}% сообщений)")
                 continue
             
-            # Автор прошел все фильтры
+            # Автор прошел упрощенную фильтрацию
             filtered_authors.append(author)
-            logger.info(f"✅ Автор @{username} прошел фильтрацию - включен в результаты")
+            logger.info(f"✅ Автор @{username} включен в результаты (контракты в {max(spam_percent, diversity_percent):.1f}% сообщений)")
         
         if excluded_count > 0:
-            logger.info(f"🎯 ФИЛЬТРАЦИЯ ЗАВЕРШЕНА: исключено {excluded_count} спамеров, оставлено {len(filtered_authors)} качественных авторов")
+            logger.info(f"🎯 УПРОЩЕННАЯ ФИЛЬТРАЦИЯ: исключено {excluded_count} чистых спамеров, оставлено {len(filtered_authors)} авторов")
+        else:
+            logger.info(f"🎯 УПРОЩЕННАЯ ФИЛЬТРАЦИЯ: все {len(filtered_authors)} авторов прошли проверку")
         
         return filtered_authors
         
@@ -1455,17 +1527,15 @@ def is_author_spam_by_analysis(author):
 
 def should_notify_based_on_authors_quality(authors):
     """
-    Проверяет качество авторов для отложенных уведомлений
-    УЛУЧШЕННАЯ ЛОГИКА: фильтруем накрученные аккаунты и спамеров
+    УПРОЩЕННАЯ ЛОГИКА: Отправляем уведомления только если есть информация об авторах,
+    кроме случаев когда автор отправляет каждое сообщение с контрактом (100% спам)
     """
     if not authors:
-        return False  # Нет авторов - не отправляем
+        logger.info(f"🚫 Нет информации об авторах твитов - пропускаем уведомление")
+        return False  # Нет авторов - НЕ отправляем
     
-    excellent_authors = 0  # Вспышки активности (≥80%)
-    good_authors = 0       # Хорошие авторы (≥40%)
-    new_accounts = 0       # Новые аккаунты (≤2 твитов)
-    spam_authors = 0       # Спамеры разных контрактов
-    # suspicious_authors = 0 # Удалено - проверка лайков/подписчиков отключена
+    pure_spammers = 0  # Авторы которые КАЖДОЕ сообщение пишут с контрактом
+    total_authors = len(authors)
     
     for author in authors:
         diversity_percent = author.get('contract_diversity', 0)
@@ -1473,103 +1543,51 @@ def should_notify_based_on_authors_quality(authors):
         total_tweets = author.get('total_contract_tweets', 0)
         username = author.get('username', 'Unknown')
         
-        # ФИЛЬТР 1 ОТКЛЮЧЕН: Проверка метрик лайков/подписчиков отключена
-        # if is_account_suspicious_by_metrics(author):
-        #     suspicious_authors += 1
-        #     logger.info(f"🚫 @{username}: ИСКЛЮЧЕН - подозрительные метрики лайков/подписчиков")
-        #     continue
-        
-        # ФИЛЬТР 2: Проверяем на спам по анализу контрактов
-        if is_author_spam_by_analysis(author):
-            spam_authors += 1
-            logger.info(f"🚫 @{username}: ИСКЛЮЧЕН - определен как спамер")
-            continue
-        
-        # ПРОВЕРКА НА ОТСУТСТВИЕ ДАННЫХ АНАЛИЗА
-        if total_tweets == 0 and spam_percent == 0 and diversity_percent == 0:
-            logger.warning(f"⚠️ @{username}: недостаточно данных для анализа ({total_tweets} твитов) - пропускаем")
-            continue
-        
-        # НОВАЯ ЛОГИКА: малое количество твитов = потенциально хороший сигнал
-        if total_tweets <= 2:
-            new_accounts += 1
-            logger.info(f"🆕 @{username}: новый аккаунт ({total_tweets} твитов) - потенциальный сигнал")
-            continue
-        
-        # Анализируем концентрацию на одном контракте
-        if spam_percent >= 80:
-            excellent_authors += 1
-            logger.info(f"🔥 @{username}: ВСПЫШКА! ({spam_percent:.1f}% концентрация на одном контракте)")
-        elif spam_percent >= 40:
-            good_authors += 1
-            logger.info(f"⭐ @{username}: ХОРОШИЙ ({spam_percent:.1f}% концентрация на одном контракте)")
-        elif diversity_percent >= 30:
-            # Много РАЗНЫХ контрактов = плохо
-            spam_authors += 1
-            logger.info(f"🚫 @{username}: СПАМЕР РАЗНЫХ ТОКЕНОВ ({diversity_percent:.1f}% разных контрактов)")
-        elif spam_percent >= 20:
-            # Умеренная концентрация - принимаем
-            good_authors += 1
-            logger.info(f"🟡 @{username}: умеренная концентрация ({spam_percent:.1f}%) - принимаем")
+        # ПРОСТАЯ ПРОВЕРКА: если автор пишет контракты в 90%+ сообщений = чистый спамер
+        if total_tweets >= 3 and (spam_percent >= 90 or diversity_percent >= 90):
+            pure_spammers += 1
+            logger.info(f"🚫 @{username}: ЧИСТЫЙ СПАМЕР - контракты в {max(spam_percent, diversity_percent):.1f}% сообщений")
         else:
-            # НИЗКАЯ концентрация И низкое разнообразие = подозрительно
-            spam_authors += 1
-            logger.info(f"🚫 @{username}: НИЗКОЕ КАЧЕСТВО ({spam_percent:.1f}% концентрация, {diversity_percent:.1f}% разнообразие) - отклоняем")
+            logger.info(f"✅ @{username}: НОРМАЛЬНЫЙ АВТОР - контракты в {max(spam_percent, diversity_percent):.1f}% сообщений")
     
-    # УЖЕСТОЧЕННЫЕ КРИТЕРИИ: отправляем только при наличии качественных авторов
-    should_notify = excellent_authors > 0 or good_authors > 0 or new_accounts > 0
+    # Блокируем ТОЛЬКО если ВСЕ авторы - чистые спамеры
+    should_notify = pure_spammers < total_authors
     
-    logger.info(f"📊 УЛУЧШЕННЫЙ АНАЛИЗ АВТОРОВ (отложенные уведомления):")
-    logger.info(f"   🔥 Вспышки (≥80%): {excellent_authors}")
-    logger.info(f"   ⭐ Хорошие (≥40%): {good_authors}")
-    logger.info(f"   🆕 Новые аккаунты (≤2 твитов): {new_accounts}")
-    logger.info(f"   🚫 Спамеры разных токенов: {spam_authors}")
+    logger.info(f"📊 УПРОЩЕННЫЙ АНАЛИЗ АВТОРОВ:")
+    logger.info(f"   👥 Всего авторов: {total_authors}")
+    logger.info(f"   🚫 Чистых спамеров (90%+ контрактов): {pure_spammers}")
+    logger.info(f"   ✅ Нормальных авторов: {total_authors - pure_spammers}")
     logger.info(f"   🎯 РЕШЕНИЕ: {'ОТПРАВИТЬ' if should_notify else 'ЗАБЛОКИРОВАТЬ'}")
     
     if not should_notify:
-        logger.info(f"🚫 Отложенное уведомление заблокировано - нет качественных авторов")
+        logger.info(f"🚫 Уведомление заблокировано - ВСЕ авторы являются чистыми спамерами")
+    else:
+        logger.info(f"✅ Уведомление разрешено - есть нормальные авторы или нет данных об авторах")
     
     return should_notify
 
 def should_send_delayed_notification(twitter_analysis, symbol, mint):
-    """Проверяет нужно ли отправить отложенное уведомление после анализа Twitter"""
-    if not twitter_analysis['contract_found']:
+    """
+    Проверяет нужно ли отправить отложенное уведомление после анализа Twitter
+    ОТПРАВЛЯЕМ если найден контракт с подходящими авторами
+    """
+    # Проверяем что контракт найден в Twitter
+    if not twitter_analysis.get('contract_found', False):
+        logger.debug(f"🚫 {symbol}: контракт не найден в Twitter - пропускаем уведомление")
         return False
     
-    # ПРОВЕРЯЕМ НА ДУБЛИРОВАНИЕ - уже отправлялось ли уведомление
-    try:
-        db_manager = get_db_manager()
-        session = db_manager.Session()
-        
-        # Ищем токен в БД
-        db_token = session.query(Token).filter_by(mint=mint).first()
-        if db_token and db_token.notification_sent:
-            logger.info(f"🚫 Отложенное уведомление для {symbol} уже отправлялось ранее - пропускаем дублирование")
-            session.close()
-            return False
-        
-        session.close()
-    except Exception as e:
-        logger.error(f"❌ Ошибка проверки дублирования уведомления для {symbol}: {e}")
+    # Получаем авторов твитов с контрактом
+    contract_authors = twitter_analysis.get('contract_authors', [])
     
-    # Проверяем качество авторов
-    authors = twitter_analysis.get('contract_authors', [])
-    if not should_notify_based_on_authors_quality(authors):
-        logger.info(f"🚫 Отложенное уведомление для {symbol} заблокировано - все авторы являются спамерами")
-        return False
-        
-    # Критерии для отложенного уведомления
-    high_activity = (
-        twitter_analysis['score'] >= 10 or
-        twitter_analysis['tweets'] >= 5 or
-        'высокий' in twitter_analysis['rating'].lower()
-    )
+    # Используем упрощенную логику фильтрации авторов
+    should_notify = should_notify_based_on_authors_quality(contract_authors)
     
-    if high_activity:
-        logger.info(f"📢 Токен {symbol} показал высокую активность в Twitter - отправляем отложенное уведомление")
-        return True
-        
-    return False
+    if should_notify:
+        logger.info(f"✅ {symbol}: найден контракт с подходящими авторами - отправляем уведомление")
+    else:
+        logger.info(f"🚫 {symbol}: контракт найден, но авторы не подходят - пропускаем уведомление")
+    
+    return should_notify
 
 async def send_delayed_twitter_notification(token_data, twitter_analysis):
     """Отправляет отложенное уведомление после анализа Twitter"""
@@ -1577,17 +1595,97 @@ async def send_delayed_twitter_notification(token_data, twitter_analysis):
         mint = token_data['mint']
         symbol = token_data['symbol']
         name = token_data.get('name', 'Unknown Token')
+        description = token_data.get('description', 'Нет описания')
+        market_cap = token_data.get('marketCap', 0)
+        
+        # Обрезаем описание если слишком длинное
+        if len(description) > 200:
+            description = description[:200] + "..."
         
         message = (
-            f"🔥 <b>ВЫСОКАЯ АКТИВНОСТЬ В TWITTER!</b>\n\n"
+            f"🚀 <b>КОНТРАКТ НАЙДЕН В TWITTER!</b>\n\n"
             f"<b>💎 {name} ({symbol})</b>\n"
-            f"<b>📍 Mint:</b> <code>{mint}</code>\n\n"
+            f"<b>📍 Mint:</b> <code>{mint}</code>\n"
+            f"<b>💰 Market Cap:</b> ${market_cap:,.0f}\n"
+            f"<b>📝 Описание:</b> {description}\n\n"
             f"<b>🐦 Twitter анализ:</b> {twitter_analysis['rating']}\n"
             f"<b>📈 Твиты:</b> {twitter_analysis['tweets']} | <b>Активность:</b> {twitter_analysis['engagement']} | <b>Скор:</b> {twitter_analysis['score']}\n"
-            f"<b>🔍 Поиск:</b> Символ: {twitter_analysis['symbol_tweets']} | Контракт: {twitter_analysis['contract_tweets']} ✅\n\n"
-            f"⚡ <b>Обнаружена повышенная активность после анализа!</b>\n"
-            f"<b>🕐 Время:</b> {datetime.now().strftime('%H:%M:%S')}"
+            f"<b>🔍 Поиск:</b> Символ: {twitter_analysis['symbol_tweets']} | Контракт: {twitter_analysis['contract_tweets']} ✅\n"
         )
+        
+        # Добавляем информацию об авторах твитов с контрактом
+        if twitter_analysis.get('contract_authors'):
+            authors = twitter_analysis['contract_authors']
+            total_followers = sum([author.get('followers_count', 0) for author in authors])
+            verified_count = sum([1 for author in authors if author.get('is_verified', False)])
+            
+            message += f"\n<b>👥 АВТОРЫ ТВИТОВ С КОНТРАКТОМ ({len(authors)} авторов):</b>\n"
+            message += f"   📊 Общий охват: {total_followers:,} подписчиков\n"
+            if verified_count > 0:
+                message += f"   ✅ Верифицированных: {verified_count}\n"
+            message += "\n"
+            
+            for i, author in enumerate(authors[:3]):  # Показываем максимум 3 авторов
+                username = author.get('username', 'Unknown')
+                display_name = author.get('display_name', username)
+                followers = author.get('followers_count', 0)
+                verified = "✅" if author.get('is_verified', False) else ""
+                tweet_text = author.get('tweet_text', '')
+                tweet_date = author.get('tweet_date', '')
+                
+                # Информация о спаме контрактов
+                diversity_percent = author.get('contract_diversity', 0)
+                spam_percent = author.get('max_contract_spam', 0)
+                diversity_recommendation = author.get('diversity_recommendation', 'Нет данных')
+                spam_analysis = author.get('spam_analysis', 'Нет данных')
+                is_spam_likely = author.get('is_spam_likely', False)
+                total_contract_tweets = author.get('total_contract_tweets', 0)
+                unique_contracts = author.get('unique_contracts_count', 0)
+                
+                # Эмодзи для статуса автора (высокая концентрация = хорошо)
+                spam_indicator = ""
+                if spam_percent >= 80:
+                    spam_indicator = " 🔥"  # Вспышка активности
+                elif spam_percent >= 60:
+                    spam_indicator = " ⭐"  # Высокая концентрация
+                elif spam_percent >= 40:
+                    spam_indicator = " 🟡"  # Умеренная концентрация
+                elif is_spam_likely:
+                    spam_indicator = " 🚫"  # Много разных контрактов
+                
+                message += f"{i+1}. <b>@{username}</b> {verified}{spam_indicator}\n"
+                if display_name != username:
+                    message += f"   📝 {display_name}\n"
+                
+                # Полная информация о профиле
+                following_count = author.get('following_count', 0)
+                tweets_count = author.get('tweets_count', 0)
+                likes_count = author.get('likes_count', 0)
+                join_date = author.get('join_date', '')
+                
+                if followers > 0 or following_count > 0 or tweets_count > 0:
+                    message += f"   👥 {followers:,} подписчиков | {following_count:,} подписок\n"
+                    message += f"   📝 {tweets_count:,} твитов | ❤️ {likes_count:,} лайков\n"
+                    if join_date:
+                        message += f"   📅 Создан: {join_date}\n"
+                
+                # Добавляем дату публикации если есть
+                if tweet_date:
+                    message += f"   📅 {tweet_date}\n"
+                
+                # Показываем анализ концентрации контрактов
+                if total_contract_tweets > 0:
+                    message += f"   📊 Контракты: {unique_contracts} из {total_contract_tweets} твитов (концентрация: {spam_percent:.1f}%)\n"
+                    message += f"   🎯 Анализ: {spam_analysis}\n"
+                
+                # Весь текст твита в цитате
+                if tweet_text:
+                    message += f"   💬 <blockquote>{tweet_text}</blockquote>\n"
+            
+            message += "\n"
+        
+        message += f"⚡ <b>Время действовать!</b>\n"
+        message += f"<b>🕐 Время:</b> {datetime.now().strftime('%H:%M:%S')}"
         
         # Кнопки
         bonding_curve_key = token_data.get('bondingCurveKey', mint)

@@ -247,28 +247,252 @@ class TwitterProfileParser:
             return None
     
     def extract_tweets_from_profile(self, html_content):
-        """Извлекает твиты с профиля пользователя"""
+        """Извлекает твиты с профиля пользователя (исключая ретвиты)"""
         try:
             soup = BeautifulSoup(html_content, 'html.parser')
             tweets = []
+            retweets_skipped = 0
             
             # Ищем все твиты в timeline
             timeline_items = soup.find_all('div', class_='timeline-item')
             
             for item in timeline_items:
+                # Проверяем наличие retweet-header - если есть, то это ретвит
+                retweet_header = item.find('div', class_='retweet-header')
+                if retweet_header:
+                    retweets_skipped += 1
+                    continue  # Пропускаем ретвиты
+                
                 tweet_content = item.find('div', class_='tweet-content')
                 if tweet_content:
                     tweet_text = tweet_content.get_text(strip=True)
                     if tweet_text:
                         tweets.append(tweet_text)
             
-            logger.info(f"📱 Извлечено {len(tweets)} твитов с профиля")
+            logger.info(f"📱 Извлечено {len(tweets)} оригинальных твитов с профиля (пропущено {retweets_skipped} ретвитов)")
             return tweets
             
         except Exception as e:
             logger.error(f"❌ Ошибка извлечения твитов: {e}")
             return []
     
+    def extract_next_page_url(self, html_content):
+        """Извлекает URL следующей страницы из HTML"""
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Ищем элемент show-more с ссылкой на следующую страницу
+            show_more = soup.find('div', class_='show-more')
+            if show_more:
+                link = show_more.find('a')
+                if link and link.get('href'):
+                    next_url = link.get('href')
+                    logger.debug(f"🔗 Найдена ссылка на следующую страницу: {next_url}")
+                    return next_url
+            
+            logger.debug("📄 Ссылка на следующую страницу не найдена")
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка извлечения ссылки на следующую страницу: {e}")
+            return None
+    
+    def extract_tweets_with_contracts(self, html_content):
+        """Извлекает твиты с профиля и ищет в них контракты (адреса длиной 32-44 символа), исключая ретвиты"""
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            tweets_with_contracts = []
+            retweets_skipped = 0
+            
+            # Ищем все твиты в timeline
+            timeline_items = soup.find_all('div', class_='timeline-item')
+            
+            for item in timeline_items:
+                # Проверяем наличие retweet-header - если есть, то это ретвит
+                retweet_header = item.find('div', class_='retweet-header')
+                if retweet_header:
+                    retweets_skipped += 1
+                    continue  # Пропускаем ретвиты
+                
+                tweet_content = item.find('div', class_='tweet-content')
+                if tweet_content:
+                    tweet_text = tweet_content.get_text(strip=True)
+                    if tweet_text:
+                        # Ищем контракты в тексте твита (адреса длиной 32-44 символа)
+                        contracts = re.findall(r'\b[A-Za-z0-9]{32,44}\b', tweet_text)
+                        
+                        if contracts:
+                            # Также извлекаем дату твита
+                            tweet_date = None
+                            date_element = item.find('span', class_='tweet-date')
+                            if date_element:
+                                date_link = date_element.find('a')
+                                if date_link:
+                                    tweet_date = date_link.get('title', date_link.get_text(strip=True))
+                            
+                            tweets_with_contracts.append({
+                                'text': tweet_text,
+                                'contracts': contracts,
+                                'date': tweet_date
+                            })
+            
+            logger.info(f"📱 Найдено {len(tweets_with_contracts)} оригинальных твитов с контрактами (пропущено {retweets_skipped} ретвитов)")
+            return tweets_with_contracts
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка извлечения твитов с контрактами: {e}")
+            return []
+    
+    async def get_profile_with_replies_multi_page(self, username, max_pages=3):
+        """
+        Получает данные профиля пользователя вместе с твитами из /with_replies 
+        с поддержкой пагинации до max_pages страниц
+        """
+        try:
+            # Убираем @ если есть
+            username = username.replace('@', '')
+            
+            # Получаем актуальные cookies
+            if not self.cookie_rotator:
+                logger.error(f"❌ Cookie rotator не инициализирован для @{username}")
+                return None, []
+                
+            cookies_string = self.cookie_rotator.get_next_cookie()
+            
+            # Проверяем что cookies_string не None
+            if not cookies_string:
+                logger.error(f"❌ Не удалось получить cookies для @{username}")
+                return None, []
+            
+            # Парсим строку cookies в словарь для aiohttp
+            cookies = {}
+            try:
+                for cookie_part in cookies_string.split(';'):
+                    if '=' in cookie_part:
+                        key, value = cookie_part.strip().split('=', 1)
+                        cookies[key] = value
+            except Exception as e:
+                logger.error(f"❌ Ошибка парсинга cookies для @{username}: {e}")
+                return None, []
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1'
+            }
+            
+            # Начинаем с первой страницы профиля с /with_replies
+            base_url = f"https://nitter.tiekoetter.com/{username}/with_replies"
+            current_url = base_url
+            
+            profile_data = None
+            all_tweets = []
+            all_tweets_with_contracts = []
+            page_count = 0
+            
+            logger.info(f"🔍 Загружаем профиль @{username} с поддержкой replies (до {max_pages} страниц)")
+            
+            # Проверяем что session инициализирована
+            if not self.session:
+                logger.error(f"❌ Session не инициализирована для @{username}")
+                return None, []
+            
+            while page_count < max_pages and current_url:
+                page_count += 1
+                logger.info(f"📄 Загружаем страницу {page_count}/{max_pages} для @{username}")
+                
+                try:
+                    async with self.session.get(current_url, headers=headers, cookies=cookies, timeout=15) as response:
+                        if response.status == 200:
+                            html_content = await response.text()
+                            
+                            # Проверяем на блокировку Nitter
+                            if "Making sure you're not a bot!" in html_content:
+                                logger.warning(f"🚫 Nitter заблокирован для @{username}")
+                                break
+                            
+                            # Извлекаем данные профиля только с первой страницы
+                            if page_count == 1:
+                                profile_data = self.extract_profile_data(html_content)
+                                if not profile_data:
+                                    logger.warning(f"⚠️ Не удалось извлечь данные профиля @{username}")
+                                    break
+                            
+                            # Извлекаем твиты с текущей страницы
+                            page_tweets = self.extract_tweets_from_profile(html_content)
+                            page_tweets_with_contracts = self.extract_tweets_with_contracts(html_content)
+                            
+                            all_tweets.extend(page_tweets)
+                            all_tweets_with_contracts.extend(page_tweets_with_contracts)
+                            
+                            logger.info(f"📱 Страница {page_count}: найдено {len(page_tweets)} твитов, {len(page_tweets_with_contracts)} с контрактами")
+                            
+                            # Ищем ссылку на следующую страницу
+                            next_page_path = self.extract_next_page_url(html_content)
+                            if next_page_path and page_count < max_pages:
+                                # Формируем полный URL для следующей страницы
+                                if next_page_path.startswith('?'):
+                                    current_url = f"{base_url}{next_page_path}"
+                                else:
+                                    current_url = f"https://nitter.tiekoetter.com{next_page_path}"
+                                
+                                logger.debug(f"🔗 Следующая страница: {current_url}")
+                                
+                                # Небольшая пауза между страницами
+                                await asyncio.sleep(1)
+                            else:
+                                logger.info(f"📄 Больше страниц нет или достигнут лимит для @{username}")
+                                break
+                                
+                        elif response.status == 429:
+                            logger.warning(f"⚠️ Rate limit при загрузке страницы {page_count} для @{username}")
+                            # Помечаем текущий cookie как заблокированный
+                            try:
+                                if hasattr(self.cookie_rotator, 'mark_cookie_failed'):
+                                    self.cookie_rotator.mark_cookie_failed(cookies_string)
+                            except Exception as e:
+                                logger.warning(f"⚠️ Ошибка при отметке cookie как неудачный: {e}")
+                            break
+                            
+                        elif response.status == 404:
+                            logger.warning(f"⚠️ Профиль @{username} не найден")
+                            break
+                            
+                        else:
+                            logger.warning(f"⚠️ Ошибка загрузки страницы {page_count} для @{username}: {response.status}")
+                            break
+                            
+                except asyncio.TimeoutError:
+                    logger.warning(f"⏰ Таймаут при загрузке страницы {page_count} для @{username}")
+                    break
+                except Exception as e:
+                    logger.error(f"❌ Ошибка загрузки страницы {page_count} для @{username}: {e}")
+                    break
+            
+            # Подводим итоги
+            total_tweets = len(all_tweets)
+            total_contracts = len(all_tweets_with_contracts)
+            
+            if profile_data:
+                # Добавляем информацию о найденных твитах в данные профиля
+                profile_data['total_loaded_tweets'] = total_tweets
+                profile_data['tweets_with_contracts'] = total_contracts
+                profile_data['pages_loaded'] = page_count
+                
+                logger.info(f"✅ @{username}: профиль загружен, {page_count} страниц, {total_tweets} твитов, {total_contracts} с контрактами")
+                return profile_data, all_tweets, all_tweets_with_contracts
+            else:
+                logger.warning(f"⚠️ Не удалось загрузить профиль @{username}")
+                return None, all_tweets, all_tweets_with_contracts
+                
+        except Exception as e:
+            logger.error(f"❌ Общая ошибка загрузки профиля с replies @{username}: {e}")
+            return None, [], []
+
     async def get_profile_with_tweets(self, username, retry_count=0, max_retries=3):
         """Получает данные профиля пользователя вместе с твитами с механизмом повторных попыток"""
         try:
@@ -400,6 +624,111 @@ class TwitterProfileParser:
         logger.info(f"✅ Загружено {len([p for p in profiles.values() if p])} из {len(usernames)} профилей")
         return profiles
 
+    async def analyze_author_contracts_advanced(self, username, max_pages=3):
+        """
+        Анализирует контракты у автора Twitter с поддержкой /with_replies и пагинации
+        Возвращает детальную информацию о найденных контрактах
+        """
+        try:
+            profile_data, all_tweets, tweets_with_contracts = await self.get_profile_with_replies_multi_page(username, max_pages)
+            
+            if not profile_data:
+                return {
+                    'success': False,
+                    'error': 'Не удалось загрузить профиль',
+                    'total_tweets': 0,
+                    'tweets_with_contracts': 0,
+                    'unique_contracts': 0,
+                    'contracts_analysis': {}
+                }
+            
+            # Анализируем найденные контракты
+            all_contracts = []
+            contract_frequency = {}
+            
+            for tweet in tweets_with_contracts:
+                for contract in tweet['contracts']:
+                    # Фильтруем по длине (Solana адреса обычно 32-44 символа)
+                    if 32 <= len(contract) <= 44 and contract.isalnum():
+                        all_contracts.append(contract)
+                        contract_frequency[contract] = contract_frequency.get(contract, 0) + 1
+            
+            unique_contracts = len(set(all_contracts))
+            total_contract_mentions = len(all_contracts)
+            
+            # Вычисляем статистики
+            if len(tweets_with_contracts) > 0:
+                contract_diversity_percent = (unique_contracts / len(tweets_with_contracts)) * 100
+                
+                # Находим самый часто упоминаемый контракт
+                if contract_frequency:
+                    most_frequent_contract = max(contract_frequency.items(), key=lambda x: x[1])
+                    max_contract_concentration = (most_frequent_contract[1] / total_contract_mentions) * 100
+                else:
+                    most_frequent_contract = None
+                    max_contract_concentration = 0
+            else:
+                contract_diversity_percent = 0
+                most_frequent_contract = None
+                max_contract_concentration = 0
+            
+            # Топ-5 самых упоминаемых контрактов
+            top_contracts = sorted(contract_frequency.items(), key=lambda x: x[1], reverse=True)[:5]
+            
+            # Анализ качества
+            if unique_contracts == 0:
+                quality_analysis = "Нет контрактов"
+                spam_likelihood = "Неизвестно"
+            elif max_contract_concentration >= 80:
+                quality_analysis = "Отличная концентрация"
+                spam_likelihood = "Низкая"
+            elif max_contract_concentration >= 60:
+                quality_analysis = "Хорошая концентрация"
+                spam_likelihood = "Низкая"
+            elif max_contract_concentration >= 40:
+                quality_analysis = "Умеренная концентрация"
+                spam_likelihood = "Средняя"
+            elif contract_diversity_percent >= 80:
+                quality_analysis = "Очень высокое разнообразие"
+                spam_likelihood = "Высокая"
+            elif contract_diversity_percent >= 50:
+                quality_analysis = "Высокое разнообразие"
+                spam_likelihood = "Высокая"
+            else:
+                quality_analysis = "Приемлемое разнообразие"
+                spam_likelihood = "Средняя"
+            
+            result = {
+                'success': True,
+                'profile_data': profile_data,
+                'total_tweets_loaded': len(all_tweets),
+                'tweets_with_contracts': len(tweets_with_contracts),
+                'unique_contracts': unique_contracts,
+                'total_contract_mentions': total_contract_mentions,
+                'contract_diversity_percent': round(contract_diversity_percent, 1),
+                'max_contract_concentration_percent': round(max_contract_concentration, 1),
+                'most_frequent_contract': most_frequent_contract,
+                'top_contracts': top_contracts,
+                'quality_analysis': quality_analysis,
+                'spam_likelihood': spam_likelihood,
+                'pages_analyzed': profile_data.get('pages_loaded', 0),
+                'contracts_details': tweets_with_contracts
+            }
+            
+            logger.info(f"📊 Анализ @{username}: {unique_contracts} уник. контрактов из {total_contract_mentions} упоминаний, {quality_analysis}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка анализа контрактов автора @{username}: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'total_tweets': 0,
+                'tweets_with_contracts': 0,
+                'unique_contracts': 0,
+                'contracts_analysis': {}
+            }
+
 async def test_profile_parser():
     """Тестирование парсера профилей"""
     logger.info("🧪 Тестирование парсера профилей Twitter")
@@ -420,6 +749,34 @@ async def test_profile_parser():
             else:
                 logger.info(f"❌ Профиль @{username}: не удалось загрузить")
 
+async def test_profile_with_replies():
+    """Тестирование нового парсера профилей с replies и пагинацией"""
+    logger.info("🧪 Тестирование парсера профилей Twitter с /with_replies и пагинацией")
+    
+    test_username = 'Tsomisol'  # Пример из запроса
+    
+    async with TwitterProfileParser() as parser:
+        profile_data, all_tweets, tweets_with_contracts = await parser.get_profile_with_replies_multi_page(test_username, max_pages=3)
+        
+        if profile_data:
+            logger.info(f"📊 Результаты для @{test_username}:")
+            logger.info(f"  • Отображаемое имя: {profile_data.get('display_name', 'N/A')}")
+            logger.info(f"  • Подписчики: {profile_data.get('followers_count', 0):,}")
+            logger.info(f"  • Твиты на профиле: {profile_data.get('tweets_count', 0):,}")
+            logger.info(f"  • Верифицирован: {profile_data.get('is_verified', False)}")
+            logger.info(f"  • Загружено страниц: {profile_data.get('pages_loaded', 0)}")
+            logger.info(f"  • Загружено твитов: {profile_data.get('total_loaded_tweets', 0)}")
+            logger.info(f"  • Твитов с контрактами: {profile_data.get('tweets_with_contracts', 0)}")
+            
+            # Показываем примеры твитов с контрактами
+            if tweets_with_contracts:
+                logger.info(f"\n📝 Примеры твитов с контрактами:")
+                for i, tweet in enumerate(tweets_with_contracts[:3], 1):
+                    logger.info(f"  {i}. [{tweet.get('date', 'N/A')}] {tweet['text'][:100]}...")
+                    logger.info(f"     🔗 Контракты: {', '.join(tweet['contracts'][:2])}")
+        else:
+            logger.info(f"❌ Профиль @{test_username}: не удалось загрузить")
+
 if __name__ == "__main__":
     import sys
     import os
@@ -431,4 +788,10 @@ if __name__ == "__main__":
     load_dotenv()
     setup_logging()
     
-    asyncio.run(test_profile_parser()) 
+    # Проверяем аргументы командной строки для выбора теста
+    if len(sys.argv) > 1 and sys.argv[1] == "replies":
+        logger.info("🚀 Запуск теста с /with_replies и пагинацией")
+        asyncio.run(test_profile_with_replies())
+    else:
+        logger.info("🚀 Запуск стандартного теста профилей")
+        asyncio.run(test_profile_parser()) 

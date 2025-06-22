@@ -135,16 +135,15 @@ class BackgroundTokenMonitor:
     
     def should_notify_based_on_authors(self, authors):
         """
-        Проверяет, стоит ли отправлять уведомление на основе качества авторов
-        ИСПРАВЛЕННАЯ ЛОГИКА: фокус на одном контракте = хорошо, много разных = плохо
+        УПРОЩЕННАЯ ЛОГИКА: Отправляем уведомления только если есть информация об авторах,
+        кроме случаев когда автор отправляет каждое сообщение с контрактом (100% спам)
         """
         if not authors:
-            return False  # Нет авторов - не отправляем
+            logger.info(f"🚫 Нет информации об авторах твитов - пропускаем уведомление")
+            return False  # Нет авторов - НЕ отправляем
         
-        excellent_authors = 0  # Вспышки активности (≥80%)
-        good_authors = 0       # Хорошие авторы (≥40%)
-        new_accounts = 0       # Новые аккаунты (≤2 твитов)
-        spam_authors = 0       # Спамеры разных контрактов
+        pure_spammers = 0  # Авторы которые КАЖДОЕ сообщение пишут с контрактом
+        total_authors = len(authors)
         
         for author in authors:
             diversity_percent = author.get('contract_diversity', 0)
@@ -152,49 +151,26 @@ class BackgroundTokenMonitor:
             total_tweets = author.get('total_contract_tweets', 0)
             username = author.get('username', 'Unknown')
             
-            # ПРОВЕРКА НА ОТСУТСТВИЕ ДАННЫХ АНАЛИЗА
-            if total_tweets == 0 and spam_percent == 0 and diversity_percent == 0:
-                logger.warning(f"⚠️ @{username}: недостаточно данных для анализа ({total_tweets} твитов) - пропускаем")
-                continue
-            
-            # НОВАЯ ЛОГИКА: малое количество твитов = потенциально хороший сигнал
-            if total_tweets <= 2:
-                new_accounts += 1
-                logger.info(f"🆕 @{username}: новый аккаунт ({total_tweets} твитов) - потенциальный сигнал")
-                continue
-            
-            # Анализируем концентрацию на одном контракте
-            if spam_percent >= 80:
-                excellent_authors += 1
-                logger.info(f"🔥 @{username}: ВСПЫШКА! ({spam_percent:.1f}% концентрация на одном контракте)")
-            elif spam_percent >= 40:
-                good_authors += 1
-                logger.info(f"⭐ @{username}: ХОРОШИЙ ({spam_percent:.1f}% концентрация на одном контракте)")
-            elif diversity_percent >= 30:
-                # Много РАЗНЫХ контрактов = плохо
-                spam_authors += 1
-                logger.info(f"🚫 @{username}: СПАМЕР РАЗНЫХ ТОКЕНОВ ({diversity_percent:.1f}% разных контрактов)")
-            elif spam_percent >= 20:
-                # Умеренная концентрация - принимаем
-                good_authors += 1
-                logger.info(f"🟡 @{username}: умеренная концентрация ({spam_percent:.1f}%) - принимаем")
+            # ПРОСТАЯ ПРОВЕРКА: если автор пишет контракты в 90%+ сообщений = чистый спамер
+            if total_tweets >= 3 and (spam_percent >= 90 or diversity_percent >= 90):
+                pure_spammers += 1
+                logger.info(f"🚫 @{username}: ЧИСТЫЙ СПАМЕР - контракты в {max(spam_percent, diversity_percent):.1f}% сообщений")
             else:
-                # НИЗКАЯ концентрация И низкое разнообразие = подозрительно
-                spam_authors += 1
-                logger.info(f"🚫 @{username}: НИЗКОЕ КАЧЕСТВО ({spam_percent:.1f}% концентрация, {diversity_percent:.1f}% разнообразие) - отклоняем")
+                logger.info(f"✅ @{username}: НОРМАЛЬНЫЙ АВТОР - контракты в {max(spam_percent, diversity_percent):.1f}% сообщений")
         
-        # СМЯГЧЕННЫЕ КРИТЕРИИ: отправляем если есть хорошие сигналы
-        should_notify = excellent_authors > 0 or good_authors > 0 or new_accounts > 0
+        # Блокируем ТОЛЬКО если ВСЕ авторы - чистые спамеры
+        should_notify = pure_spammers < total_authors
         
-        logger.info(f"📊 ИСПРАВЛЕННЫЙ АНАЛИЗ АВТОРОВ:")
-        logger.info(f"   🔥 Вспышки (≥80%): {excellent_authors}")
-        logger.info(f"   ⭐ Хорошие (≥40%): {good_authors}")
-        logger.info(f"   🆕 Новые аккаунты (≤2 твитов): {new_accounts}")
-        logger.info(f"   🚫 Спамеры разных токенов: {spam_authors}")
+        logger.info(f"📊 УПРОЩЕННЫЙ АНАЛИЗ АВТОРОВ:")
+        logger.info(f"   👥 Всего авторов: {total_authors}")
+        logger.info(f"   🚫 Чистых спамеров (90%+ контрактов): {pure_spammers}")
+        logger.info(f"   ✅ Нормальных авторов: {total_authors - pure_spammers}")
         logger.info(f"   🎯 РЕШЕНИЕ: {'ОТПРАВИТЬ' if should_notify else 'ЗАБЛОКИРОВАТЬ'}")
         
         if not should_notify:
-            logger.info(f"🚫 Уведомление заблокировано - только спамеры разных токенов")
+            logger.info(f"🚫 Уведомление заблокировано - ВСЕ авторы являются чистыми спамерами")
+        else:
+            logger.info(f"✅ Уведомление разрешено - есть нормальные авторы или нет данных об авторах")
         
         return should_notify
 
@@ -242,7 +218,8 @@ class BackgroundTokenMonitor:
                     display_name = author.get('display_name', username)
                     followers = author.get('followers_count', 0)
                     verified = "✅" if author.get('is_verified', False) else ""
-                    tweet_text = author.get('tweet_text', '')[:80] + "..." if len(author.get('tweet_text', '')) > 80 else author.get('tweet_text', '')
+                    tweet_text = author.get('tweet_text', '')  # Полный текст твита
+                    tweet_date = author.get('tweet_date', '')  # Дата твита
                     
                     # Информация о спаме контрактов
                     diversity_percent = author.get('contract_diversity', 0)
@@ -267,15 +244,31 @@ class BackgroundTokenMonitor:
                     message += f"{i+1}. <b>@{username}</b> {verified}{spam_indicator}\n"
                     if display_name != username:
                         message += f"   📝 {display_name}\n"
-                    if followers > 0:
-                        message += f"   👥 {followers:,} подписчиков\n"
+                    
+                    # Полная информация о профиле
+                    following_count = author.get('following_count', 0)
+                    tweets_count = author.get('tweets_count', 0)
+                    likes_count = author.get('likes_count', 0)
+                    join_date = author.get('join_date', '')
+                    
+                    if followers > 0 or following_count > 0 or tweets_count > 0:
+                        message += f"   👥 {followers:,} подписчиков | {following_count:,} подписок\n"
+                        message += f"   📝 {tweets_count:,} твитов | ❤️ {likes_count:,} лайков\n"
+                        if join_date:
+                            message += f"   📅 Создан: {join_date}\n"
+                    
+                    # Добавляем дату публикации если есть
+                    if tweet_date:
+                        message += f"   📅 {tweet_date}\n"
                     
                     # Показываем анализ концентрации контрактов
                     if total_contract_tweets > 0:
                         message += f"   📊 Контракты: {unique_contracts} из {total_contract_tweets} твитов (концентрация: {spam_percent:.1f}%)\n"
                         message += f"   🎯 Анализ: {spam_analysis}\n"
                     
-                    message += f"   💬 \"{tweet_text}\"\n"
+                    # Весь текст твита в цитате
+                    if tweet_text:
+                        message += f"   💬 <blockquote>{tweet_text}</blockquote>\n"
                 message += "\n"
             
             message += f"⚡ <b>Время действовать!</b>"
