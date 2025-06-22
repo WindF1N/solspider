@@ -764,6 +764,92 @@ class BackgroundTokenMonitor:
                             # Исторические данные
                             'historical_data': historical_data
                         })
+                        
+                        # СОХРАНЯЕМ ПРОФИЛИ В БД (как в pump_bot.py)
+                        
+                        # Сохраняем новые профили в БД
+                        if username in usernames_to_parse:
+                            try:
+                                db_manager.save_twitter_author(profile)
+                                db_manager.save_tweet_mention({
+                                    'mint': token.mint,  # Адрес контракта токена
+                                    'author_username': username,
+                                    'tweet_text': author['tweet_text'],
+                                    'search_query': token.mint,
+                                    'retweets': 0,  # В фоновом мониторинге нет данных о ретвитах
+                                    'likes': 0,     # В фоновом мониторинге нет данных о лайках
+                                    'replies': 0,   # В фоновом мониторинге нет данных об ответах
+                                    'author_followers_at_time': profile.get('followers_count', 0),
+                                    'author_verified_at_time': profile.get('is_verified', False)
+                                })
+                                logger.info(f"💾 Сохранен новый профиль @{username} в БД ({profile.get('followers_count', 0):,} подписчиков)")
+                            except Exception as e:
+                                logger.error(f"❌ Ошибка сохранения профиля @{username}: {e}")
+                        
+                        # Обновляем существующие профили в БД
+                        elif username in usernames_to_update:
+                            try:
+                                # Обновляем профиль в БД
+                                session = db_manager.Session()
+                                try:
+                                    existing_author = session.query(TwitterAuthor).filter_by(username=username).first()
+                                    if existing_author:
+                                        # Отслеживаем изменения для логирования
+                                        old_followers = existing_author.followers_count
+                                        new_followers = profile.get('followers_count', 0)
+                                        followers_change = new_followers - old_followers
+                                        
+                                        # Обновляем все поля
+                                        existing_author.display_name = profile.get('display_name', existing_author.display_name)
+                                        existing_author.followers_count = new_followers
+                                        existing_author.following_count = profile.get('following_count', existing_author.following_count)
+                                        existing_author.tweets_count = profile.get('tweets_count', existing_author.tweets_count)
+                                        existing_author.likes_count = profile.get('likes_count', existing_author.likes_count)
+                                        existing_author.bio = profile.get('bio', existing_author.bio)
+                                        existing_author.website = profile.get('website', existing_author.website)
+                                        existing_author.join_date = profile.get('join_date', existing_author.join_date)
+                                        existing_author.is_verified = profile.get('is_verified', existing_author.is_verified)
+                                        existing_author.avatar_url = profile.get('avatar_url', existing_author.avatar_url)
+                                        existing_author.last_updated = datetime.utcnow()
+                                        
+                                        session.commit()
+                                        
+                                        change_info = f" ({followers_change:+,} подписчиков)" if followers_change != 0 else ""
+                                        logger.info(f"🔄 Обновлен профиль @{username} в БД ({new_followers:,} подписчиков{change_info})")
+                                finally:
+                                    session.close()
+                                
+                                # Сохраняем твит
+                                db_manager.save_tweet_mention({
+                                    'mint': token.mint,
+                                    'author_username': username,
+                                    'tweet_text': author['tweet_text'],
+                                    'search_query': token.mint,
+                                    'retweets': 0,
+                                    'likes': 0,
+                                    'replies': 0,
+                                    'author_followers_at_time': profile.get('followers_count', 0),
+                                    'author_verified_at_time': profile.get('is_verified', False)
+                                })
+                            except Exception as e:
+                                logger.error(f"❌ Ошибка обновления профиля @{username}: {e}")
+                        
+                        # Для существующих авторов (с актуальными данными) сохраняем только твит
+                        else:
+                            try:
+                                db_manager.save_tweet_mention({
+                                    'mint': token.mint,
+                                    'author_username': username,
+                                    'tweet_text': author['tweet_text'],
+                                    'search_query': token.mint,
+                                    'retweets': 0,
+                                    'likes': 0,
+                                    'replies': 0,
+                                    'author_followers_at_time': profile.get('followers_count', 0),
+                                    'author_verified_at_time': profile.get('is_verified', False)
+                                })
+                            except Exception as e:
+                                logger.error(f"❌ Ошибка сохранения твита @{username}: {e}")
                     else:
                         # Если профиль не загрузился, используем базовые данные
                         logger.warning(f"⚠️ Не удалось загрузить/найти профиль @{username}")
