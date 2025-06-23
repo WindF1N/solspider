@@ -8,7 +8,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 from database import get_db_manager, Token
-from pump_bot import search_single_query, send_telegram, send_telegram_photo, extract_tweet_authors, TWITTER_AUTHOR_BLACKLIST, analyze_author_contract_diversity
+from pump_bot import search_single_query, send_telegram, send_telegram_photo, extract_tweet_authors, TWITTER_AUTHOR_BLACKLIST, analyze_author_contract_diversity, analyze_author_page_contracts
 from cookie_rotation import background_proxy_cookie_rotator, background_cookie_rotator
 from logger_config import setup_logging
 from twitter_profile_parser import TwitterProfileParser
@@ -569,12 +569,25 @@ class BackgroundTokenMonitor:
                                             tweet_content = tweet.find('div', class_='tweet-content')
                                             tweet_text = tweet_content.get_text(strip=True) if tweet_content else ""
                                             
+                                            # Извлекаем дату твита
+                                            tweet_date = tweet.find('span', class_='tweet-date')
+                                            tweet_date_text = ""
+                                            if tweet_date:
+                                                # Ищем ссылку с датой
+                                                date_link = tweet_date.find('a')
+                                                if date_link:
+                                                    tweet_date_text = date_link.get('title')
+                                                else:
+                                                    # Если нет ссылки, берем текст напрямую
+                                                    tweet_date_text = tweet_date.get_text(strip=True)
+                                            
                                             # Проверяем наличие контракта в твите
                                             if token.mint in tweet_text:
                                                 all_authors.append({
                                                     'username': author_username,
                                                     'tweet_text': tweet_text,
                                                     'tweet_type': tweet_type,
+                                                    'tweet_date': tweet_date_text,
                                                     'query': token.mint
                                                 })
                                     
@@ -764,6 +777,48 @@ class BackgroundTokenMonitor:
                             # Исторические данные
                             'historical_data': historical_data
                         })
+                        
+                        # ДОБАВЛЯЕМ АНАЛИЗ КОНТРАКТОВ (как в pump_bot.py)
+                        
+                        # Собираем все твиты этого автора с текущей страницы
+                        author_tweets_on_page = []
+                        for author_data in unique_authors:
+                            if author_data['username'] == username:
+                                author_tweets_on_page.append(author_data['tweet_text'])
+                        
+                        # ВСЕГДА загружаем полные данные с профиля для точного анализа
+                        logger.info(f"🔍 Анализируем контракты автора @{username} (загружаем с профиля)")
+                        page_analysis = await analyze_author_page_contracts(username, tweets_on_page=None, load_from_profile=True)
+                        
+                        # Проверяем что получили достаточно данных
+                        total_analyzed_tweets = page_analysis['total_tweets_on_page']
+                        
+                        # Обрабатываем разные случаи недостатка данных
+                        if total_analyzed_tweets < 3:
+                            if page_analysis['diversity_category'] == 'Сетевая ошибка':
+                                # Сетевая ошибка - НЕ помечаем как подозрительного
+                                logger.warning(f"🌐 @{username}: сетевая ошибка при анализе - пропускаем без блокировки")
+                                page_analysis['is_spam_likely'] = False
+                                page_analysis['recommendation'] = "🌐 Сетевая ошибка - повторить позже"
+                            else:
+                                # ИСПРАВЛЕННАЯ ЛОГИКА: мало твитов = потенциальный сигнал (новый аккаунт)
+                                logger.info(f"🆕 @{username}: новый аккаунт с {total_analyzed_tweets} твитами - потенциальный сигнал!")
+                                page_analysis['is_spam_likely'] = False  # НЕ спамер!
+                                page_analysis['spam_analysis'] = f"Новый аккаунт: {total_analyzed_tweets} твитов (потенциальный сигнал)"
+                                page_analysis['recommendation'] = "🆕 НОВЫЙ АККАУНТ - хороший сигнал"
+                        
+                        author.update({
+                            'contract_diversity': page_analysis['contract_diversity_percent'],
+                            'max_contract_spam': page_analysis['max_contract_spam_percent'],
+                            'diversity_recommendation': page_analysis['recommendation'],
+                            'is_spam_likely': page_analysis['is_spam_likely'],
+                            'diversity_category': page_analysis['diversity_category'],
+                            'spam_analysis': page_analysis['spam_analysis'],
+                            'total_contract_tweets': page_analysis['total_tweets_on_page'],
+                            'unique_contracts_count': page_analysis['unique_contracts_on_page']
+                        })
+                        
+                        logger.info(f"📊 @{username}: {page_analysis['total_tweets_on_page']} твитов, концентрация: {page_analysis['max_contract_spam_percent']:.1f}%, разнообразие: {page_analysis['contract_diversity_percent']:.1f}% - {page_analysis['recommendation']}")
                         
                         # СОХРАНЯЕМ ПРОФИЛИ В БД (как в pump_bot.py)
                         
