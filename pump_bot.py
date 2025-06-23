@@ -809,7 +809,7 @@ async def format_new_token(data):
     # Создаем кнопки
     keyboard = [
         [
-            {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/meme/{bonding_curve_key}"},
+            {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/t/{mint}"},
             {"text": "⚡ QUICK BUY", "url": f"https://t.me/alpha_web3_bot?start=call-dex_men-SO-{mint}"}
         ],
         [
@@ -862,7 +862,7 @@ def format_trade_alert(data):
     # Кнопки для торговых уведомлений
     keyboard = [
         [
-            {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/meme/{bonding_curve_key}"},
+            {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/t/{mint}"},
             {"text": "⚡ QUICK BUY", "url": f"https://t.me/alpha_web3_bot?start=call-dex_men-SO-{mint}"}
         ],
         [
@@ -1934,7 +1934,7 @@ async def send_delayed_twitter_notification(token_data, twitter_analysis):
         bonding_curve_key = token_data.get('bondingCurveKey', mint)
         keyboard = [
             [
-                {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/meme/{bonding_curve_key}"},
+                {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/t/{mint}"},
                 {"text": "⚡ QUICK BUY", "url": f"https://t.me/alpha_web3_bot?start=call-dex_men-SO-{mint}"}
             ],
             [
@@ -2774,7 +2774,7 @@ async def format_vip_token(data, vip_info):
     # Кнопки такие же как в обычных уведомлениях
     keyboard = [
         [
-            {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/meme/{bonding_curve_key}"},
+            {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/t/{mint}"},
             {"text": "⚡ QUICK BUY", "url": f"https://t.me/alpha_web3_bot?start=call-dex_men-SO-{mint}"}
         ],
         [
@@ -2981,9 +2981,13 @@ async def check_vip_twitter_accounts():
                                             # Создаем VIP уведомление для Twitter сигнала
                                             await send_vip_twitter_signal(token, username, tweet_text, vip_info)
                                         else:
-                                            logger.info(f"⚠️ Контракт {contract} не найден в БД - возможно новый токен")
+                                            logger.info(f"🆕 VIP КОНТРАКТ НЕ В БД! Отправляем сигнал о неизвестном токене: {contract}")
                                             
-                                            # Можно добавить логику для поиска токена через API
+                                            # Добавляем в кэш чтобы не дублировать
+                                            VIP_SIGNALS_CACHE.add(signal_key)
+                                            
+                                            # Отправляем VIP сигнал для неизвестного контракта
+                                            await send_vip_unknown_contract_signal(contract, username, tweet_text, vip_info)
                                             
                                     finally:
                                         session_db.close()
@@ -3052,7 +3056,7 @@ async def send_vip_twitter_signal(token, twitter_username, tweet_text, vip_info)
         bonding_curve_key = token.bonding_curve_key or token.mint
         keyboard = [
             [
-                {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/meme/{bonding_curve_key}"},
+                {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/t/{token.mint}"},
                 {"text": "⚡ QUICK BUY", "url": f"https://t.me/alpha_web3_bot?start=call-dex_men-SO-{token.mint}"}
             ],
             [
@@ -3070,6 +3074,82 @@ async def send_vip_twitter_signal(token, twitter_username, tweet_text, vip_info)
         
     except Exception as e:
         logger.error(f"❌ Ошибка отправки VIP Twitter сигнала: {e}")
+
+async def send_vip_unknown_contract_signal(contract_address, twitter_username, tweet_text, vip_info):
+    """Отправляет VIP уведомление о неизвестном контракте из Twitter"""
+    try:
+        # Обрезаем твит если слишком длинный
+        if len(tweet_text) > 200:
+            tweet_text = tweet_text[:200] + "..."
+        
+        # Создаем VIP сообщение для неизвестного контракта
+        message = (
+            f"🌟 <b>VIP TWITTER СИГНАЛ!</b> 🌟\n\n"
+            f"🔥 <b>{vip_info['description']}</b>\n"
+            f"👤 <b>От:</b> @{twitter_username}\n\n"
+            f"🆕 <b>НЕИЗВЕСТНЫЙ КОНТРАКТ!</b>\n"
+            f"📍 <b>Адрес:</b> <code>{contract_address}</code>\n"
+            f"⚠️ <b>Статус:</b> Не найден в нашей базе данных\n"
+            f"🎯 <b>Возможно:</b> Новый токен или токен с другой платформы\n\n"
+            f"📱 <b>Твит:</b>\n<blockquote>{tweet_text}</blockquote>\n\n"
+            f"⚡ <b>МГНОВЕННЫЙ VIP СИГНАЛ!</b>\n"
+            f"🎯 <b>Приоритет:</b> {vip_info['priority']}\n"
+            f"🔍 <b>Требует исследования!</b>\n"
+            f"<b>🕐 Время:</b> {datetime.now().strftime('%H:%M:%S')}\n\n"
+            f"💡 <b>Действия:</b>\n"
+            f"• Проверьте контракт на DexScreener\n"
+            f"• Убедитесь что это Solana токен\n"
+            f"• Будьте осторожны с неизвестными токенами!"
+        )
+        
+        # Кнопки как в обычных уведомлениях
+        keyboard = [
+            [
+                {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/t/{contract_address}"},
+                {"text": "⚡ QUICK BUY", "url": f"https://t.me/alpha_web3_bot?start=call-dex_men-SO-{contract_address}"}
+            ],
+            [
+                {"text": "📊 DexScreener", "url": f"https://dexscreener.com/solana/{contract_address}"}
+            ]
+        ]
+        
+        # Для неизвестного контракта не отправляем картинку (её может не быть)
+        # Отправляем только текстовое сообщение
+        import os
+        VIP_BOT_TOKEN = "8001870018:AAGwL4GiMC9TTKRMKfqghE6FAP4uBgGHXLU"
+        VIP_CHAT_ID = os.getenv('VIP_CHAT_ID')
+        
+        if not VIP_CHAT_ID:
+            logger.error("❌ VIP_CHAT_ID не задан в .env файле!")
+            return False
+        
+        try:
+            payload = {
+                "chat_id": VIP_CHAT_ID,
+                "text": message,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": False,
+                "reply_markup": {"inline_keyboard": keyboard}
+            }
+            
+            vip_url = f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/sendMessage"
+            response = requests.post(vip_url, json=payload)
+            
+            if response.status_code == 200:
+                logger.info(f"✅ VIP сигнал о неизвестном контракте отправлен: {contract_address[:8]}...")
+                return True
+            else:
+                logger.error(f"❌ Ошибка отправки VIP сигнала о неизвестном контракте: {response.text}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки VIP сигнала о неизвестном контракте: {e}")
+            return False
+        
+        logger.info(f"📤 VIP сигнал о неизвестном контракте отправлен от @{twitter_username}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки VIP сигнала о неизвестном контракте: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main()) 

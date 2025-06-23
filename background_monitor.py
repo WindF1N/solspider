@@ -197,7 +197,7 @@ class BackgroundTokenMonitor:
             # Создаем кнопки для уведомления
             keyboard = [
                 [
-                    {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/meme/{token.bonding_curve_key or token.mint}"},
+                    {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/t/{token.mint}"},
                     {"text": "⚡ QUICK BUY", "url": f"https://t.me/alpha_web3_bot?start=call-dex_men-SO-{token.mint}"}
                 ],
                 [
