@@ -76,6 +76,12 @@ TWITTER_AUTHOR_BLACKLIST = {
     'mmifh46796833',
     'vkhzb26995951',
     'glvgw57181461',
+    '_soleyes',
+    'dhnrp68135133',
+    'kingpings_',
+    'sfckp23567159',
+    'officialmj001',
+    'alphamegaups'
 }
 # Очередь для асинхронной обработки анализа Twitter
 twitter_analysis_queue = asyncio.Queue()
@@ -1633,12 +1639,14 @@ def should_notify_based_on_authors_quality(authors):
     """
     УПРОЩЕННАЯ ЛОГИКА: Отправляем уведомления только если есть информация об авторах,
     кроме случаев когда автор отправляет каждое сообщение с контрактом (100% спам)
+    НОВОЕ: Также блокируем спам-ботов
     """
     if not authors:
         logger.info(f"🚫 Нет информации об авторах твитов - пропускаем уведомление")
         return False  # Нет авторов - НЕ отправляем
     
     pure_spammers = 0  # Авторы которые КАЖДОЕ сообщение пишут с контрактом
+    spam_bots = 0      # Спам-боты по содержанию твитов
     total_authors = len(authors)
     
     for author in authors:
@@ -1646,6 +1654,16 @@ def should_notify_based_on_authors_quality(authors):
         spam_percent = author.get('max_contract_spam', 0)
         total_tweets = author.get('total_contract_tweets', 0)
         username = author.get('username', 'Unknown')
+        tweet_text = author.get('tweet_text', '')
+        
+        # НОВАЯ ПРОВЕРКА: детекция спам-ботов
+        is_spam_bot, spam_bot_reason = is_spam_bot_tweet(tweet_text, username)
+        
+        if is_spam_bot:
+            spam_bots += 1
+            pure_spammers += 1  # Считаем как спамера
+            logger.info(f"🤖 @{username}: СПАМ-БОТ - {spam_bot_reason}")
+            continue  # Пропускаем остальные проверки для спам-ботов
         
         # ПРОСТАЯ ПРОВЕРКА: если автор пишет контракты в 90%+ сообщений = чистый спамер
         if total_tweets >= 3 and (spam_percent >= 90 or diversity_percent >= 90):
@@ -1654,17 +1672,24 @@ def should_notify_based_on_authors_quality(authors):
         else:
             logger.info(f"✅ @{username}: НОРМАЛЬНЫЙ АВТОР - контракты в {max(spam_percent, diversity_percent):.1f}% сообщений")
     
-    # Блокируем ТОЛЬКО если ВСЕ авторы - чистые спамеры
+    # Блокируем ТОЛЬКО если ВСЕ авторы - чистые спамеры или спам-боты
     should_notify = pure_spammers < total_authors
+    
+    # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: если остались только спам-боты после фильтрации
+    clean_authors = total_authors - spam_bots
+    if clean_authors <= 0:
+        logger.info(f"🚫 Нет чистых авторов для отображения - блокируем уведомление")
+        should_notify = False
     
     logger.info(f"📊 УПРОЩЕННЫЙ АНАЛИЗ АВТОРОВ:")
     logger.info(f"   👥 Всего авторов: {total_authors}")
-    logger.info(f"   🚫 Чистых спамеров (90%+ контрактов): {pure_spammers}")
+    logger.info(f"   🤖 Спам-ботов: {spam_bots}")
+    logger.info(f"   🚫 Чистых спамеров (90%+ контрактов): {pure_spammers - spam_bots}")
     logger.info(f"   ✅ Нормальных авторов: {total_authors - pure_spammers}")
     logger.info(f"   🎯 РЕШЕНИЕ: {'ОТПРАВИТЬ' if should_notify else 'ЗАБЛОКИРОВАТЬ'}")
     
     if not should_notify:
-        logger.info(f"🚫 Уведомление заблокировано - ВСЕ авторы являются чистыми спамерами")
+        logger.info(f"🚫 Уведомление заблокировано - ВСЕ авторы являются спамерами/спам-ботами")
     else:
         logger.info(f"✅ Уведомление разрешено - есть нормальные авторы или нет данных об авторах")
     
@@ -1745,16 +1770,33 @@ async def send_delayed_twitter_notification(token_data, twitter_analysis):
         # Добавляем информацию об авторах твитов с контрактом
         if twitter_analysis.get('contract_authors'):
             authors = twitter_analysis['contract_authors']
-            total_followers = sum([author.get('followers_count', 0) for author in authors])
-            verified_count = sum([1 for author in authors if author.get('is_verified', False)])
             
-            message += f"\n<b>👥 АВТОРЫ ТВИТОВ С КОНТРАКТОМ ({len(authors)} авторов):</b>\n"
-            message += f"   📊 Общий охват: {total_followers:,} подписчиков\n"
-            if verified_count > 0:
-                message += f"   ✅ Верифицированных: {verified_count}\n"
-            message += "\n"
+            # Фильтруем спам-ботов из отображения
+            filtered_authors = []
+            for author in authors:
+                username = author.get('username', 'Unknown')
+                tweet_text = author.get('tweet_text', '')
+                
+                # Проверяем на спам-бота
+                is_spam_bot, spam_bot_reason = is_spam_bot_tweet(tweet_text, username)
+                
+                if not is_spam_bot:
+                    filtered_authors.append(author)
+                else:
+                    logger.info(f"🤖 Скрываем спам-бота @{username} из уведомления: {spam_bot_reason}")
             
-            for i, author in enumerate(authors[:3]):  # Показываем максимум 3 авторов
+            # Пересчитываем статистику без спам-ботов
+            if filtered_authors:
+                total_followers_filtered = sum([author.get('followers_count', 0) for author in filtered_authors])
+                verified_count_filtered = sum([1 for author in filtered_authors if author.get('is_verified', False)])
+                
+                message += f"\n<b>👥 АВТОРЫ ТВИТОВ С КОНТРАКТОМ ({len(filtered_authors)} авторов):</b>\n"
+                message += f"   📊 Общий охват: {total_followers_filtered:,} подписчиков\n"
+                if verified_count_filtered > 0:
+                    message += f"   ✅ Верифицированных: {verified_count_filtered}\n"
+                message += "\n"
+            
+            for i, author in enumerate(filtered_authors[:3]):  # Показываем максимум 3 ЧИСТЫХ авторов
                 username = author.get('username', 'Unknown')
                 display_name = author.get('display_name', username)
                 followers = author.get('followers_count', 0)
@@ -2156,6 +2198,127 @@ def should_filter_author_by_diversity(author_username, diversity_threshold=30):
     """
     analysis = analyze_author_contract_diversity(author_username)
     return analysis['contract_diversity_percent'] >= diversity_threshold
+
+def is_spam_bot_tweet(tweet_text, author_username=""):
+    """
+    Определяет, является ли твит от спам-бота по характерным признакам
+    """
+    if not tweet_text:
+        return False, "Нет текста"
+    
+    spam_score = 0
+    reasons = []
+    
+    # 1. КИТАЙСКИЕ СИМВОЛЫ (высокий приоритет)
+    chinese_patterns = [
+        '投资良机', '聪明钱', '查看我主页', '无延迟群组', '跟随', '快人一步', '交易平台',
+        '速抢钻石福利', '合约地址', '频道信号', '点击'
+    ]
+    chinese_count = sum(1 for pattern in chinese_patterns if pattern in tweet_text)
+    if chinese_count > 0:
+        spam_score += chinese_count * 15  # Очень высокий вес
+        reasons.append(f"Китайские паттерны: {chinese_count}")
+    
+    # 2. СПЕЦИФИЧЕСКИЕ ДОМЕНЫ СПАМ-СЕРВИСОВ
+    spam_domains = [
+        'ant.fun', 'okai.hk', 'okai.HK', 'gmgn.ai', 'Gmgn.ai', 'axiom.hk', 'Axiom.hk'
+    ]
+    domain_count = sum(1 for domain in spam_domains if domain.lower() in tweet_text.lower())
+    if domain_count > 0:
+        spam_score += domain_count * 20  # Очень высокий вес
+        reasons.append(f"Спам-домены: {domain_count}")
+    
+    # 3. СТРУКТУРИРОВАННЫЕ МЕТКИ (CA:, MC:, H:, T:, M:, C:)
+    structured_patterns = [
+        r'CA:\s*[A-Za-z0-9]{20,}',  # Contract Address
+        r'MC:\s*[\d\.\$KM]+',       # Market Cap
+        r'H:\s*\d+',                # Holders
+        r'T:\s*\d+min',             # Time
+        r'M\s*-\s*[\d\.\$KM]+',     # Market cap variant
+        r'C\s*-\s*[A-Za-z0-9]{20,}' # Contract variant
+    ]
+    
+    import re
+    structured_count = 0
+    for pattern in structured_patterns:
+        if re.search(pattern, tweet_text):
+            structured_count += 1
+    
+    if structured_count >= 2:  # Если есть 2+ структурированных элемента
+        spam_score += structured_count * 10
+        reasons.append(f"Структура: {structured_count} меток")
+    
+    # 4. ТИПИЧНЫЕ СПАМ ФРАЗЫ
+    spam_phrases = [
+        'AI Alert', 'Quick buy', 'Fast Buy', 'Signal', 'smart traders', 'smart money',
+        'Opportunity!', 'Follow ant.fun', 'Track ant.fun', 'bubble map', 'earn points',
+        'Quick trade', 'no delay group', 'Launched!', 'Token Alert', 'Quickest fills',
+        'Smart buys', 'Anti-Scam', 'Detect red flags', 'Quick buy 👉', 'Signal 👉',
+        'Alert 👉', 'Check Analyze', 'Features you want', 'performance you need'
+    ]
+    
+    phrase_count = sum(1 for phrase in spam_phrases if phrase.lower() in tweet_text.lower())
+    if phrase_count > 0:
+        spam_score += phrase_count * 8
+        reasons.append(f"Спам-фразы: {phrase_count}")
+    
+    # 5. ИЗБЫТОЧНОЕ КОЛИЧЕСТВО ЭМОДЗИ
+    emoji_count = len([c for c in tweet_text if ord(c) > 127])  # Примерная оценка эмодзи
+    if emoji_count > 15:  # Слишком много эмодзи
+        spam_score += (emoji_count - 15) * 2
+        reasons.append(f"Избыток эмодзи: {emoji_count}")
+    
+    # 6. ССЫЛКИ НА СОКРАЩЕННЫЕ АДРЕСА КОНТРАКТОВ
+    shortened_contract_patterns = [
+        r'[A-Za-z0-9]{8,12}\.{3}',  # Сокращенные адреса типа "HBZ7M8iA..."
+        r'[A-Za-z0-9]{8,12}…',      # С символом многоточия
+        r'token/[A-Za-z0-9]{8,12}_[A-Za-z]'  # Паттерн gmgn.ai
+    ]
+    
+    shortened_count = 0
+    for pattern in shortened_contract_patterns:
+        if re.search(pattern, tweet_text):
+            shortened_count += 1
+    
+    if shortened_count > 0:
+        spam_score += shortened_count * 12
+        reasons.append(f"Сокращенные контракты: {shortened_count}")
+    
+    # 7. СПЕЦИФИЧЕСКИЕ СПАМ КОНСТРУКЦИИ
+    spam_constructions = [
+        '🔊 Signal 🌐', '🤖 Quick buy 👉', '💎 AI Alert', '🚀 Fast Buy 👉',
+        '- The Quickest fills', '- Great TX speed', '- Anti-Scam –', 
+        '- Features you want', '- Resize your instant', '👉👉', '⬅️', '🔃-'
+    ]
+    
+    construction_count = sum(1 for construction in spam_constructions if construction in tweet_text)
+    if construction_count > 0:
+        spam_score += construction_count * 15
+        reasons.append(f"Спам-конструкции: {construction_count}")
+    
+    # 8. ПРОВЕРКА ИМЕНИ ПОЛЬЗОВАТЕЛЯ НА ПОДОЗРИТЕЛЬНОСТЬ
+    suspicious_username_patterns = [
+        r'^[a-z]+\d{4,}$',  # Имена типа "user1234"
+        r'^bot\w*\d*$',     # Содержит "bot"
+        r'^\w*signal\w*$',  # Содержит "signal"
+        r'^\w*trade\w*$'    # Содержит "trade"
+    ]
+    
+    username_suspicious = any(re.match(pattern, author_username.lower()) for pattern in suspicious_username_patterns)
+    if username_suspicious:
+        spam_score += 10
+        reasons.append("Подозрительный username")
+    
+    # ОПРЕДЕЛЕНИЕ РЕЗУЛЬТАТА
+    is_spam = spam_score >= 30  # Порог для определения спама
+    
+    confidence = min(spam_score / 50 * 100, 100)  # Уверенность в %
+    
+    result_text = f"Спам: {spam_score} баллов ({confidence:.0f}%)"
+    if reasons:
+        result_text += f" - {', '.join(reasons)}"
+    
+    return is_spam, result_text
 
 async def main():
     """Основная функция с автоматическим реконнектом"""

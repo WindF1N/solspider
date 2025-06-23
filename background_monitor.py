@@ -8,7 +8,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 from database import get_db_manager, Token
-from pump_bot import search_single_query, send_telegram, send_telegram_photo, extract_tweet_authors, TWITTER_AUTHOR_BLACKLIST, analyze_author_contract_diversity, analyze_author_page_contracts
+from pump_bot import search_single_query, send_telegram, send_telegram_photo, extract_tweet_authors, TWITTER_AUTHOR_BLACKLIST, analyze_author_contract_diversity, analyze_author_page_contracts, is_spam_bot_tweet
 from cookie_rotation import background_proxy_cookie_rotator, background_cookie_rotator
 from logger_config import setup_logging
 from twitter_profile_parser import TwitterProfileParser
@@ -138,6 +138,7 @@ class BackgroundTokenMonitor:
         УПРОЩЕННАЯ ЛОГИКА: Отправляем уведомления только если есть информация об авторах,
         кроме случаев когда автор отправляет каждое сообщение с контрактом (100% спам)
         ВАЖНО: Также проверяем черный список авторов
+        НОВОЕ: Также блокируем спам-ботов
         """
         if not authors:
             logger.info(f"🚫 Нет информации об авторах твитов - пропускаем уведомление")
@@ -157,6 +158,7 @@ class BackgroundTokenMonitor:
             return False
         
         pure_spammers = 0  # Авторы которые КАЖДОЕ сообщение пишут с контрактом
+        spam_bots = 0      # Спам-боты по содержанию твитов
         total_authors = len(authors)
         valid_authors = total_authors - blacklisted_authors  # Авторы НЕ из черного списка
         
@@ -170,11 +172,21 @@ class BackgroundTokenMonitor:
             spam_percent = author.get('max_contract_spam', 0)
             total_tweets = author.get('total_contract_tweets', 0)
             username = author.get('username', 'Unknown')
+            tweet_text = author.get('tweet_text', '')
             
             # Пропускаем авторов из черного списка в анализе спама
             if username.lower() in TWITTER_AUTHOR_BLACKLIST:
                 logger.info(f"🚫 @{username}: В ЧЕРНОМ СПИСКЕ - пропускаем анализ спама")
                 continue
+            
+            # НОВАЯ ПРОВЕРКА: детекция спам-ботов
+            is_spam_bot, spam_bot_reason = is_spam_bot_tweet(tweet_text, username)
+            
+            if is_spam_bot:
+                spam_bots += 1
+                pure_spammers += 1  # Считаем как спамера
+                logger.info(f"🤖 @{username}: СПАМ-БОТ - {spam_bot_reason}")
+                continue  # Пропускаем остальные проверки для спам-ботов
             
             # ПРОСТАЯ ПРОВЕРКА: если автор пишет контракты в 90%+ сообщений = чистый спамер
             if total_tweets >= 3 and (spam_percent >= 90 or diversity_percent >= 90):
@@ -183,19 +195,26 @@ class BackgroundTokenMonitor:
             else:
                 logger.info(f"✅ @{username}: НОРМАЛЬНЫЙ АВТОР - контракты в {max(spam_percent, diversity_percent):.1f}% сообщений")
         
-        # Блокируем ТОЛЬКО если ВСЕ НЕЗАБЛОКИРОВАННЫЕ авторы - чистые спамеры
+        # Блокируем ТОЛЬКО если ВСЕ НЕЗАБЛОКИРОВАННЫЕ авторы - чистые спамеры или спам-боты
         should_notify = pure_spammers < valid_authors
+        
+        # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: если остались только спам-боты после фильтрации
+        clean_authors = valid_authors - spam_bots
+        if clean_authors <= 0:
+            logger.info(f"🚫 Нет чистых авторов для отображения - блокируем уведомление")
+            should_notify = False
         
         logger.info(f"📊 УПРОЩЕННЫЙ АНАЛИЗ АВТОРОВ:")
         logger.info(f"   👥 Всего авторов: {total_authors}")
         logger.info(f"   🚫 В черном списке: {blacklisted_authors}")
         logger.info(f"   ✅ Валидных авторов: {valid_authors}")
-        logger.info(f"   🚫 Чистых спамеров (90%+ контрактов): {pure_spammers}")
+        logger.info(f"   🤖 Спам-ботов: {spam_bots}")
+        logger.info(f"   🚫 Чистых спамеров (90%+ контрактов): {pure_spammers - spam_bots}")
         logger.info(f"   ✅ Нормальных авторов: {valid_authors - pure_spammers}")
         logger.info(f"   🎯 РЕШЕНИЕ: {'ОТПРАВИТЬ' if should_notify else 'ЗАБЛОКИРОВАТЬ'}")
         
         if not should_notify:
-            logger.info(f"🚫 Уведомление заблокировано - ВСЕ авторы являются чистыми спамерами")
+            logger.info(f"🚫 Уведомление заблокировано - ВСЕ авторы являются спамерами/спам-ботами")
         else:
             logger.info(f"✅ Уведомление разрешено - есть нормальные авторы или нет данных об авторах")
         
@@ -237,18 +256,34 @@ class BackgroundTokenMonitor:
                 f"📈 <b>Возможен рост интереса к токену</b>\n\n"
             )
             
-            # Добавляем информацию об авторах твитов
+            # Добавляем информацию об авторах твитов (исключая спам-ботов)
             if authors:
-                total_followers = sum([author.get('followers_count', 0) for author in authors])
-                verified_count = sum([1 for author in authors if author.get('is_verified', False)])
+                # Фильтруем спам-ботов из отображения
+                filtered_authors = []
+                for author in authors:
+                    username = author.get('username', 'Unknown')
+                    tweet_text = author.get('tweet_text', '')
+                    
+                    # Проверяем на спам-бота
+                    is_spam_bot, spam_bot_reason = is_spam_bot_tweet(tweet_text, username)
+                    
+                    if not is_spam_bot:
+                        filtered_authors.append(author)
+                    else:
+                        logger.info(f"🤖 Скрываем спам-бота @{username} из уведомления: {spam_bot_reason}")
                 
-                message += f"<b>👥 АВТОРЫ ТВИТОВ С КОНТРАКТОМ ({len(authors)} авторов):</b>\n"
-                message += f"   📊 Общий охват: {total_followers:,} подписчиков\n"
-                if verified_count > 0:
-                    message += f"   ✅ Верифицированных: {verified_count}\n"
-                message += "\n"
+                # Показываем статистику только если есть чистые авторы
+                if filtered_authors:
+                    total_followers = sum([author.get('followers_count', 0) for author in filtered_authors])
+                    verified_count = sum([1 for author in filtered_authors if author.get('is_verified', False)])
+                    
+                    message += f"<b>👥 АВТОРЫ ТВИТОВ С КОНТРАКТОМ ({len(filtered_authors)} авторов):</b>\n"
+                    message += f"   📊 Общий охват: {total_followers:,} подписчиков\n"
+                    if verified_count > 0:
+                        message += f"   ✅ Верифицированных: {verified_count}\n"
+                    message += "\n"
                 
-                for i, author in enumerate(authors[:3]):  # Показываем максимум 3 авторов
+                for i, author in enumerate(filtered_authors[:3]):  # Показываем максимум 3 ЧИСТЫХ авторов
                     username = author.get('username', 'Unknown')
                     display_name = author.get('display_name', username)
                     followers = author.get('followers_count', 0)
