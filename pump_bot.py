@@ -88,6 +88,32 @@ twitter_analysis_queue = asyncio.Queue()
 # Словарь для хранения результатов анализа
 twitter_analysis_results = {}
 
+# VIP ТОКЕНЫ - мгновенные уведомления БЕЗ фильтрации
+VIP_TOKENS = {
+    'MORI': {
+        'enabled': True,
+        'description': 'Токен от сильного инфлюенсера - 25 июня 2025',
+        'priority': 'HIGH',
+        'bypass_filters': True,
+        'instant_notify': True
+    }
+    # Добавьте другие VIP токены здесь
+}
+
+# VIP TWITTER АККАУНТЫ - мгновенные уведомления при упоминании контрактов
+VIP_TWITTER_ACCOUNTS = {
+    'MoriCoinCrypto': {
+        'enabled': True,
+        'description': 'Сильный инфлюенсер - мгновенные сигналы',
+        'priority': 'HIGH',
+        'bypass_filters': True
+    }
+    # Добавьте другие VIP аккаунты здесь
+}
+
+# Кэш для дедупликации VIP сигналов
+VIP_SIGNALS_CACHE = set()
+
 def send_telegram(message, inline_keyboard=None):
     """Отправка сообщения в Telegram во все чаты"""
     success_count = 0
@@ -187,6 +213,65 @@ def send_telegram_photo(photo_url, caption, inline_keyboard=None):
         return True
     else:
         logger.error("❌ Не удалось отправить сообщение ни в один чат")
+        return False
+
+def send_vip_telegram_photo(photo_url, caption, inline_keyboard=None):
+    """Отправка VIP фото с подписью в отдельного Telegram бота только VIP пользователю"""
+    import os
+    
+    # VIP токен бота и ID пользователя из переменных окружения
+    VIP_BOT_TOKEN = "8001870018:AAGwL4GiMC9TTKRMKfqghE6FAP4uBgGHXLU"
+    VIP_CHAT_ID = os.getenv('VIP_CHAT_ID')
+    
+    if not VIP_CHAT_ID:
+        logger.error("❌ VIP_CHAT_ID не задан в .env файле!")
+        return False
+    
+    try:
+        # Сначала пробуем отправить фото
+        photo_url_to_send = f"https://cf-ipfs.com/ipfs/{photo_url.split('/')[-1]}" if photo_url and not photo_url.startswith('http') else photo_url
+        
+        payload = {
+            "chat_id": VIP_CHAT_ID,
+            "photo": photo_url_to_send,
+            "caption": caption,
+            "parse_mode": "HTML"
+        }
+        
+        if inline_keyboard:
+            payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
+        
+        vip_url = f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/sendPhoto"
+        photo_response = requests.post(vip_url, json=payload)
+        
+        if photo_response.status_code == 200:
+            logger.info(f"✅ VIP фото отправлено в чат {VIP_CHAT_ID}")
+            return True
+        else:
+            # Если фото не удалось отправить, отправляем обычное сообщение
+            logger.warning(f"⚠️ Не удалось отправить VIP фото, отправляю текст: {photo_response.text}")
+            text_payload = {
+                "chat_id": VIP_CHAT_ID,
+                "text": caption,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": False
+            }
+            
+            if inline_keyboard:
+                text_payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
+            
+            text_url = f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/sendMessage"
+            text_response = requests.post(text_url, json=text_payload)
+            
+            if text_response.status_code == 200:
+                logger.info(f"✅ VIP текстовое сообщение отправлено в чат {VIP_CHAT_ID}")
+                return True
+            else:
+                logger.error(f"❌ Ошибка отправки VIP сообщения: {text_response.text}")
+                return False
+                
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки VIP уведомления: {e}")
         return False
 
 async def search_single_query(query, headers, retry_count=0, use_quotes=False, cycle_cookie=None):
@@ -580,12 +665,29 @@ async def format_new_token(data):
     # Получаем дату создания токена (для новых токенов используем текущее время)
     token_created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
+    # Получаем историю создателя для анализа (быстрый запрос)
+    creator_history = await get_creator_token_history(creator)
+    creator_info = ""
+    
+    if creator_history['success']:
+        total_tokens = creator_history['total_tokens']
+        if creator_history['is_first_time']:
+            creator_info = " 🆕"
+        elif total_tokens == 1:
+            creator_info = " 🥇"
+        elif total_tokens <= 3:
+            creator_info = f" 🔥({total_tokens})"
+        elif creator_history['is_serial_creator']:
+            creator_info = f" ⚠️({total_tokens})"
+        else:
+            creator_info = f" 📊({total_tokens})"
+    
     message = (
         f"🚀 <b>НОВЫЙ ТОКЕН НА PUMP.FUN!</b>\n\n"
         f"<b>💎 <a href='https://pump.fun/{mint}'>{name}</a></b>\n"
         f"<b>🏷️ Символ:</b> {symbol}\n"
         f"<b>📍 Mint:</b> <code>{mint}</code>\n"
-        f"<b>👤 Создатель:</b> <code>{creator[:8] if len(creator) > 8 else creator}...</code>\n"
+        f"<b>👤 Создатель:</b> <code>{creator[:8] if len(creator) > 8 else creator}...</code>{creator_info}\n"
         f"<b>📅 Создан:</b> {token_created_at}\n"
         f"<b>💰 Начальная покупка:</b> {initial_buy} SOL\n"
     )
@@ -783,10 +885,24 @@ async def handle_message(message):
             symbol = data.get('symbol', 'Unknown')
             logger.info(f"🚀 НОВЫЙ ТОКЕН: {token_name} ({symbol}) - {mint[:8]}...")
             
+            # 🔥 VIP ПРОВЕРКА - мгновенное уведомление для приоритетных токенов
+            if symbol in VIP_TOKENS and VIP_TOKENS[symbol]['enabled']:
+                vip_info = VIP_TOKENS[symbol]
+                logger.info(f"🌟 VIP ТОКЕН ОБНАРУЖЕН: {symbol} - {vip_info['description']}")
+                
+                # Создаем специальное VIP уведомление
+                vip_msg, vip_keyboard, vip_image_url = await format_vip_token(data, vip_info)
+                send_vip_telegram_photo(vip_image_url, vip_msg, vip_keyboard)
+                
+                logger.info(f"⚡ VIP уведомление отправлено МГНОВЕННО в отдельного бота для {symbol}")
+                
+                # Продолжаем обычную обработку для сохранения в БД
+            
             # Анализируем токен и получаем сообщение
             msg, keyboard, should_notify, token_image_url = await format_new_token(data)
             
-            if should_notify:
+            # Отправляем обычное уведомление только если это не VIP токен
+            if should_notify and symbol not in VIP_TOKENS:
                 logger.info(f"✅ Токен {symbol} прошел фильтрацию - отправляем уведомление")
                 send_telegram_photo(token_image_url, msg, keyboard)
                 
@@ -797,7 +913,7 @@ async def handle_message(message):
                     log_database_operation("UPDATE_NOTIFICATION", "tokens", "SUCCESS", f"Symbol: {symbol}")
                 except Exception as e:
                     logger.error(f"❌ Ошибка обновления статуса уведомления: {e}")
-            else:
+            elif symbol not in VIP_TOKENS:
                 logger.info(f"❌ Токен {symbol} не прошел фильтрацию - пропускаем")
             
         # Проверяем, это ли торговое событие
@@ -2418,9 +2534,19 @@ async def main():
             await check_and_retry_failed_analysis()
             reset_analyzing_tokens_timeout()
     
+    # Запускаем VIP мониторинг Twitter аккаунтов
+    async def vip_twitter_scheduler():
+        while True:
+            await check_vip_twitter_accounts()
+            # Минимальная задержка чтобы не блокировать event loop
+            await asyncio.sleep(1)
+    
     retry_task = asyncio.create_task(retry_analysis_scheduler())
+    vip_twitter_task = asyncio.create_task(vip_twitter_scheduler())
+    
     logger.info("🔄 Запущен планировщик повторного анализа")
     logger.info("🔄 Запущен фоновый обработчик анализа Twitter")
+    logger.info("🌟 Запущен НЕПРЕРЫВНЫЙ VIP мониторинг Twitter аккаунтов")
     
     # Счетчики для оптимизации
     consecutive_errors = 0
@@ -2558,6 +2684,392 @@ async def main():
         
         logger.info(f"🔄 Мгновенное переподключение... (попытка {retry_count}/{max_retries})")
         # Без задержки - сразу переподключаемся
+
+async def format_vip_token(data, vip_info):
+    """Форматирование VIP уведомления для приоритетных токенов"""
+    mint = data.get('mint', 'Unknown')
+    name = data.get('name', 'Unknown Token')
+    symbol = data.get('symbol', 'UNK')
+    description = data.get('description', 'Нет описания')
+    creator = data.get('traderPublicKey', 'Unknown')
+    initial_buy = data.get('initialBuy', 0)
+    market_cap = data.get('marketCap', 0)
+    bonding_curve_key = data.get('bondingCurveKey', mint)
+    
+    # Получаем историю токенов создателя через Axiom API
+    creator_history = await get_creator_token_history(creator)
+    
+    # Обрезаем описание если слишком длинное
+    if len(description) > 200:
+        description = description[:200] + "..."
+    
+    # Получаем дату создания токена
+    token_created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Анализируем создателя
+    creator_analysis = ""
+    creator_emoji = ""
+    
+    if creator_history['success']:
+        total_tokens = creator_history['total_tokens']
+        migrated_tokens = creator_history['migrated_tokens']
+        success_rate = creator_history['success_rate']
+        
+        if creator_history['is_first_time']:
+            creator_analysis = "🆕 ПЕРВЫЙ ТОКЕН СОЗДАТЕЛЯ!"
+            creator_emoji = "🆕"
+        elif total_tokens == 1:
+            creator_analysis = f"🥇 Второй токен (первый: {creator_history['recent_tokens'][0]['symbol'] if creator_history['recent_tokens'] else 'N/A'})"
+            creator_emoji = "🥇"
+        elif total_tokens <= 3:
+            creator_analysis = f"🔥 Опытный создатель ({success_rate:.0f}% успех)"
+            creator_emoji = "🔥"
+        elif creator_history['is_serial_creator']:
+            creator_analysis = f"⚠️ Серийный создатель ({success_rate:.0f}% успех)"
+            creator_emoji = "⚠️"
+        else:
+            creator_analysis = f"📊 {total_tokens} токенов, {migrated_tokens} мигрировано ({success_rate:.0f}%)"
+            creator_emoji = "📊"
+    else:
+        creator_analysis = "❓ Не удалось получить историю"
+        creator_emoji = "❓"
+    
+    # Специальное VIP сообщение
+    message = (
+        f"🌟 <b>VIP ТОКЕН ОБНАРУЖЕН!</b> 🌟\n\n"
+        f"🔥 <b>{vip_info['description']}</b>\n\n"
+        f"<b>💎 <a href='https://pump.fun/{mint}'>{name}</a></b>\n"
+        f"<b>🏷️ Символ:</b> {symbol}\n"
+        f"<b>📍 Mint:</b> <code>{mint}</code>\n"
+        f"<b>👤 Создатель:</b> <code>{creator[:8] if len(creator) > 8 else creator}...</code>\n"
+        f"<b>📅 Создан:</b> {token_created_at}\n"
+        f"<b>💰 Начальная покупка:</b> {initial_buy} SOL\n"
+    )
+    
+    # Добавляем Market Cap если есть
+    if market_cap > 0:
+        message += f"<b>📊 Market Cap:</b> ${market_cap:,.0f}\n"
+    
+    # Добавляем описание если есть
+    if description and description.strip() and description.strip() != "Нет описания":
+        message += f"<b>📝 Описание:</b> {description}\n"
+    
+    # Добавляем анализ создателя
+    message += f"\n{creator_emoji} <b>Создатель:</b> {creator_analysis}\n"
+    
+    # Показываем последние токены если есть
+    if creator_history['success'] and creator_history['recent_tokens'] and not creator_history['is_first_time']:
+        message += f"<b>📋 Последние токены:</b>\n"
+        for i, token in enumerate(creator_history['recent_tokens'][:3]):
+            status = "✅" if token['migrated'] else "⏳"
+            message += f"   {i+1}. {token['symbol']} {status}\n"
+    
+    message += (
+        f"\n⚡ <b>МГНОВЕННОЕ УВЕДОМЛЕНИЕ!</b>\n"
+        f"🎯 <b>Приоритет:</b> {vip_info['priority']}\n"
+        f"🚀 <b>Время действовать СЕЙЧАС!</b>\n"
+        f"<b>🕐 Время:</b> {datetime.now().strftime('%H:%M:%S')}"
+    )
+    
+    # Кнопки такие же как в обычных уведомлениях
+    keyboard = [
+        [
+            {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/meme/{bonding_curve_key}"},
+            {"text": "⚡ QUICK BUY", "url": f"https://t.me/alpha_web3_bot?start=call-dex_men-SO-{mint}"}
+        ],
+        [
+            {"text": "📊 DexScreener", "url": f"https://dexscreener.com/solana/{mint}"}
+        ]
+    ]
+    
+    # URL картинки токена
+    token_image_url = f"https://axiomtrading.sfo3.cdn.digitaloceanspaces.com/{mint}.webp"
+    
+    return message, keyboard, token_image_url
+
+async def get_creator_token_history(creator_address):
+    """Получает историю токенов создателя через Axiom API"""
+    try:
+        import aiohttp
+        
+        url = f"https://api8.axiom.trade/dev-tokens-v2?devAddress={creator_address}"
+        
+        # Заголовки для имитации браузера iPhone Safari
+        import os
+        axiom_cookies = os.getenv('AXIOM_COOKIES', '')
+        
+        headers = {
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'accept-encoding': 'gzip, deflate, br, zstd',
+            'accept-language': 'ru,en;q=0.9,en-GB;q=0.8,en-US;q=0.7',
+            'cache-control': 'max-age=0',
+            'cookie': axiom_cookies,
+            'priority': 'u=0, i',
+            'sec-fetch-dest': 'document',
+            'sec-fetch-mode': 'navigate',
+            'sec-fetch-site': 'none',
+            'sec-fetch-user': '?1',
+            'upgrade-insecure-requests': '1',
+            'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1 Edg/137.0.0.0'
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=10) as response:
+                if response.status == 200:
+                    # Получаем данные как текст и парсим вручную (Axiom API не отправляет Content-Type)
+                    try:
+                        # Сначала получаем как текст
+                        text_data = await response.text()
+                        
+                        # Парсим JSON вручную
+                        import json
+                        data = json.loads(text_data)
+                        
+                        tokens = data.get('tokens', [])
+                        counts = data.get('counts', {})
+                        
+                        total_count = counts.get('totalCount', 0)
+                        migrated_count = counts.get('migratedCount', 0)
+                    except (json.JSONDecodeError, ValueError) as e:
+                        # Это не JSON - анализируем содержимое
+                        text_data = await response.text()
+                        logger.warning(f"⚠️ Axiom API вернул не-JSON ответ для {creator_address[:8]}...")
+                        logger.debug(f"Содержимое ответа: {text_data[:300]}...")
+                        
+                        # Проверяем на страницу авторизации
+                        if 'login' in text_data.lower() or 'sign in' in text_data.lower():
+                            logger.error("🔑 Axiom API требует авторизации - обновите AXIOM_COOKIES")
+                        elif 'blocked' in text_data.lower() or 'forbidden' in text_data.lower():
+                            logger.error("🚫 Axiom API заблокировал запрос - возможно нужны новые заголовки")
+                        
+                        return {
+                            'success': False, 
+                            'error': f'JSON decode error: {str(e)}',
+                            'total_tokens': 0,
+                            'migrated_tokens': 0,
+                            'recent_tokens': [],
+                            'is_first_time': True,  # По умолчанию считаем первым токеном при ошибке
+                            'is_serial_creator': False,
+                            'success_rate': 0
+                        }
+                    
+                    # Анализируем токены
+                    recent_tokens = []
+                    for token in tokens[:5]:  # Берем последние 5 токенов
+                        recent_tokens.append({
+                            'symbol': token.get('tokenTicker', 'UNK'),
+                            'name': token.get('tokenName', 'Unknown'),
+                            'created_at': token.get('createdAt', ''),
+                            'migrated': token.get('migrated', False),
+                            'liquidity_sol': token.get('liquiditySol', 0)
+                        })
+                    
+                    logger.info(f"📊 История создателя {creator_address[:8]}...: {total_count} токенов, {migrated_count} мигрировано")
+                    
+                    return {
+                        'success': True,
+                        'total_tokens': total_count,
+                        'migrated_tokens': migrated_count,
+                        'recent_tokens': recent_tokens,
+                        'is_first_time': total_count == 0,  # Будет True для первого токена
+                        'is_serial_creator': total_count > 5,  # Много токенов = серийный создатель
+                        'success_rate': (migrated_count / total_count * 100) if total_count > 0 else 0
+                    }
+                else:
+                    error_text = await response.text()
+                    logger.warning(f"⚠️ Axiom API вернул статус {response.status} для создателя {creator_address[:8]}...")
+                    logger.debug(f"Ответ сервера: {error_text[:200]}...")
+                    
+                    if response.status == 401:
+                        logger.error("🔑 Axiom API: токены авторизации устарели! Обновите AXIOM_COOKIES в .env")
+                    elif response.status == 403:
+                        logger.error("🚫 Axiom API: доступ запрещен - проверьте куки и заголовки")
+                    elif response.status == 500:
+                        logger.error("⚙️ Axiom API: внутренняя ошибка сервера - попробуем позже")
+                    
+                    return {'success': False, 'error': f'HTTP {response.status}'}
+                    
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения истории создателя через Axiom API: {e}")
+        return {'success': False, 'error': str(e)}
+
+async def check_vip_twitter_accounts():
+    """Проверяет VIP Twitter аккаунты на наличие контрактов в новых твитах"""
+    try:
+        for username, vip_info in VIP_TWITTER_ACCOUNTS.items():
+            if not vip_info['enabled']:
+                continue
+                
+            logger.info(f"🌟 Проверяем VIP аккаунт @{username}...")
+            
+            # Получаем куки для поиска
+            _, cycle_cookie = proxy_cookie_rotator.get_cycle_proxy_cookie()
+            
+            # Базовые заголовки
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64; rv:45.0) Gecko/20100101 Firefox/45.0',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Cookie': cycle_cookie
+            }
+            
+            # Поиск по аккаунту (все последние твиты без временного ограничения)
+            url = f"https://nitter.tiekoetter.com/{username}"
+            
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=10) as response:
+                    if response.status == 200:
+                        html = await response.text()
+                        soup = BeautifulSoup(html, 'html.parser')
+                        
+                        # Проверяем на блокировку
+                        title = soup.find('title')
+                        if title and 'Making sure you\'re not a bot!' in title.get_text():
+                            logger.error(f"🚫 VIP мониторинг заблокирован для @{username}")
+                            continue
+                        
+                        # Находим твиты
+                        tweets = soup.find_all('div', class_='timeline-item')
+                        
+                        for tweet in tweets:
+                            # Пропускаем ретвиты
+                            retweet_header = tweet.find('div', class_='retweet-header')
+                            if retweet_header:
+                                continue
+                            
+                            # Получаем текст твита
+                            tweet_content = tweet.find('div', class_='tweet-content')
+                            if not tweet_content:
+                                continue
+                                
+                            tweet_text = tweet_content.get_text(strip=True)
+                            
+                            # Ищем контракты (Solana адреса 32-44 символа)
+                            import re
+                            contracts = re.findall(r'\b[A-Za-z0-9]{32,44}\b', tweet_text)
+                            
+                            for contract in contracts:
+                                # Проверяем что это похоже на Solana адрес
+                                if len(contract) >= 32 and contract.isalnum():
+                                    # Создаем уникальный ключ для дедупликации
+                                    signal_key = f"{username}:{contract}"
+                                    
+                                    # Проверяем не отправляли ли уже этот сигнал
+                                    if signal_key in VIP_SIGNALS_CACHE:
+                                        continue
+                                    
+                                    logger.info(f"🔥 VIP КОНТРАКТ НАЙДЕН! @{username}: {contract}")
+                                    
+                                    # Проверяем что контракт существует в нашей базе
+                                    db_manager = get_db_manager()
+                                    session_db = db_manager.Session()
+                                    
+                                    try:
+                                        from database import Token
+                                        token = session_db.query(Token).filter_by(mint=contract).first()
+                                        
+                                        if token:
+                                            logger.info(f"✅ Токен {token.symbol} найден в БД - отправляем VIP уведомление")
+                                            
+                                            # Добавляем в кэш чтобы не дублировать
+                                            VIP_SIGNALS_CACHE.add(signal_key)
+                                            
+                                            # Создаем VIP уведомление для Twitter сигнала
+                                            await send_vip_twitter_signal(token, username, tweet_text, vip_info)
+                                        else:
+                                            logger.info(f"⚠️ Контракт {contract} не найден в БД - возможно новый токен")
+                                            
+                                            # Можно добавить логику для поиска токена через API
+                                            
+                                    finally:
+                                        session_db.close()
+                    else:
+                        logger.warning(f"⚠️ Ошибка доступа к @{username}: HTTP {response.status}")
+                        
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки VIP Twitter аккаунтов: {e}")
+
+async def send_vip_twitter_signal(token, twitter_username, tweet_text, vip_info):
+    """Отправляет VIP уведомление о сигнале из Twitter"""
+    try:
+        # Получаем историю создателя
+        creator_history = await get_creator_token_history(token.creator)
+        
+        # Анализируем создателя
+        creator_analysis = ""
+        if creator_history['success']:
+            total_tokens = creator_history['total_tokens']
+            if creator_history['is_first_time']:
+                creator_analysis = "🆕 ПЕРВЫЙ ТОКЕН СОЗДАТЕЛЯ!"
+            elif total_tokens == 1:
+                creator_analysis = f"🥇 Второй токен"
+            elif total_tokens <= 3:
+                creator_analysis = f"🔥 Опытный создатель ({total_tokens} токенов)"
+            elif creator_history['is_serial_creator']:
+                creator_analysis = f"⚠️ Серийный создатель ({total_tokens} токенов)"
+            else:
+                creator_analysis = f"📊 {total_tokens} токенов"
+        else:
+            creator_analysis = "❓ Не удалось получить историю"
+        
+        # Обрезаем твит если слишком длинный
+        if len(tweet_text) > 200:
+            tweet_text = tweet_text[:200] + "..."
+        
+        # Создаем VIP сообщение
+        message = (
+            f"🌟 <b>VIP TWITTER СИГНАЛ!</b> 🌟\n\n"
+            f"🔥 <b>{vip_info['description']}</b>\n"
+            f"👤 <b>От:</b> @{twitter_username}\n\n"
+            f"<b>💎 {token.name or 'Unknown Token'}</b>\n"
+            f"<b>🏷️ Символ:</b> {token.symbol or 'UNK'}\n"
+            f"<b>📍 Mint:</b> <code>{token.mint}</code>\n"
+            f"<b>📅 Создан:</b> {token.created_at.strftime('%Y-%m-%d %H:%M:%S') if token.created_at else 'Неизвестно'}\n"
+        )
+        
+        # Добавляем Market Cap если есть
+        if token.market_cap and token.market_cap > 0:
+            message += f"<b>📊 Market Cap:</b> ${token.market_cap:,.0f}\n"
+        
+        # Добавляем анализ создателя
+        message += f"\n🎯 <b>Создатель:</b> {creator_analysis}\n"
+        
+        # Добавляем твит
+        message += f"\n📱 <b>Твит:</b>\n<blockquote>{tweet_text}</blockquote>\n"
+        
+        message += (
+            f"\n⚡ <b>МГНОВЕННЫЙ VIP СИГНАЛ!</b>\n"
+            f"🎯 <b>Приоритет:</b> {vip_info['priority']}\n"
+            f"🚀 <b>Время действовать СЕЙЧАС!</b>\n"
+            f"<b>🕐 Время:</b> {datetime.now().strftime('%H:%M:%S')}"
+        )
+        
+        # Кнопки
+        bonding_curve_key = token.bonding_curve_key or token.mint
+        keyboard = [
+            [
+                {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/meme/{bonding_curve_key}"},
+                {"text": "⚡ QUICK BUY", "url": f"https://t.me/alpha_web3_bot?start=call-dex_men-SO-{token.mint}"}
+            ],
+            [
+                {"text": "📊 DexScreener", "url": f"https://dexscreener.com/solana/{token.mint}"}
+            ]
+        ]
+        
+        # URL картинки токена
+        token_image_url = f"https://axiomtrading.sfo3.cdn.digitaloceanspaces.com/{token.mint}.webp"
+        
+        # Отправляем VIP уведомление
+        send_vip_telegram_photo(token_image_url, message, keyboard)
+        
+        logger.info(f"📤 VIP Twitter сигнал отправлен для {token.symbol} от @{twitter_username}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки VIP Twitter сигнала: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main()) 

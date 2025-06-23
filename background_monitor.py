@@ -8,7 +8,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 from database import get_db_manager, Token
-from pump_bot import search_single_query, send_telegram, send_telegram_photo, extract_tweet_authors, TWITTER_AUTHOR_BLACKLIST, analyze_author_contract_diversity, analyze_author_page_contracts, is_spam_bot_tweet, should_notify_based_on_authors_unified, filter_authors_for_display, format_authors_section
+from pump_bot import search_single_query, send_telegram, send_telegram_photo, extract_tweet_authors, TWITTER_AUTHOR_BLACKLIST, analyze_author_contract_diversity, analyze_author_page_contracts, is_spam_bot_tweet, should_notify_based_on_authors_unified, filter_authors_for_display, format_authors_section, get_creator_token_history
 from cookie_rotation import background_proxy_cookie_rotator, background_cookie_rotator
 from logger_config import setup_logging
 from twitter_profile_parser import TwitterProfileParser
@@ -144,12 +144,30 @@ class BackgroundTokenMonitor:
             # Получаем дату создания токена
             token_created_at = token.created_at.strftime('%Y-%m-%d %H:%M:%S') if token.created_at else "Неизвестно"
             
+            # Получаем историю создателя
+            creator_history = await get_creator_token_history(token.creator)
+            creator_info = ""
+            
+            if creator_history['success']:
+                total_tokens = creator_history['total_tokens']
+                if creator_history['is_first_time']:
+                    creator_info = " 🆕 ПЕРВЫЙ ТОКЕН!"
+                elif total_tokens == 1:
+                    creator_info = " 🥇 ВТОРОЙ ТОКЕН"
+                elif total_tokens <= 3:
+                    creator_info = f" 🔥 ОПЫТНЫЙ ({total_tokens} токенов)"
+                elif creator_history['is_serial_creator']:
+                    creator_info = f" ⚠️ СЕРИЙНЫЙ ({total_tokens} токенов)"
+                else:
+                    creator_info = f" 📊 {total_tokens} токенов"
+            
             message = (
                 f"{emoji} <b>{title}</b>\n\n"
                 f"🪙 <b>Токен:</b> {token.symbol or 'Unknown'}\n"
                 f"💰 <b>Название:</b> {token.name or 'N/A'}\n"
                 f"📄 <b>Контракт:</b> <code>{token.mint}</code>\n"
                 f"📅 <b>Создан:</b> {token_created_at}\n"
+                f"👤 <b>Создатель:</b>{creator_info}\n"
             )
             
             # Добавляем информацию о твитах
