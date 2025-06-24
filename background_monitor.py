@@ -135,11 +135,15 @@ class BackgroundTokenMonitor:
                                     logger.info(f"🚫 Фоновое уведомление для {token.symbol} пропущено - уже было отложенное уведомление от основного бота")
                                 else:
                                     await self.send_contract_alert(token, tweets_count, engagement, authors, is_first_discovery=True)
+                                    
+                                    # 🚀 АВТОМАТИЧЕСКАЯ ПОКУПКА TWITTER ТОКЕНА (только если прошел фильтрацию)
+                                    logger.info(f"💰 Токен {token.symbol} одобрен для Twitter уведомления - выполняем автопокупку...")
+                                    await self.execute_auto_purchase_twitter_token(token.mint, token.symbol, token.name)
                             else:
                                 # Новая активность - НЕ отправляем уведомления
                                 logger.info(f"📈 {token.symbol}: обнаружена новая активность (+{new_tweets_found} твитов), но уведомления о новой активности отключены")
                         else:
-                            logger.info(f"🚫 Уведомление для {token.symbol} заблокировано - все авторы являются спамерами")
+                            logger.info(f"🚫 Уведомление и автопокупка для {token.symbol} заблокированы - все авторы являются спамерами")
                         
                 except Exception as e:
                     session.rollback()
@@ -162,6 +166,90 @@ class BackgroundTokenMonitor:
             return False
     
 
+
+    async def execute_auto_purchase_twitter_token(self, mint, symbol, token_name):
+        """Выполняет автоматическую покупку токена при первом обнаружении в Twitter"""
+        try:
+            logger.info(f"💰 АВТОПОКУПКА TWITTER ТОКЕНА: {symbol} ({mint[:8]}...)")
+            
+            # Импортируем axiom_trader
+            from axiom_trader import execute_axiom_purchase
+            
+            # Параметры автопокупки для Twitter токенов (больше чем для новых токенов)
+            auto_buy_amount = 0.001  # 0.001 SOL для Twitter токенов
+            
+            # Выполняем покупку через Axiom
+            result = await execute_axiom_purchase(
+                contract_address=mint,
+                twitter_username="SolSpider_Twitter_AutoBuy",
+                tweet_text=f"Автоматическая покупка при обнаружении в Twitter: {token_name} ({symbol})",
+                sol_amount=auto_buy_amount,
+                slippage=15,
+                priority_fee=0.001
+            )
+            
+            if result.get('success', False):
+                logger.info(f"✅ Twitter автопокупка {symbol} успешна! TX: {result.get('tx_hash', 'N/A')[:16]}...")
+                
+                # Отправляем уведомление об успешной покупке
+                purchase_msg = (
+                    f"💰 <b>TWITTER АВТОПОКУПКА ВЫПОЛНЕНА!</b>\n\n"
+                    f"🪙 <b>{token_name or 'Unknown'}</b> ({symbol})\n"
+                    f"📍 <b>Mint:</b> <code>{mint}</code>\n"
+                    f"⚡ <b>Сумма:</b> {auto_buy_amount} SOL\n"
+                    f"🔗 <b>TX:</b> <code>{result.get('tx_hash', 'N/A')}</code>\n"
+                    f"⏱️ <b>Время:</b> {result.get('execution_time', 0):.2f}с\n"
+                    f"🎯 <b>Причина:</b> Первое обнаружение в Twitter"
+                )
+                
+                # Создаем клавиатуру с ссылками
+                keyboard = [
+                    [
+                        {"text": "💎 Axiom.trade", "url": f"https://axiom.trade/t/{mint}"},
+                        {"text": "📊 DexScreener", "url": f"https://dexscreener.com/solana/{mint}"}
+                    ],
+                    [{"text": "🚀 Pump.fun", "url": f"https://pump.fun/{mint}"}]
+                ]
+                
+                send_telegram(purchase_msg, keyboard)
+                
+            else:
+                error_msg = result.get('error', 'Unknown error')
+                logger.error(f"❌ Ошибка Twitter автопокупки {symbol}: {error_msg}")
+                
+                # Отправляем уведомление об ошибке
+                error_notification = (
+                    f"❌ <b>ОШИБКА TWITTER АВТОПОКУПКИ</b>\n\n"
+                    f"🪙 <b>{token_name or 'Unknown'}</b> ({symbol})\n"
+                    f"📍 <b>Mint:</b> <code>{mint}</code>\n"
+                    f"⚠️ <b>Ошибка:</b> {error_msg[:100]}\n"
+                    f"⚡ <b>Сумма:</b> {auto_buy_amount} SOL\n"
+                    f"🎯 <b>Причина:</b> Первое обнаружение в Twitter"
+                )
+                
+                send_telegram(error_notification)
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка Twitter автопокупки {symbol}: {e}")
+            
+            # Отправляем уведомление о критической ошибке
+            critical_error_msg = (
+                f"🚫 <b>КРИТИЧЕСКАЯ ОШИБКА TWITTER АВТОПОКУПКИ</b>\n\n"
+                f"🪙 <b>{token_name or 'Unknown'}</b> ({symbol})\n"
+                f"📍 <b>Mint:</b> <code>{mint}</code>\n"
+                f"❌ <b>Ошибка:</b> {str(e)[:100]}\n"
+                f"🎯 <b>Причина:</b> Первое обнаружение в Twitter"
+            )
+            
+            send_telegram(critical_error_msg)
+            
+            return {
+                'success': False,
+                'error': f'Critical error: {str(e)}',
+                'execution_time': 0
+            }
 
     async def send_contract_alert(self, token, tweets_count, engagement, authors, is_first_discovery=True):
         """Отправляет уведомление о найденном контракте в Twitter (только первое обнаружение)"""
