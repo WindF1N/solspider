@@ -15,6 +15,7 @@ from twitter_profile_parser import TwitterProfileParser
 import re
 import aiohttp
 from bs4 import BeautifulSoup
+from urllib.parse import quote  # Добавляем import для URL-кодирования
 
 # Настройка логирования
 setup_logging()
@@ -136,14 +137,14 @@ class BackgroundTokenMonitor:
                                 else:
                                     await self.send_contract_alert(token, tweets_count, engagement, authors, is_first_discovery=True)
                                     
-                                    # 🚀 АВТОМАТИЧЕСКАЯ ПОКУПКА TWITTER ТОКЕНА (только если прошел фильтрацию)
-                                    logger.info(f"💰 Токен {token.symbol} одобрен для Twitter уведомления - выполняем автопокупку...")
-                                    await self.execute_auto_purchase_twitter_token(token.mint, token.symbol, token.name)
+                                    # ❌ АВТОПОКУПКА TWITTER ТОКЕНОВ ОТКЛЮЧЕНА для экономии баланса  
+                                    logger.info(f"💡 Автопокупка для Twitter токена {token.symbol} отключена (экономия баланса)")
+                                    logger.info(f"💰 Сэкономлено: 0.001 SOL на токене {token.symbol}")
                             else:
                                 # Новая активность - НЕ отправляем уведомления
                                 logger.info(f"📈 {token.symbol}: обнаружена новая активность (+{new_tweets_found} твитов), но уведомления о новой активности отключены")
                         else:
-                            logger.info(f"🚫 Уведомление и автопокупка для {token.symbol} заблокированы - все авторы являются спамерами")
+                            logger.info(f"🚫 Уведомление для {token.symbol} заблокировано - все авторы являются спамерами")
                         
                 except Exception as e:
                     session.rollback()
@@ -474,8 +475,9 @@ class BackgroundTokenMonitor:
         """Получает HTML ответы для парсинга авторов С БЫСТРЫМИ ТАЙМАУТАМИ и пагинацией"""
         try:
             # Убираем параметр since - ищем по всем твитам без временных ограничений
-            # Делаем только один запрос без кавычек с пагинацией
-            base_url = f"https://nitter.tiekoetter.com/search?f=tweets&q={token.mint}&since=&until=&near="
+            # Делаем только один запрос с кавычками и пагинацией для точного поиска
+            quoted_contract = quote(f'"{token.mint}"')  # URL-кодируем кавычки для правильной обработки
+            base_url = f"https://nitter.tiekoetter.com/search?f=tweets&q={quoted_contract}&since=&until=&near="
             urls_to_process = [base_url]
             
             headers_with_cookie = self.headers.copy()
