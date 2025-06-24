@@ -17,9 +17,9 @@ VIP_TELEGRAM_CHATS = {
         'chat_id': -1002605341782,
         'enabled': True,
         'description': 'VIP Telegram чат - мгновенные сигналы',
-        'priority': 'ULTRA',  # Максимальный приоритет газа $5
+        'priority': 'VIP',  # VIP приоритет газа 0.38 SOL
         'auto_buy': True,  # Автоматическая покупка активирована
-        'buy_amount_sol': 7.59,  # Сумма для автопокупки в SOL (~$1,062)
+        'buy_amount_sol': 6.4,  # VIP автопокупка: 6.4 SOL (~$896 при $140/SOL)
         'check_interval': 0.1,  # Мгновенная обработка сообщений
         'notify_unknown_contracts': True,  # Уведомлять о неизвестных контрактах
         'bypass_filters': True,  # Обходить все фильтры
