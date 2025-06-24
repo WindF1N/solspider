@@ -178,6 +178,15 @@ class BackgroundTokenMonitor:
             # Параметры автопокупки для Twitter токенов (больше чем для новых токенов)
             auto_buy_amount = 0.001  # 0.001 SOL для Twitter токенов
             
+            # Импортируем функцию газа
+            try:
+                from vip_config import get_gas_fee, get_gas_description
+                gas_fee = get_gas_fee('twitter_tokens')
+                gas_desc = get_gas_description('twitter_tokens')
+                logger.info(f"⚡ Газ для Twitter токена: {gas_desc}")
+            except ImportError:
+                gas_fee = 0.002  # Fallback значение
+            
             # Выполняем покупку через Axiom
             result = await execute_axiom_purchase(
                 contract_address=mint,
@@ -185,7 +194,7 @@ class BackgroundTokenMonitor:
                 tweet_text=f"Автоматическая покупка при обнаружении в Twitter: {token_name} ({symbol})",
                 sol_amount=auto_buy_amount,
                 slippage=15,
-                priority_fee=0.001
+                priority_fee=gas_fee  # Оптимизированный газ для Twitter токенов
             )
             
             if result.get('success', False):
@@ -216,7 +225,7 @@ class BackgroundTokenMonitor:
             else:
                 error_msg = result.get('error', 'Unknown error')
                 logger.error(f"❌ Ошибка Twitter автопокупки {symbol}: {error_msg}")
-                
+        
                 # Отправляем уведомление об ошибке
                 error_notification = (
                     f"❌ <b>ОШИБКА TWITTER АВТОПОКУПКИ</b>\n\n"
@@ -275,7 +284,7 @@ class BackgroundTokenMonitor:
             )
             
             # Информация о твитах (только первое обнаружение)
-            action_text = f"📱 <b>Твитов с контрактом:</b> {tweets_count}"
+                action_text = f"📱 <b>Твитов с контрактом:</b> {tweets_count}"
             
             message += f"\n📊 <b>Активность:</b> {engagement}\n"
             
@@ -481,23 +490,23 @@ class BackgroundTokenMonitor:
             max_pages = 3
             current_url = base_url
             
-            # Настройка прокси если требуется
-            connector = None
-            request_kwargs = {}
-            if proxy:
-                try:
-                    # Пробуем новый API (aiohttp 3.8+)
-                    connector = aiohttp.ProxyConnector.from_url(proxy)
-                    proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
-                    logger.debug(f"🌐 Фоновый мониторинг использует прокси через ProxyConnector: {proxy_info}")
-                except AttributeError:
-                    # Для aiohttp 3.9.1 - прокси передается напрямую в get()
-                    connector = aiohttp.TCPConnector()
-                    request_kwargs['proxy'] = proxy
-                    proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
-                    logger.debug(f"🌐 Фоновый мониторинг использует прокси напрямую: {proxy_info}")
-            
-            async with aiohttp.ClientSession(connector=connector) as session:
+                    # Настройка прокси если требуется
+                    connector = None
+                    request_kwargs = {}
+                    if proxy:
+                        try:
+                            # Пробуем новый API (aiohttp 3.8+)
+                            connector = aiohttp.ProxyConnector.from_url(proxy)
+                            proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
+                            logger.debug(f"🌐 Фоновый мониторинг использует прокси через ProxyConnector: {proxy_info}")
+                        except AttributeError:
+                            # Для aiohttp 3.9.1 - прокси передается напрямую в get()
+                            connector = aiohttp.TCPConnector()
+                            request_kwargs['proxy'] = proxy
+                            proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
+                            logger.debug(f"🌐 Фоновый мониторинг использует прокси напрямую: {proxy_info}")
+                    
+                    async with aiohttp.ClientSession(connector=connector) as session:
                 while page_count < max_pages and current_url:
                     page_count += 1
                     logger.debug(f"📄 Фоновый мониторинг {token.symbol}: страница {page_count}/{max_pages}")
@@ -622,34 +631,34 @@ class BackgroundTokenMonitor:
                                 self.consecutive_errors += 1
                                 break  # Прерываем цикл пагинации
                                 
-                    except asyncio.TimeoutError:
+                except asyncio.TimeoutError:
                         logger.warning(f"⏰ ФОНОВЫЙ МОНИТОРИНГ: ТАЙМАУТ для {token.symbol} на странице {page_count}")
-                        logger.warning(f"📋 ПРИЧИНА: медленный ответ Nitter сервера (>5 секунд)")
+                    logger.warning(f"📋 ПРИЧИНА: медленный ответ Nitter сервера (>5 секунд)")
                         logger.warning(f"🔧 ДЕЙСТВИЕ: останавливаем пагинацию")
-                        self.consecutive_errors += 1
+                    self.consecutive_errors += 1
                         break  # Прерываем цикл пагинации
-                    except Exception as e:
-                        # ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ОШИБОК В ФОНОВОМ МОНИТОРЕ
-                        error_type = type(e).__name__
-                        error_msg = str(e)
-                        
-                        if "ConnectionError" in error_type:
+                except Exception as e:
+                    # ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ОШИБОК В ФОНОВОМ МОНИТОРЕ
+                    error_type = type(e).__name__
+                    error_msg = str(e)
+                    
+                    if "ConnectionError" in error_type:
                             logger.error(f"🔌 ФОНОВЫЙ МОНИТОРИНГ: ОШИБКА СОЕДИНЕНИЯ для {token.symbol} на странице {page_count}")
-                            logger.error(f"📋 ПРИЧИНА: сеть недоступна или Nitter сервер недоступен")
-                        elif "SSLError" in error_type:
+                        logger.error(f"📋 ПРИЧИНА: сеть недоступна или Nitter сервер недоступен")
+                    elif "SSLError" in error_type:
                             logger.error(f"🔒 ФОНОВЫЙ МОНИТОРИНГ: SSL ОШИБКА для {token.symbol} на странице {page_count}")
-                            logger.error(f"📋 ПРИЧИНА: проблемы с HTTPS сертификатом")
-                        elif "HTTPError" in error_type:
+                        logger.error(f"📋 ПРИЧИНА: проблемы с HTTPS сертификатом")
+                    elif "HTTPError" in error_type:
                             logger.error(f"🌐 ФОНОВЫЙ МОНИТОРИНГ: HTTP ОШИБКА для {token.symbol} на странице {page_count}")
-                            logger.error(f"📋 ПРИЧИНА: ошибка HTTP протокола")
-                        else:
+                        logger.error(f"📋 ПРИЧИНА: ошибка HTTP протокола")
+                    else:
                             logger.error(f"❓ ФОНОВЫЙ МОНИТОРИНГ: НЕИЗВЕСТНАЯ ОШИБКА для {token.symbol} на странице {page_count}")
-                            logger.error(f"📋 ТИП: {error_type}")
-                        
-                        logger.error(f"📄 ДЕТАЛИ: {error_msg}")
+                        logger.error(f"📋 ТИП: {error_type}")
+                    
+                    logger.error(f"📄 ДЕТАЛИ: {error_msg}")
                         logger.error(f"🔧 ДЕЙСТВИЕ: останавливаем пагинацию")
-                        
-                        self.consecutive_errors += 1
+                    
+                    self.consecutive_errors += 1
                         break  # Прерываем цикл пагинации
             
             # Убираем дубликаты авторов и проверяем черный список

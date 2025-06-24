@@ -610,7 +610,7 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
                     logger.info(f"📄 Пагинация для '{query}': {len(result)} твитов, {len(authors)} авторов")
                 else:
                     # Для символов используем обычный поиск
-                    result = await search_single_query(query, headers, use_quotes=use_quotes, cycle_cookie=cycle_cookie)
+                result = await search_single_query(query, headers, use_quotes=use_quotes, cycle_cookie=cycle_cookie)
                 
                 # Проверяем если результат содержит информацию об ошибке
                 if isinstance(result, dict) and "error" in result:
@@ -870,8 +870,8 @@ async def format_new_token(data):
                 if join_date:
                     message += f"   📅 Создан: {join_date}\n"
             
-                            # Добавляем дату публикации если есть
-                if tweet_date:
+            # Добавляем дату публикации если есть
+            if tweet_date:
                     message += f"   📅 Опубликован: {tweet_date}\n"
                 
                 # Добавляем тип твита
@@ -982,6 +982,15 @@ async def execute_auto_purchase_new_token(mint, symbol, token_name):
         # Параметры автопокупки
         auto_buy_amount = 0.0001  # 0.0001 SOL
         
+        # Импортируем функцию газа
+        try:
+            from vip_config import get_gas_fee, get_gas_description
+            gas_fee = get_gas_fee('new_tokens')
+            gas_desc = get_gas_description('new_tokens')
+            logger.info(f"⚡ Газ для нового токена: {gas_desc}")
+        except ImportError:
+            gas_fee = 0.001  # Fallback значение
+        
         # Выполняем покупку через Axiom
         result = await execute_axiom_purchase(
             contract_address=mint,
@@ -989,7 +998,7 @@ async def execute_auto_purchase_new_token(mint, symbol, token_name):
             tweet_text=f"Автоматическая покупка нового токена {token_name} ({symbol})",
             sol_amount=auto_buy_amount,
             slippage=15,
-            priority_fee=0.001
+            priority_fee=gas_fee  # Оптимизированный газ для новых токенов
         )
         
         if result.get('success', False):
@@ -2246,8 +2255,8 @@ def analyze_author_contract_diversity(author_username, db_manager=None):
             
             # Добавляем найденные контракты
             for contract in contracts_in_tweet:
-                all_contracts.add(contract)
-                contract_mentions[contract] = contract_mentions.get(contract, 0) + 1
+                    all_contracts.add(contract)
+                    contract_mentions[contract] = contract_mentions.get(contract, 0) + 1
         
         total_tweets = len(tweet_mentions)
         unique_contracts = len(all_contracts)
@@ -2419,8 +2428,8 @@ async def analyze_author_page_contracts(author_username, tweets_on_page=None, lo
         contracts_in_tweet = extract_contracts_from_text(tweet_text)
         
         for contract in contracts_in_tweet:
-            all_contracts.add(contract)
-            contract_mentions[contract] = contract_mentions.get(contract, 0) + 1
+                all_contracts.add(contract)
+                contract_mentions[contract] = contract_mentions.get(contract, 0) + 1
     
     total_tweets = len(tweets_on_page)
     unique_contracts = len(all_contracts)
@@ -2468,16 +2477,16 @@ async def analyze_author_page_contracts(author_username, tweets_on_page=None, lo
             diversity_threshold = 40  # Умеренный порог для больших выборок
         
         if diversity_percent >= diversity_threshold:
-            is_spam_likely = True
+        is_spam_likely = True
             recommendation = "🚫 СПАМЕР - слишком много разных контрактов!"
             spam_analysis = f"СПАМ! {diversity_percent:.1f}% разных контрактов - превышен порог {diversity_threshold}% для {total_tweets} твитов"
-        else:
-            # ИСПРАВЛЕННАЯ ЛОГИКА: низкое разнообразие = хорошо
+    else:
+        # ИСПРАВЛЕННАЯ ЛОГИКА: низкое разнообразие = хорошо
             if diversity_percent <= 10:  # ≤10% разных контрактов = отлично
-                is_spam_likely = False
+            is_spam_likely = False
                 recommendation = "✅ ОТЛИЧНЫЙ - очень низкое разнообразие контрактов"
                 spam_analysis = f"Отлично: {diversity_percent:.1f}% разнообразия - высокий фокус на конкретных токенах"
-            else:
+        else:
                 is_spam_likely = False
                 recommendation = "🟡 ПРИЕМЛЕМЫЙ - низкое разнообразие контрактов"
                 spam_analysis = f"Приемлемо: {diversity_percent:.1f}% разнообразия (порог {diversity_threshold}% для {total_tweets} твитов)"

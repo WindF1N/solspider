@@ -45,7 +45,7 @@ try:
     from vip_config import (
         VIP_TWITTER_ACCOUNTS, VIP_MONITOR_SETTINGS, VIP_TELEGRAM_CONFIG,
         VIP_NITTER_COOKIES, VIP_PROXIES, AUTO_BUY_CONFIG, format_vip_message, create_keyboard,
-        get_active_accounts, get_auto_buy_accounts
+        get_active_accounts, get_auto_buy_accounts, get_gas_fee, get_gas_description
     )
 except ImportError:
     print("❌ Не удалось импортировать vip_config.py")
@@ -177,9 +177,112 @@ class VipTwitterMonitor:
         return list(set(clean_contracts))  # Убираем дубликаты
     
     def extract_clean_text(self, element) -> str:
-        """Извлекает чистый текст из HTML элемента"""
+        """Извлекает чистый текст из HTML элемента твита включая все скрытые контракты"""
         try:
-            # Добавляем пробелы между элементами
+            all_text_parts = []
+            
+            # 1. Основной текст элемента
+            main_text = element.get_text(separator=' ', strip=True)
+            if main_text:
+                all_text_parts.append(main_text)
+            
+            # 2. 🔗 ИЗВЛЕКАЕМ ТЕКСТ ИЗ ВСЕХ ССЫЛОК
+            for link in element.find_all('a'):
+                # Текст ссылки
+                link_text = link.get_text(strip=True)
+                if link_text and link_text not in all_text_parts:
+                    all_text_parts.append(link_text)
+                
+                # href атрибут ссылки
+                href = link.get('href', '')
+                if href and href not in all_text_parts:
+                    all_text_parts.append(href)
+                    logger.debug(f"🔗 Найден href: {href[:50]}...")
+                
+                # title атрибут ссылки
+                title = link.get('title', '')
+                if title and title not in all_text_parts:
+                    all_text_parts.append(title)
+            
+            # 3. 🖼️ ИЗВЛЕКАЕМ ДАННЫЕ ИЗ ИЗОБРАЖЕНИЙ
+            for img in element.find_all('img'):
+                # alt текст изображения
+                alt_text = img.get('alt', '')
+                if alt_text and alt_text not in all_text_parts:
+                    all_text_parts.append(alt_text)
+                    logger.debug(f"🖼️ Найден alt: {alt_text[:50]}...")
+                
+                # src изображения (может содержать контракт в имени)
+                src = img.get('src', '')
+                if src and src not in all_text_parts:
+                    all_text_parts.append(src)
+                
+                # data-url атрибуты
+                data_url = img.get('data-url', '')
+                if data_url and data_url not in all_text_parts:
+                    all_text_parts.append(data_url)
+            
+            # 4. 🎬 ИЗВЛЕКАЕМ ДАННЫЕ ИЗ ВИДЕО
+            for video in element.find_all('video'):
+                # poster изображение видео
+                poster = video.get('poster', '')
+                if poster and poster not in all_text_parts:
+                    all_text_parts.append(poster)
+                
+                # data-url видео
+                data_url = video.get('data-url', '')
+                if data_url and data_url not in all_text_parts:
+                    all_text_parts.append(data_url)
+                    logger.debug(f"🎬 Найден video data-url: {data_url[:50]}...")
+            
+            # 5. 📋 ИЗВЛЕКАЕМ ДАННЫЕ ИЗ КАРТОЧЕК
+            for card in element.find_all('div', class_='card'):
+                # Заголовок карточки
+                card_title = card.find('h2', class_='card-title')
+                if card_title:
+                    title_text = card_title.get_text(strip=True)
+                    if title_text and title_text not in all_text_parts:
+                        all_text_parts.append(title_text)
+                
+                # Описание карточки
+                card_desc = card.find('p', class_='card-description')
+                if card_desc:
+                    desc_text = card_desc.get_text(strip=True)
+                    if desc_text and desc_text not in all_text_parts:
+                        all_text_parts.append(desc_text)
+                
+                # URL карточки
+                card_link = card.find('a', class_='card-container')
+                if card_link:
+                    card_href = card_link.get('href', '')
+                    if card_href and card_href not in all_text_parts:
+                        all_text_parts.append(card_href)
+                        logger.debug(f"📋 Найден card href: {card_href[:50]}...")
+            
+            # 6. 🏷️ ИЗВЛЕКАЕМ ВСЕ DATA-АТРИБУТЫ
+            for elem in element.find_all():
+                for attr_name, attr_value in elem.attrs.items():
+                    if attr_name.startswith('data-') and isinstance(attr_value, str):
+                        if attr_value and attr_value not in all_text_parts:
+                            all_text_parts.append(attr_value)
+                            logger.debug(f"🏷️ Найден {attr_name}: {attr_value[:50]}...")
+            
+            # 7. 📎 ИЗВЛЕКАЕМ ТЕКСТ ИЗ ATTACHMENTS
+            attachments = element.find_all('div', class_='attachments')
+            for attachment in attachments:
+                attachment_text = attachment.get_text(strip=True)
+                if attachment_text and attachment_text not in all_text_parts:
+                    all_text_parts.append(attachment_text)
+            
+            # 8. 🔍 ИЗВЛЕКАЕМ СКРЫТЫЙ ТЕКСТ ИЗ SPAN И DIV
+            for span in element.find_all(['span', 'div']):
+                # Проверяем атрибуты title, aria-label и другие
+                for attr in ['title', 'aria-label', 'data-original-title']:
+                    attr_value = span.get(attr, '')
+                    if attr_value and attr_value not in all_text_parts:
+                        all_text_parts.append(attr_value)
+            
+            # Добавляем пробелы между элементами для корректной обработки
             for link in element.find_all('a'):
                 if link.string:
                     if link.previous_sibling and not str(link.previous_sibling).endswith(' '):
@@ -187,11 +290,19 @@ class VipTwitterMonitor:
                     if link.next_sibling and not str(link.next_sibling).startswith(' '):
                         link.insert_after(' ')
             
-            text = element.get_text(separator=' ', strip=True)
-            text = re.sub(r'\s+', ' ', text)  # Убираем множественные пробелы
-            return text.strip()
+            # Объединяем весь найденный текст
+            full_text = " ".join(all_text_parts)
+            
+            # Очищаем от множественных пробелов и лишних символов
+            full_text = re.sub(r'\s+', ' ', full_text).strip()
+            
+            logger.debug(f"🔍 Twitter: извлечено {len(all_text_parts)} частей текста: {full_text[:100]}...")
+            
+            return full_text
+            
         except Exception as e:
-            logger.error(f"❌ Ошибка извлечения текста: {e}")
+            logger.error(f"❌ Ошибка извлечения Twitter текста: {e}")
+            # Возвращаем базовый текст как fallback
             return element.get_text(strip=True)
     
     async def send_vip_notification(self, message: str, keyboard: Optional[List] = None) -> bool:
@@ -302,13 +413,26 @@ class VipTwitterMonitor:
                     from axiom_trader import execute_axiom_purchase
                     
                     # Выполняем реальную покупку через Axiom.trade
+                    # 🔥 Определяем тип газа на основе приоритета VIP аккаунта
+                    account_priority = account_config.get('priority', 'HIGH')
+                    if account_priority == 'ULTRA':
+                        gas_type = 'ultra_vip'  # $5 газ для ULTRA приоритета
+                    else:
+                        gas_type = 'vip_signals'  # $2 газ для HIGH приоритета
+                    
+                    vip_gas_fee = get_gas_fee(gas_type)
+                    gas_description = get_gas_description(gas_type)
+                    
+                    logger.info(f"🔥 Используем {gas_description}")
+                    logger.info(f"⚡ VIP Gas fee: {vip_gas_fee} SOL (~${vip_gas_fee * 140:.2f})")
+                    
                     result = await execute_axiom_purchase(
                         contract_address=contract,
                         twitter_username=username,
                         tweet_text=tweet_text,
                         sol_amount=sol_amount,
                         slippage=self.auto_buy_config.get('slippage_percent', 15),
-                        priority_fee=self.auto_buy_config.get('priority_fee', 0.001)
+                        priority_fee=vip_gas_fee  # 🔥 VIP газ для быстрого подтверждения
                     )
                     
                     execution_time = time.time() - start_time

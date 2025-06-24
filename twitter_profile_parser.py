@@ -57,7 +57,7 @@ class TwitterProfileParser:
                 return int(float(text))
         except (ValueError, IndexError):
             return 0
-
+    
     def extract_clean_text(self, element):
         """Извлекает чистый текст из HTML элемента с правильными разделителями"""
         try:
