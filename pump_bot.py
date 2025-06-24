@@ -1961,12 +1961,21 @@ def should_notify_based_on_authors_unified(authors):
             logger.info(f"🤖 @{username}: СПАМ-БОТ - {spam_bot_reason}")
             continue  # Пропускаем остальные проверки для спам-ботов
         
-        # ПРОСТАЯ ПРОВЕРКА: если автор пишет контракты в 80%+ сообщений = чистый спамер
-        if total_tweets >= 3 and (spam_percent >= 80 or diversity_percent >= 80):
-            pure_spammers += 1
-            logger.info(f"🚫 @{username}: ЧИСТЫЙ СПАМЕР - контракты в {max(spam_percent, diversity_percent):.1f}% сообщений")
+        # АДАПТИВНАЯ ПРОВЕРКА: разные пороги в зависимости от количества твитов
+        diversity_threshold = 40  # По умолчанию для больших выборок
+        
+        if total_tweets < 10:
+            diversity_threshold = 50  # Мягкий порог для малых выборок
+        elif total_tweets < 20:
+            diversity_threshold = 30  # Умеренный порог для средних выборок
         else:
-            logger.info(f"✅ @{username}: НОРМАЛЬНЫЙ АВТОР - контракты в {max(spam_percent, diversity_percent):.1f}% сообщений")
+            diversity_threshold = 40  # Умеренный порог для больших выборок
+        
+        if total_tweets >= 3 and (spam_percent >= 80 or diversity_percent >= diversity_threshold):
+            pure_spammers += 1
+            logger.info(f"🚫 @{username}: ЧИСТЫЙ СПАМЕР - контракты в {max(spam_percent, diversity_percent):.1f}% сообщений (порог: {diversity_threshold}% для {total_tweets} твитов)")
+        else:
+            logger.info(f"✅ @{username}: НОРМАЛЬНЫЙ АВТОР - контракты в {max(spam_percent, diversity_percent):.1f}% сообщений (порог: {diversity_threshold}% для {total_tweets} твитов)")
     
     # Блокируем ТОЛЬКО если ВСЕ НЕЗАБЛОКИРОВАННЫЕ авторы - чистые спамеры или спам-боты
     should_notify = pure_spammers < valid_authors
@@ -2139,8 +2148,9 @@ def analyze_author_contract_diversity(author_username, db_manager=None):
         contract_mentions = {}  # контракт -> количество упоминаний
         
         for mention in tweet_mentions:
-            # Ищем контракты в тексте твита (адреса длиной 32-44 символа)
-            contracts_in_tweet = re.findall(r'\b[A-Za-z0-9]{32,44}\b', mention.tweet_text)
+            # Ищем контракты в тексте твита (адреса длиной 32-48 символов)
+            # Улучшенное регулярное выражение для поиска Solana адресов (включая с "pump" на конце)
+            contracts_in_tweet = re.findall(r'[A-Za-z0-9]{32,48}', mention.tweet_text)
             
             # Также добавляем контракт из поля mint если есть
             if mention.mint:
@@ -2148,10 +2158,15 @@ def analyze_author_contract_diversity(author_username, db_manager=None):
             
             # Добавляем найденные контракты
             for contract in contracts_in_tweet:
-                # Проверяем что это похоже на Solana адрес
-                if len(contract) >= 32 and contract.isalnum():
-                    all_contracts.add(contract)
-                    contract_mentions[contract] = contract_mentions.get(contract, 0) + 1
+                # Обрезаем "pump" с конца если есть, чтобы получить настоящий адрес
+                clean_contract = contract
+                if contract.endswith('pump'):
+                    clean_contract = contract[:-4]  # Убираем "pump"
+                
+                # Проверяем что это похоже на Solana адрес (32-44 символа)
+                if 32 <= len(clean_contract) <= 44 and clean_contract.isalnum():
+                    all_contracts.add(clean_contract)
+                    contract_mentions[clean_contract] = contract_mentions.get(clean_contract, 0) + 1
         
         total_tweets = len(tweet_mentions)
         unique_contracts = len(all_contracts)
@@ -2186,24 +2201,20 @@ def analyze_author_contract_diversity(author_username, db_manager=None):
         elif concentration_percent >= 60:  # ≤40% разных контрактов
             recommendation = "🟡 СРЕДНИЙ - умеренная концентрация"
             spam_analysis = f"Умеренная концентрация: {concentration_percent:.1f}% ({diversity_percent:.1f}% разных контрактов)"
-        elif diversity_percent >= 80:  # ≥80% разных контрактов
+        elif diversity_percent >= 20:  # ≥20% разных контрактов (максимум 10 из 62)
             is_spam_likely = True
-            recommendation = "🚫 СПАМЕР - каждый твит новый контракт!"
-            spam_analysis = f"СПАМ! {diversity_percent:.1f}% разных контрактов - явный спамер"
-        elif diversity_percent >= 80:  # ≥80% разных контрактов
-            is_spam_likely = True
-            recommendation = "🚫 ПЛОХОЙ - слишком много разных контрактов"
-            spam_analysis = f"Низкое качество: {diversity_percent:.1f}% разных контрактов - нет фокуса"
+            recommendation = "🚫 СПАМЕР - слишком много разных контрактов!"
+            spam_analysis = f"СПАМ! {diversity_percent:.1f}% разных контрактов - явный спамер (лимит 16%)"
         else:
             # ИСПРАВЛЕННАЯ ЛОГИКА: низкое разнообразие = хорошо
-            if diversity_percent <= 30:  # ≤30% разных контрактов = хорошо
+            if diversity_percent <= 10:  # ≤10% разных контрактов = отлично
+                is_spam_likely = False
+                recommendation = "✅ ОТЛИЧНЫЙ - очень низкое разнообразие контрактов"
+                spam_analysis = f"Отлично: {diversity_percent:.1f}% разнообразия - высокий фокус на конкретных токенах"
+            else:
                 is_spam_likely = False
                 recommendation = "🟡 ПРИЕМЛЕМЫЙ - низкое разнообразие контрактов"
-                spam_analysis = f"Приемлемо: {diversity_percent:.1f}% разнообразия - низкая концентрация но фокус есть"
-            else:
-                is_spam_likely = True
-                recommendation = "⚠️ ПОДОЗРИТЕЛЬНЫЙ - много разных контрактов"
-                spam_analysis = f"Подозрительно: {diversity_percent:.1f}% разнообразия - нет концентрации интереса"
+                spam_analysis = f"Приемлемо: {diversity_percent:.1f}% разнообразия (порог {diversity_threshold}% для {total_tweets} твитов)"
         
         # Топ-5 наиболее упоминаемых контрактов
         top_contracts = sorted(contract_mentions.items(), key=lambda x: x[1], reverse=True)[:5]
@@ -2267,11 +2278,11 @@ async def analyze_author_page_contracts(author_username, tweets_on_page=None, lo
             from twitter_profile_parser import TwitterProfileParser
             
             async with TwitterProfileParser() as profile_parser:
-                profile_data, profile_tweets = await profile_parser.get_profile_with_tweets(author_username)
+                profile_data, all_tweets, tweets_with_contracts = await profile_parser.get_profile_with_replies_multi_page(author_username, max_pages=3)
                 
-                if profile_tweets:
-                    tweets_on_page = profile_tweets
-                    logger.info(f"📱 Загружено {len(profile_tweets)} твитов с профиля @{author_username}")
+                if all_tweets:
+                    tweets_on_page = all_tweets
+                    logger.info(f"📱 Загружено {len(all_tweets)} твитов с профиля @{author_username} (3 страницы)")
                 else:
                     logger.warning(f"⚠️ Не удалось загрузить твиты с профиля @{author_username}")
                     profile_load_failed = True
@@ -2323,14 +2334,20 @@ async def analyze_author_page_contracts(author_username, tweets_on_page=None, lo
     contract_mentions = {}
     
     for tweet_text in tweets_on_page:
-        # Ищем контракты в тексте твита (адреса длиной 32-44 символа)
-        contracts_in_tweet = re.findall(r'\b[A-Za-z0-9]{32,44}\b', tweet_text)
+        # Ищем контракты в тексте твита (адреса длиной 32-48 символов)
+        # Улучшенное регулярное выражение для поиска Solana адресов (включая с "pump" на конце)
+        contracts_in_tweet = re.findall(r'[A-Za-z0-9]{32,48}', tweet_text)
         
         for contract in contracts_in_tweet:
-            # Проверяем что это похоже на Solana адрес
-            if len(contract) >= 32 and contract.isalnum():
-                all_contracts.add(contract)
-                contract_mentions[contract] = contract_mentions.get(contract, 0) + 1
+            # Обрезаем "pump" с конца если есть, чтобы получить настоящий адрес
+            clean_contract = contract
+            if contract.endswith('pump'):
+                clean_contract = contract[:-4]  # Убираем "pump"
+            
+            # Проверяем что это похоже на Solana адрес (32-44 символа)
+            if 32 <= len(clean_contract) <= 44 and clean_contract.isalnum():
+                all_contracts.add(clean_contract)
+                contract_mentions[clean_contract] = contract_mentions.get(clean_contract, 0) + 1
     
     total_tweets = len(tweets_on_page)
     unique_contracts = len(all_contracts)
@@ -2366,24 +2383,31 @@ async def analyze_author_page_contracts(author_username, tweets_on_page=None, lo
     elif max_contract_spam_percent >= 40:
         recommendation = "🟡 СРЕДНИЙ - умеренная концентрация"
         spam_analysis = f"Умеренная концентрация: {max_contract_spam_percent:.1f}% на топ-контракте"
-    elif diversity_percent >= 80:
-        is_spam_likely = True
-        recommendation = "🚫 СПАМЕР - каждый твит новый контракт!"
-        spam_analysis = f"СПАМ! {diversity_percent:.1f}% разных контрактов на странице - явный спамер"
-    elif diversity_percent >= 80:
-        is_spam_likely = True
-        recommendation = "🚫 ПЛОХОЙ - слишком много разных контрактов"
-        spam_analysis = f"Низкое качество: {diversity_percent:.1f}% разных контрактов - нет фокуса"
     else:
-        # ИСПРАВЛЕННАЯ ЛОГИКА: низкое разнообразие = хорошо
-        if diversity_percent <= 30:  # ≤30% разных контрактов = хорошо
-            is_spam_likely = False
-            recommendation = "🟡 ПРИЕМЛЕМЫЙ - низкое разнообразие контрактов"
-            spam_analysis = f"Приемлемо: {diversity_percent:.1f}% разнообразия - низкая концентрация но фокус есть"
+        # АДАПТИВНЫЕ ПОРОГИ в зависимости от количества твитов
+        diversity_threshold = 40  # По умолчанию для больших выборок
+        
+        if total_tweets < 10:
+            diversity_threshold = 50  # Мягкий порог для малых выборок
+        elif total_tweets < 20:
+            diversity_threshold = 30  # Умеренный порог для средних выборок
         else:
+            diversity_threshold = 40  # Умеренный порог для больших выборок
+        
+        if diversity_percent >= diversity_threshold:
             is_spam_likely = True
-            recommendation = "⚠️ ПОДОЗРИТЕЛЬНЫЙ - много разных контрактов"
-            spam_analysis = f"Подозрительно: {diversity_percent:.1f}% разнообразия - нет концентрации интереса"
+            recommendation = "🚫 СПАМЕР - слишком много разных контрактов!"
+            spam_analysis = f"СПАМ! {diversity_percent:.1f}% разных контрактов - превышен порог {diversity_threshold}% для {total_tweets} твитов"
+        else:
+            # ИСПРАВЛЕННАЯ ЛОГИКА: низкое разнообразие = хорошо
+            if diversity_percent <= 10:  # ≤10% разных контрактов = отлично
+                is_spam_likely = False
+                recommendation = "✅ ОТЛИЧНЫЙ - очень низкое разнообразие контрактов"
+                spam_analysis = f"Отлично: {diversity_percent:.1f}% разнообразия - высокий фокус на конкретных токенах"
+            else:
+                is_spam_likely = False
+                recommendation = "🟡 ПРИЕМЛЕМЫЙ - низкое разнообразие контрактов"
+                spam_analysis = f"Приемлемо: {diversity_percent:.1f}% разнообразия (порог {diversity_threshold}% для {total_tweets} твитов)"
     
     # Топ-5 наиболее упоминаемых контрактов
     top_contracts = sorted(contract_mentions.items(), key=lambda x: x[1], reverse=True)[:5]

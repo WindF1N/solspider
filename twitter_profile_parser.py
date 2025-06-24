@@ -57,6 +57,43 @@ class TwitterProfileParser:
                 return int(float(text))
         except (ValueError, IndexError):
             return 0
+
+    def extract_clean_text(self, element):
+        """Извлекает чистый текст из HTML элемента с правильными разделителями"""
+        try:
+            # Создаём копию элемента для безопасной модификации
+            element_copy = element.__copy__()
+            
+            # Добавляем пробелы перед ссылками и другими элементами
+            for link in element_copy.find_all('a'):
+                if link.string:
+                    # Добавляем пробел перед ссылкой если его нет
+                    if link.previous_sibling and not str(link.previous_sibling).endswith(' '):
+                        link.insert_before(' ')
+                    # Добавляем пробел после ссылки если его нет  
+                    if link.next_sibling and not str(link.next_sibling).startswith(' '):
+                        link.insert_after(' ')
+            
+            # Добавляем пробелы перед другими важными элементами
+            for elem in element_copy.find_all(['span', 'div']):
+                if elem.get_text(strip=True) and elem.parent == element_copy:
+                    if elem.previous_sibling and not str(elem.previous_sibling).endswith(' '):
+                        elem.insert_before(' ')
+                    if elem.next_sibling and not str(elem.next_sibling).startswith(' '):
+                        elem.insert_after(' ')
+            
+            # Извлекаем текст с разделителями
+            text = element_copy.get_text(separator=' ', strip=True)
+            
+            # Заменяем множественные пробелы на одинарные
+            text = re.sub(r'\s+', ' ', text)
+            
+            return text.strip()
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка извлечения чистого текста: {e}")
+            # Fallback к стандартному методу
+            return element.get_text(strip=True)
     
     def extract_profile_data(self, html_content):
         """Извлекает данные профиля из HTML"""
@@ -265,7 +302,8 @@ class TwitterProfileParser:
                 
                 tweet_content = item.find('div', class_='tweet-content')
                 if tweet_content:
-                    tweet_text = tweet_content.get_text(strip=True)
+                    # Улучшенное извлечение текста с правильными разделителями
+                    tweet_text = self.extract_clean_text(tweet_content)
                     if tweet_text:
                         tweets.append(tweet_text)
             
@@ -316,7 +354,8 @@ class TwitterProfileParser:
                 
                 tweet_content = item.find('div', class_='tweet-content')
                 if tweet_content:
-                    tweet_text = tweet_content.get_text(strip=True)
+                    # Улучшенное извлечение текста с правильными разделителями
+                    tweet_text = self.extract_clean_text(tweet_content)
                     if tweet_text:
                         # Ищем контракты в тексте твита (адреса длиной 32-44 символа)
                         contracts = re.findall(r'\b[A-Za-z0-9]{32,44}\b', tweet_text)
@@ -675,7 +714,9 @@ class TwitterProfileParser:
             # Топ-5 самых упоминаемых контрактов
             top_contracts = sorted(contract_frequency.items(), key=lambda x: x[1], reverse=True)[:5]
             
-            # Анализ качества
+            # Анализ качества с адаптивными порогами
+            total_tweets_analyzed = len(all_tweets)
+            
             if unique_contracts == 0:
                 quality_analysis = "Нет контрактов"
                 spam_likelihood = "Неизвестно"
@@ -688,15 +729,23 @@ class TwitterProfileParser:
             elif max_contract_concentration >= 40:
                 quality_analysis = "Умеренная концентрация"
                 spam_likelihood = "Средняя"
-            elif contract_diversity_percent >= 80:
-                quality_analysis = "Очень высокое разнообразие"
-                spam_likelihood = "Высокая"
-            elif contract_diversity_percent >= 80:
-                quality_analysis = "Высокое разнообразие"
-                spam_likelihood = "Высокая"
             else:
-                quality_analysis = "Приемлемое разнообразие"
-                spam_likelihood = "Средняя"
+                # АДАПТИВНЫЕ ПОРОГИ в зависимости от количества твитов
+                diversity_threshold = 40  # По умолчанию для больших выборок
+                
+                if total_tweets_analyzed < 10:
+                    diversity_threshold = 50  # Мягкий порог для малых выборок
+                elif total_tweets_analyzed < 20:
+                    diversity_threshold = 30  # Умеренный порог для средних выборок
+                else:
+                    diversity_threshold = 40  # Умеренный порог для больших выборок
+                
+                if contract_diversity_percent >= diversity_threshold:
+                    quality_analysis = f"Слишком высокое разнообразие (>{diversity_threshold}% для {total_tweets_analyzed} твитов)"
+                    spam_likelihood = "Очень высокая"
+                else:
+                    quality_analysis = f"Приемлемое разнообразие (<{diversity_threshold}% для {total_tweets_analyzed} твитов)"
+                    spam_likelihood = "Низкая"
             
             result = {
                 'success': True,
