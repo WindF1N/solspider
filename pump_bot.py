@@ -45,7 +45,8 @@ TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 # Список чатов для отправки уведомлений
 CHAT_IDS = [
     CHAT_ID,  # Основной чат из .env
-    "203504880"
+    "203504880",
+    "230913172"
 ]
 
 # WebSocket конфигурация
