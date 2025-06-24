@@ -20,6 +20,31 @@ from bs4 import BeautifulSoup
 setup_logging()
 logger = logging.getLogger(__name__)
 
+def ensure_nitter_params(url):
+    """Гарантирует наличие пустых параметров since, until, near в Nitter URL"""
+    try:
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        
+        parsed = urlparse(url)
+        query_params = parse_qs(parsed.query)
+        
+        # Добавляем пустые параметры если их нет
+        if 'since' not in query_params:
+            query_params['since'] = ['']
+        if 'until' not in query_params:
+            query_params['until'] = ['']
+        if 'near' not in query_params:
+            query_params['near'] = ['']
+        
+        # Пересобираем URL
+        new_query = urlencode(query_params, doseq=True)
+        new_parsed = parsed._replace(query=new_query)
+        return urlunparse(new_parsed)
+        
+    except Exception as e:
+        logger.debug(f"Ошибка обработки URL параметров: {e}")
+        return url
+
 class BackgroundTokenMonitor:
     """Фоновый мониторинг токенов"""
     
@@ -350,7 +375,7 @@ class BackgroundTokenMonitor:
         try:
             # Убираем параметр since - ищем по всем твитам без временных ограничений
             # Делаем только один запрос без кавычек с пагинацией
-            base_url = f"https://nitter.tiekoetter.com/search?f=tweets&q={token.mint}"
+            base_url = f"https://nitter.tiekoetter.com/search?f=tweets&q={token.mint}&since=&until=&near="
             urls_to_process = [base_url]
             
             headers_with_cookie = self.headers.copy()
@@ -482,6 +507,9 @@ class BackgroundTokenMonitor:
                                                 current_url = f"https://nitter.tiekoetter.com{next_page_url}"
                                             else:
                                                 current_url = next_page_url
+                                            
+                                            # Гарантируем наличие пустых параметров since, until, near
+                                            current_url = ensure_nitter_params(current_url)
                                             logger.debug(f"🔗 Фоновый мониторинг {token.symbol}: следующая страница {current_url}")
                                             # Пауза между страницами
                                             await asyncio.sleep(0.3)

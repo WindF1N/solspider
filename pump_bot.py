@@ -277,8 +277,8 @@ def send_vip_telegram_photo(photo_url, caption, inline_keyboard=None):
 
 async def search_single_query(query, headers, retry_count=0, use_quotes=False, cycle_cookie=None):
     """Выполняет одиночный поисковый запрос к Nitter с повторными попытками при 429 и ротацией cookies"""
-    # Убираем параметр since - ищем по всем твитам без временных ограничений
-    url = f"https://nitter.tiekoetter.com/search?f=tweets&q={quote(query)}"
+    # Добавляем пустые параметры since, until, near как требует Nitter
+    url = f"https://nitter.tiekoetter.com/search?f=tweets&q={quote(query)}&since=&until=&near="
     
     # Используем переданные прокси+cookie для цикла или получаем новые
     if cycle_cookie:
@@ -473,13 +473,38 @@ def extract_next_page_url(soup):
         logger.debug(f"Ошибка извлечения URL следующей страницы: {e}")
         return None
 
+def ensure_nitter_params(url):
+    """Гарантирует наличие пустых параметров since, until, near в Nitter URL"""
+    try:
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        
+        parsed = urlparse(url)
+        query_params = parse_qs(parsed.query)
+        
+        # Добавляем пустые параметры если их нет
+        if 'since' not in query_params:
+            query_params['since'] = ['']
+        if 'until' not in query_params:
+            query_params['until'] = ['']
+        if 'near' not in query_params:
+            query_params['near'] = ['']
+        
+        # Пересобираем URL
+        new_query = urlencode(query_params, doseq=True)
+        new_parsed = parsed._replace(query=new_query)
+        return urlunparse(new_parsed)
+        
+    except Exception as e:
+        logger.debug(f"Ошибка обработки URL параметров: {e}")
+        return url
+
 async def search_with_pagination(query, headers, max_pages=3, cycle_cookie=None):
     """Выполняет поиск с пагинацией, проходя по всем доступным страницам"""
     try:
         all_tweets = []
         all_authors = []
         page_count = 0
-        current_url = f"https://nitter.tiekoetter.com/search?f=tweets&q={quote(query)}"
+        current_url = f"https://nitter.tiekoetter.com/search?f=tweets&q={quote(query)}&since=&until=&near="
         
         # Используем переданные прокси+cookie для цикла или получаем новые
         if cycle_cookie:
@@ -584,6 +609,9 @@ async def search_with_pagination(query, headers, max_pages=3, cycle_cookie=None)
                                     current_url = f"https://nitter.tiekoetter.com{next_page_url}"
                                 else:
                                     current_url = next_page_url
+                                
+                                # Гарантируем наличие пустых параметров since, until, near
+                                current_url = ensure_nitter_params(current_url)
                                 
                                 logger.debug(f"🔗 Следующая страница: {current_url}")
                                 
