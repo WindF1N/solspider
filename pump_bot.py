@@ -276,8 +276,8 @@ def send_vip_telegram_photo(photo_url, caption, inline_keyboard=None):
 
 async def search_single_query(query, headers, retry_count=0, use_quotes=False, cycle_cookie=None):
     """Выполняет одиночный поисковый запрос к Nitter с повторными попытками при 429 и ротацией cookies"""
-    # Добавляем вчерашнюю дату в параметр since (UTC)
-    yesterday = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
+    # Добавляем вчерашнюю дату в параметр since (локальное время для корректной работы с часовыми поясами)
+    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
     
     # Убираем поиск с кавычками - используем только без кавычек
     url = f"https://nitter.tiekoetter.com/search?f=tweets&q={quote(query)}&since={yesterday}&until=&near="

@@ -362,9 +362,9 @@ class BackgroundTokenMonitor:
     async def get_contract_mentions_with_authors(self, token, proxy, cycle_cookie):
         """Получает HTML ответы для парсинга авторов С БЫСТРЫМИ ТАЙМАУТАМИ"""
         try:
-            # Добавляем вчерашнюю дату и убираем поиск с кавычками (UTC)
+            # Добавляем вчерашнюю дату и убираем поиск с кавычками (локальное время для корректной работы с часовыми поясами)
             from datetime import datetime, timedelta
-            yesterday = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
+            yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
             
             # Делаем только один запрос без кавычек
             urls = [
