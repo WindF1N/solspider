@@ -285,7 +285,7 @@ class BackgroundTokenMonitor:
             )
             
             # Информация о твитах (только первое обнаружение)
-                action_text = f"📱 <b>Твитов с контрактом:</b> {tweets_count}"
+            action_text = f"📱 <b>Твитов с контрактом:</b> {tweets_count}"
             
             message += f"\n📊 <b>Активность:</b> {engagement}\n"
             
@@ -492,23 +492,23 @@ class BackgroundTokenMonitor:
             max_pages = 3
             current_url = base_url
             
-                    # Настройка прокси если требуется
-                    connector = None
-                    request_kwargs = {}
-                    if proxy:
-                        try:
-                            # Пробуем новый API (aiohttp 3.8+)
-                            connector = aiohttp.ProxyConnector.from_url(proxy)
-                            proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
-                            logger.debug(f"🌐 Фоновый мониторинг использует прокси через ProxyConnector: {proxy_info}")
-                        except AttributeError:
-                            # Для aiohttp 3.9.1 - прокси передается напрямую в get()
-                            connector = aiohttp.TCPConnector()
-                            request_kwargs['proxy'] = proxy
-                            proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
-                            logger.debug(f"🌐 Фоновый мониторинг использует прокси напрямую: {proxy_info}")
-                    
-                    async with aiohttp.ClientSession(connector=connector) as session:
+            # Настройка прокси если требуется
+            connector = None
+            request_kwargs = {}
+            if proxy:
+                try:
+                    # Пробуем новый API (aiohttp 3.8+)
+                    connector = aiohttp.ProxyConnector.from_url(proxy)
+                    proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
+                    logger.debug(f"🌐 Фоновый мониторинг использует прокси через ProxyConnector: {proxy_info}")
+                except AttributeError:
+                    # Для aiohttp 3.9.1 - прокси передается напрямую в get()
+                    connector = aiohttp.TCPConnector()
+                    request_kwargs['proxy'] = proxy
+                    proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
+                    logger.debug(f"🌐 Фоновый мониторинг использует прокси напрямую: {proxy_info}")
+            
+            async with aiohttp.ClientSession(connector=connector) as session:
                 while page_count < max_pages and current_url:
                     page_count += 1
                     logger.debug(f"📄 Фоновый мониторинг {token.symbol}: страница {page_count}/{max_pages}")
@@ -633,34 +633,34 @@ class BackgroundTokenMonitor:
                                 self.consecutive_errors += 1
                                 break  # Прерываем цикл пагинации
                                 
-                except asyncio.TimeoutError:
+                    except asyncio.TimeoutError:
                         logger.warning(f"⏰ ФОНОВЫЙ МОНИТОРИНГ: ТАЙМАУТ для {token.symbol} на странице {page_count}")
-                    logger.warning(f"📋 ПРИЧИНА: медленный ответ Nitter сервера (>5 секунд)")
+                        logger.warning(f"📋 ПРИЧИНА: медленный ответ Nitter сервера (>5 секунд)")
                         logger.warning(f"🔧 ДЕЙСТВИЕ: останавливаем пагинацию")
-                    self.consecutive_errors += 1
+                        self.consecutive_errors += 1
                         break  # Прерываем цикл пагинации
-                except Exception as e:
-                    # ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ОШИБОК В ФОНОВОМ МОНИТОРЕ
-                    error_type = type(e).__name__
-                    error_msg = str(e)
-                    
-                    if "ConnectionError" in error_type:
+                    except Exception as e:
+                        # ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ОШИБОК В ФОНОВОМ МОНИТОРЕ
+                        error_type = type(e).__name__
+                        error_msg = str(e)
+                        
+                        if "ConnectionError" in error_type:
                             logger.error(f"🔌 ФОНОВЫЙ МОНИТОРИНГ: ОШИБКА СОЕДИНЕНИЯ для {token.symbol} на странице {page_count}")
-                        logger.error(f"📋 ПРИЧИНА: сеть недоступна или Nitter сервер недоступен")
-                    elif "SSLError" in error_type:
+                            logger.error(f"📋 ПРИЧИНА: сеть недоступна или Nitter сервер недоступен")
+                        elif "SSLError" in error_type:
                             logger.error(f"🔒 ФОНОВЫЙ МОНИТОРИНГ: SSL ОШИБКА для {token.symbol} на странице {page_count}")
-                        logger.error(f"📋 ПРИЧИНА: проблемы с HTTPS сертификатом")
-                    elif "HTTPError" in error_type:
+                            logger.error(f"📋 ПРИЧИНА: проблемы с HTTPS сертификатом")
+                        elif "HTTPError" in error_type:
                             logger.error(f"🌐 ФОНОВЫЙ МОНИТОРИНГ: HTTP ОШИБКА для {token.symbol} на странице {page_count}")
-                        logger.error(f"📋 ПРИЧИНА: ошибка HTTP протокола")
-                    else:
+                            logger.error(f"📋 ПРИЧИНА: ошибка HTTP протокола")
+                        else:
                             logger.error(f"❓ ФОНОВЫЙ МОНИТОРИНГ: НЕИЗВЕСТНАЯ ОШИБКА для {token.symbol} на странице {page_count}")
-                        logger.error(f"📋 ТИП: {error_type}")
-                    
-                    logger.error(f"📄 ДЕТАЛИ: {error_msg}")
+                            logger.error(f"📋 ТИП: {error_type}")
+                        
+                        logger.error(f"📄 ДЕТАЛИ: {error_msg}")
                         logger.error(f"🔧 ДЕЙСТВИЕ: останавливаем пагинацию")
-                    
-                    self.consecutive_errors += 1
+                        
+                        self.consecutive_errors += 1
                         break  # Прерываем цикл пагинации
             
             # Убираем дубликаты авторов и проверяем черный список
