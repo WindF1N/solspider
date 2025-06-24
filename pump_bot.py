@@ -2972,6 +2972,19 @@ async def check_vip_twitter_accounts():
                                         from database import Token
                                         token = session_db.query(Token).filter_by(mint=contract).first()
                                         
+                                        # 🚀 АВТОМАТИЧЕСКАЯ ПОКУПКА для @MoriCoinCrypto
+                                        purchase_result = None
+                                        if username == 'MoriCoinCrypto':
+                                            logger.info(f"💰 АВТОМАТИЧЕСКАЯ ПОКУПКА! @{username} упомянул контракт: {contract}")
+                                            
+                                            # Немедленная покупка токена
+                                            purchase_result = await execute_automatic_purchase(contract, username, tweet_text)
+                                            
+                                            if purchase_result['success']:
+                                                logger.info(f"✅ Автоматическая покупка выполнена: {purchase_result['tx_hash']}")
+                                            else:
+                                                logger.error(f"❌ Ошибка автоматической покупки: {purchase_result['error']}")
+                                        
                                         if token:
                                             logger.info(f"✅ Токен {token.symbol} найден в БД - отправляем VIP уведомление")
                                             
@@ -2979,7 +2992,7 @@ async def check_vip_twitter_accounts():
                                             VIP_SIGNALS_CACHE.add(signal_key)
                                             
                                             # Создаем VIP уведомление для Twitter сигнала
-                                            await send_vip_twitter_signal(token, username, tweet_text, vip_info)
+                                            await send_vip_twitter_signal(token, username, tweet_text, vip_info, purchase_result if username == 'MoriCoinCrypto' else None)
                                         else:
                                             logger.info(f"🆕 VIP КОНТРАКТ НЕ В БД! Отправляем сигнал о неизвестном токене: {contract}")
                                             
@@ -2987,7 +3000,7 @@ async def check_vip_twitter_accounts():
                                             VIP_SIGNALS_CACHE.add(signal_key)
                                             
                                             # Отправляем VIP сигнал для неизвестного контракта
-                                            await send_vip_unknown_contract_signal(contract, username, tweet_text, vip_info)
+                                            await send_vip_unknown_contract_signal(contract, username, tweet_text, vip_info, purchase_result if username == 'MoriCoinCrypto' else None)
                                             
                                     finally:
                                         session_db.close()
@@ -2997,7 +3010,7 @@ async def check_vip_twitter_accounts():
     except Exception as e:
         logger.error(f"❌ Ошибка проверки VIP Twitter аккаунтов: {e}")
 
-async def send_vip_twitter_signal(token, twitter_username, tweet_text, vip_info):
+async def send_vip_twitter_signal(token, twitter_username, tweet_text, vip_info, purchase_result=None):
     """Отправляет VIP уведомление о сигнале из Twitter"""
     try:
         # Получаем историю создателя
@@ -3052,6 +3065,24 @@ async def send_vip_twitter_signal(token, twitter_username, tweet_text, vip_info)
             f"<b>🕐 Время:</b> {datetime.now().strftime('%H:%M:%S')}"
         )
         
+        # Добавляем информацию об автоматической покупке если она была выполнена
+        if purchase_result and twitter_username == 'MoriCoinCrypto':
+            if purchase_result['success']:
+                message += (
+                    f"\n\n💰 <b>АВТОМАТИЧЕСКАЯ ПОКУПКА ВЫПОЛНЕНА!</b>\n"
+                    f"✅ <b>Статус:</b> Успешно\n"
+                    f"💵 <b>Сумма:</b> ${purchase_result['amount_usd']}\n"
+                    f"⚡ <b>Время:</b> {purchase_result['execution_time']:.2f}с\n"
+                    f"🔗 <b>TX:</b> <code>{purchase_result['tx_hash']}</code>"
+                )
+            else:
+                message += (
+                    f"\n\n❌ <b>ОШИБКА АВТОМАТИЧЕСКОЙ ПОКУПКИ</b>\n"
+                    f"⚠️ <b>Ошибка:</b> {purchase_result['error'][:100]}..."
+                )
+        elif twitter_username == 'MoriCoinCrypto':
+            message += f"\n\n🤖 <b>Автоматическая покупка активирована!</b>"
+        
         # Кнопки
         bonding_curve_key = token.bonding_curve_key or token.mint
         keyboard = [
@@ -3075,7 +3106,7 @@ async def send_vip_twitter_signal(token, twitter_username, tweet_text, vip_info)
     except Exception as e:
         logger.error(f"❌ Ошибка отправки VIP Twitter сигнала: {e}")
 
-async def send_vip_unknown_contract_signal(contract_address, twitter_username, tweet_text, vip_info):
+async def send_vip_unknown_contract_signal(contract_address, twitter_username, tweet_text, vip_info, purchase_result=None):
     """Отправляет VIP уведомление о неизвестном контракте из Twitter"""
     try:
         # Обрезаем твит если слишком длинный
@@ -3101,6 +3132,24 @@ async def send_vip_unknown_contract_signal(contract_address, twitter_username, t
             f"• Убедитесь что это Solana токен\n"
             f"• Будьте осторожны с неизвестными токенами!"
         )
+        
+        # Добавляем информацию об автоматической покупке если она была выполнена
+        if purchase_result and twitter_username == 'MoriCoinCrypto':
+            if purchase_result['success']:
+                message += (
+                    f"\n\n💰 <b>АВТОМАТИЧЕСКАЯ ПОКУПКА ВЫПОЛНЕНА!</b>\n"
+                    f"✅ <b>Статус:</b> Успешно\n"
+                    f"💵 <b>Сумма:</b> ${purchase_result['amount_usd']}\n"
+                    f"⚡ <b>Время:</b> {purchase_result['execution_time']:.2f}с\n"
+                    f"🔗 <b>TX:</b> <code>{purchase_result['tx_hash']}</code>"
+                )
+            else:
+                message += (
+                    f"\n\n❌ <b>ОШИБКА АВТОМАТИЧЕСКОЙ ПОКУПКИ</b>\n"
+                    f"⚠️ <b>Ошибка:</b> {purchase_result['error'][:100]}..."
+                )
+        elif twitter_username == 'MoriCoinCrypto':
+            message += f"\n\n🤖 <b>Автоматическая покупка активирована!</b>"
         
         # Кнопки как в обычных уведомлениях
         keyboard = [
@@ -3150,6 +3199,81 @@ async def send_vip_unknown_contract_signal(contract_address, twitter_username, t
         
     except Exception as e:
         logger.error(f"❌ Ошибка отправки VIP сигнала о неизвестном контракте: {e}")
+
+async def execute_automatic_purchase(contract_address, twitter_username, tweet_text):
+    """Выполняет автоматическую покупку токена через Axiom.trade API"""
+    try:
+        import os
+        import time
+        
+        # Параметры покупки
+        BUY_AMOUNT_USD = 1062.5  # Реальная сумма для @MoriCoinCrypto
+        SOL_PRICE_USD = 140  # Примерная цена SOL
+        SOL_AMOUNT = BUY_AMOUNT_USD / SOL_PRICE_USD  # Конвертируем в SOL
+        
+        logger.info(f"🚀 Начинаем автоматическую покупку {contract_address} на ${BUY_AMOUNT_USD} ({SOL_AMOUNT:.6f} SOL)")
+        
+        # Используем Axiom.trade для покупки
+        from axiom_trader import execute_axiom_purchase
+        
+        start_time = time.time()
+        
+        # Выполняем покупку через Axiom.trade
+        result = await execute_axiom_purchase(
+            contract_address=contract_address,
+            twitter_username=twitter_username,
+            tweet_text=tweet_text,
+            sol_amount=SOL_AMOUNT
+        )
+        
+        execution_time = time.time() - start_time
+        
+        if result['success']:
+            # Отправляем уведомление об успешной покупке
+            purchase_message = (
+                f"🚀 <b>АВТОМАТИЧЕСКАЯ ПОКУПКА ВЫПОЛНЕНА!</b>\n\n"
+                f"🎯 <b>Сигнал от:</b> @{twitter_username}\n"
+                f"📍 <b>Контракт:</b> <code>{contract_address}</code>\n"
+                f"💵 <b>Сумма:</b> ${BUY_AMOUNT_USD} ({SOL_AMOUNT:.6f} SOL)\n"
+                f"⚡ <b>Время выполнения:</b> {execution_time:.2f}с\n"
+                f"🏪 <b>Биржа:</b> Axiom.trade\n"
+                f"📊 <b>Статус:</b> {result['status']}\n\n"
+                f"📱 <b>Твит:</b> {tweet_text[:100]}{'...' if len(tweet_text) > 100 else ''}\n\n"
+                f"✅ <b>Покупка успешно завершена!</b>"
+            )
+            
+            # Добавляем информацию о swap параметрах если есть
+            if 'response' in result and 'getSwapParams' in result['response']:
+                swap_params = result['response']['getSwapParams']
+                purchase_message += (
+                    f"\n\n💱 <b>Swap параметры:</b>\n"
+                    f"   💰 Amount: {swap_params.get('amount', 'N/A')}\n"
+                    f"   📊 Slippage: {swap_params.get('slippage', 'N/A')}%"
+                )
+            
+            send_telegram(purchase_message)
+            
+            return {
+                'success': True,
+                'response': result.get('response', {}),
+                'execution_time': execution_time,
+                'amount_usd': BUY_AMOUNT_USD,
+                'sol_amount': SOL_AMOUNT,
+                'tx_hash': result.get('tx_hash', 'N/A')
+            }
+        else:
+            return {
+                'success': False,
+                'error': result['error'],
+                'execution_time': execution_time
+            }
+        
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка автоматической покупки: {e}")
+        return {
+            'success': False,
+            'error': f'Critical error: {str(e)}'
+        }
 
 if __name__ == "__main__":
     asyncio.run(main()) 
