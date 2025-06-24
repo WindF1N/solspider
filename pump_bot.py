@@ -89,31 +89,7 @@ twitter_analysis_queue = asyncio.Queue()
 # Словарь для хранения результатов анализа
 twitter_analysis_results = {}
 
-# VIP ТОКЕНЫ - мгновенные уведомления БЕЗ фильтрации
-VIP_TOKENS = {
-    'MORI': {
-        'enabled': True,
-        'description': 'Токен от сильного инфлюенсера - 25 июня 2025',
-        'priority': 'HIGH',
-        'bypass_filters': True,
-        'instant_notify': True
-    }
-    # Добавьте другие VIP токены здесь
-}
-
-# VIP TWITTER АККАУНТЫ - мгновенные уведомления при упоминании контрактов
-VIP_TWITTER_ACCOUNTS = {
-    'MoriCoinCrypto': {
-        'enabled': True,
-        'description': 'Сильный инфлюенсер - мгновенные сигналы',
-        'priority': 'HIGH',
-        'bypass_filters': True
-    }
-    # Добавьте другие VIP аккаунты здесь
-}
-
-# Кэш для дедупликации VIP сигналов
-VIP_SIGNALS_CACHE = set()
+# VIP функции перенесены в отдельную систему vip_twitter_monitor.py
 
 def send_telegram(message, inline_keyboard=None):
     """Отправка сообщения в Telegram во все чаты"""
@@ -216,64 +192,7 @@ def send_telegram_photo(photo_url, caption, inline_keyboard=None):
         logger.error("❌ Не удалось отправить сообщение ни в один чат")
         return False
 
-def send_vip_telegram_photo(photo_url, caption, inline_keyboard=None):
-    """Отправка VIP фото с подписью в отдельного Telegram бота только VIP пользователю"""
-    import os
-    
-    # VIP токен бота и ID пользователя из переменных окружения
-    VIP_BOT_TOKEN = "8001870018:AAGwL4GiMC9TTKRMKfqghE6FAP4uBgGHXLU"
-    VIP_CHAT_ID = os.getenv('VIP_CHAT_ID')
-    
-    if not VIP_CHAT_ID:
-        logger.error("❌ VIP_CHAT_ID не задан в .env файле!")
-        return False
-    
-    try:
-        # Сначала пробуем отправить фото
-        photo_url_to_send = f"https://cf-ipfs.com/ipfs/{photo_url.split('/')[-1]}" if photo_url and not photo_url.startswith('http') else photo_url
-        
-        payload = {
-            "chat_id": VIP_CHAT_ID,
-            "photo": photo_url_to_send,
-            "caption": caption,
-            "parse_mode": "HTML"
-        }
-        
-        if inline_keyboard:
-            payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
-        
-        vip_url = f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/sendPhoto"
-        photo_response = requests.post(vip_url, json=payload)
-        
-        if photo_response.status_code == 200:
-            logger.info(f"✅ VIP фото отправлено в чат {VIP_CHAT_ID}")
-            return True
-        else:
-            # Если фото не удалось отправить, отправляем обычное сообщение
-            logger.warning(f"⚠️ Не удалось отправить VIP фото, отправляю текст: {photo_response.text}")
-            text_payload = {
-                "chat_id": VIP_CHAT_ID,
-                "text": caption,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": False
-            }
-            
-            if inline_keyboard:
-                text_payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
-            
-            text_url = f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/sendMessage"
-            text_response = requests.post(text_url, json=text_payload)
-            
-            if text_response.status_code == 200:
-                logger.info(f"✅ VIP текстовое сообщение отправлено в чат {VIP_CHAT_ID}")
-                return True
-            else:
-                logger.error(f"❌ Ошибка отправки VIP сообщения: {text_response.text}")
-                return False
-                
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки VIP уведомления: {e}")
-        return False
+# send_vip_telegram_photo функция перенесена в vip_twitter_monitor.py
 
 async def search_single_query(query, headers, retry_count=0, use_quotes=False, cycle_cookie=None):
     """Выполняет одиночный поисковый запрос к Nitter с повторными попытками при 429 и ротацией cookies"""
@@ -1065,24 +984,13 @@ async def handle_message(message):
             symbol = data.get('symbol', 'Unknown')
             logger.info(f"🚀 НОВЫЙ ТОКЕН: {token_name} ({symbol}) - {mint[:8]}...")
             
-            # 🔥 VIP ПРОВЕРКА - мгновенное уведомление для приоритетных токенов
-            if symbol in VIP_TOKENS and VIP_TOKENS[symbol]['enabled']:
-                vip_info = VIP_TOKENS[symbol]
-                logger.info(f"🌟 VIP ТОКЕН ОБНАРУЖЕН: {symbol} - {vip_info['description']}")
-                
-                # Создаем специальное VIP уведомление
-                vip_msg, vip_keyboard, vip_image_url = await format_vip_token(data, vip_info)
-                send_vip_telegram_photo(vip_image_url, vip_msg, vip_keyboard)
-                
-                logger.info(f"⚡ VIP уведомление отправлено МГНОВЕННО в отдельного бота для {symbol}")
-                
-                # Продолжаем обычную обработку для сохранения в БД
+            # VIP проверки перенесены в отдельную систему vip_twitter_monitor.py
             
             # Анализируем токен и получаем сообщение
             msg, keyboard, should_notify, token_image_url = await format_new_token(data)
             
-            # Отправляем обычное уведомление только если это не VIP токен
-            if should_notify and symbol not in VIP_TOKENS:
+            # Отправляем обычное уведомление
+            if should_notify:
                 logger.info(f"✅ Токен {symbol} прошел фильтрацию - отправляем уведомление")
                 send_telegram_photo(token_image_url, msg, keyboard)
                 
@@ -1093,7 +1001,7 @@ async def handle_message(message):
                     log_database_operation("UPDATE_NOTIFICATION", "tokens", "SUCCESS", f"Symbol: {symbol}")
                 except Exception as e:
                     logger.error(f"❌ Ошибка обновления статуса уведомления: {e}")
-            elif symbol not in VIP_TOKENS:
+            else:
                 logger.info(f"❌ Токен {symbol} не прошел фильтрацию - пропускаем")
             
         # Проверяем, это ли торговое событие
@@ -2833,18 +2741,12 @@ async def main():
             reset_analyzing_tokens_timeout()
     
     # Запускаем VIP мониторинг Twitter аккаунтов
-    async def vip_twitter_scheduler():
-        while True:
-            await check_vip_twitter_accounts()
-            # Минимальная задержка чтобы не блокировать event loop
-            await asyncio.sleep(1)
+    # VIP мониторинг Twitter аккаунтов перенесен в отдельную систему vip_twitter_monitor.py
     
     retry_task = asyncio.create_task(retry_analysis_scheduler())
-    vip_twitter_task = asyncio.create_task(vip_twitter_scheduler())
     
     logger.info("🔄 Запущен планировщик повторного анализа")
     logger.info("🔄 Запущен фоновый обработчик анализа Twitter")
-    logger.info("🌟 Запущен НЕПРЕРЫВНЫЙ VIP мониторинг Twitter аккаунтов")
     
     # Счетчики для оптимизации
     consecutive_errors = 0
@@ -2983,107 +2885,7 @@ async def main():
         logger.info(f"🔄 Мгновенное переподключение... (попытка {retry_count}/{max_retries})")
         # Без задержки - сразу переподключаемся
 
-async def format_vip_token(data, vip_info):
-    """Форматирование VIP уведомления для приоритетных токенов"""
-    mint = data.get('mint', 'Unknown')
-    name = data.get('name', 'Unknown Token')
-    symbol = data.get('symbol', 'UNK')
-    description = data.get('description', 'Нет описания')
-    creator = data.get('traderPublicKey', 'Unknown')
-    initial_buy = data.get('initialBuy', 0)
-    market_cap = data.get('marketCap', 0)
-    bonding_curve_key = data.get('bondingCurveKey', mint)
-    
-    # Получаем историю токенов создателя через Axiom API
-    creator_history = await get_creator_token_history(creator)
-    
-    # Обрезаем описание если слишком длинное
-    if len(description) > 200:
-        description = description[:200] + "..."
-    
-    # Получаем дату создания токена
-    token_created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    
-    # Анализируем создателя
-    creator_analysis = ""
-    creator_emoji = ""
-    
-    if creator_history['success']:
-        total_tokens = creator_history['total_tokens']
-        migrated_tokens = creator_history['migrated_tokens']
-        success_rate = creator_history['success_rate']
-        
-        if creator_history['is_first_time']:
-            creator_analysis = "🆕 ПЕРВЫЙ ТОКЕН СОЗДАТЕЛЯ!"
-            creator_emoji = "🆕"
-        elif total_tokens == 1:
-            creator_analysis = f"🥇 Второй токен (первый: {creator_history['recent_tokens'][0]['symbol'] if creator_history['recent_tokens'] else 'N/A'})"
-            creator_emoji = "🥇"
-        elif total_tokens <= 3:
-            creator_analysis = f"🔥 Опытный создатель ({success_rate:.0f}% успех)"
-            creator_emoji = "🔥"
-        elif creator_history['is_serial_creator']:
-            creator_analysis = f"⚠️ Серийный создатель ({success_rate:.0f}% успех)"
-            creator_emoji = "⚠️"
-        else:
-            creator_analysis = f"📊 {total_tokens} токенов, {migrated_tokens} мигрировано ({success_rate:.0f}%)"
-            creator_emoji = "📊"
-    else:
-        creator_analysis = "❓ Не удалось получить историю"
-        creator_emoji = "❓"
-    
-    # Специальное VIP сообщение
-    message = (
-        f"🌟 <b>VIP ТОКЕН ОБНАРУЖЕН!</b> 🌟\n\n"
-        f"🔥 <b>{vip_info['description']}</b>\n\n"
-        f"<b>💎 <a href='https://pump.fun/{mint}'>{name}</a></b>\n"
-        f"<b>🏷️ Символ:</b> {symbol}\n"
-        f"<b>📍 Mint:</b> <code>{mint}</code>\n"
-        f"<b>👤 Создатель:</b> <code>{creator[:8] if len(creator) > 8 else creator}...</code>\n"
-        f"<b>📅 Создан:</b> {token_created_at}\n"
-        f"<b>💰 Начальная покупка:</b> {initial_buy} SOL\n"
-    )
-    
-    # Добавляем Market Cap если есть
-    if market_cap > 0:
-        message += f"<b>📊 Market Cap:</b> ${market_cap:,.0f}\n"
-    
-    # Добавляем описание если есть
-    if description and description.strip() and description.strip() != "Нет описания":
-        message += f"<b>📝 Описание:</b> {description}\n"
-    
-    # Добавляем анализ создателя
-    message += f"\n{creator_emoji} <b>Создатель:</b> {creator_analysis}\n"
-    
-    # Показываем последние токены если есть
-    if creator_history['success'] and creator_history['recent_tokens'] and not creator_history['is_first_time']:
-        message += f"<b>📋 Последние токены:</b>\n"
-        for i, token in enumerate(creator_history['recent_tokens'][:3]):
-            status = "✅" if token['migrated'] else "⏳"
-            message += f"   {i+1}. {token['symbol']} {status}\n"
-    
-    message += (
-        f"\n⚡ <b>МГНОВЕННОЕ УВЕДОМЛЕНИЕ!</b>\n"
-        f"🎯 <b>Приоритет:</b> {vip_info['priority']}\n"
-        f"🚀 <b>Время действовать СЕЙЧАС!</b>\n"
-        f"<b>🕐 Время:</b> {datetime.now().strftime('%H:%M:%S')}"
-    )
-    
-    # Кнопки такие же как в обычных уведомлениях
-    keyboard = [
-        [
-            {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/t/{mint}"},
-            {"text": "⚡ QUICK BUY", "url": f"https://t.me/alpha_web3_bot?start=call-dex_men-SO-{mint}"}
-        ],
-        [
-            {"text": "📊 DexScreener", "url": f"https://dexscreener.com/solana/{mint}"}
-        ]
-    ]
-    
-    # URL картинки токена
-    token_image_url = f"https://axiomtrading.sfo3.cdn.digitaloceanspaces.com/{mint}.webp"
-    
-    return message, keyboard, token_image_url
+# VIP функции перенесены в отдельную систему vip_twitter_monitor.py
 
 async def get_creator_token_history(creator_address):
     """Получает историю токенов создателя через Axiom API"""
@@ -3191,371 +2993,13 @@ async def get_creator_token_history(creator_address):
         logger.error(f"❌ Ошибка получения истории создателя через Axiom API: {e}")
         return {'success': False, 'error': str(e)}
 
-async def check_vip_twitter_accounts():
-    """Проверяет VIP Twitter аккаунты на наличие контрактов в новых твитах"""
-    try:
-        for username, vip_info in VIP_TWITTER_ACCOUNTS.items():
-            if not vip_info['enabled']:
-                continue
-                
-            logger.info(f"🌟 Проверяем VIP аккаунт @{username}...")
-            
-            # Получаем куки для поиска
-            _, cycle_cookie = proxy_cookie_rotator.get_cycle_proxy_cookie()
-            
-            # Базовые заголовки
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64; rv:45.0) Gecko/20100101 Firefox/45.0',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Cookie': cycle_cookie
-            }
-            
-            # Поиск по аккаунту (все последние твиты без временного ограничения)
-            url = f"https://nitter.tiekoetter.com/{username}"
-            
-            import aiohttp
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=10) as response:
-                    if response.status == 200:
-                        html = await response.text()
-                        soup = BeautifulSoup(html, 'html.parser')
-                        
-                        # Проверяем на блокировку
-                        title = soup.find('title')
-                        if title and 'Making sure you\'re not a bot!' in title.get_text():
-                            logger.error(f"🚫 VIP мониторинг заблокирован для @{username}")
-                            continue
-                        
-                        # Находим твиты
-                        tweets = soup.find_all('div', class_='timeline-item')
-                        
-                        for tweet in tweets:
-                            # Пропускаем ретвиты
-                            retweet_header = tweet.find('div', class_='retweet-header')
-                            if retweet_header:
-                                continue
-                            
-                            # Получаем текст твита с правильным извлечением
-                            tweet_content = tweet.find('div', class_='tweet-content')
-                            if not tweet_content:
-                                continue
-                            
-                            # Используем правильное извлечение текста как в twitter_profile_parser
-                            from twitter_profile_parser import TwitterProfileParser
-                            parser = TwitterProfileParser()
-                            tweet_text = parser.extract_clean_text(tweet_content)
-                            
-                            # Используем единую функцию для извлечения контрактов
-                            contracts = extract_contracts_from_text(tweet_text)
-                            
-                            for contract in contracts:
-                                # Проверяем что это похоже на Solana адрес
-                                if len(contract) >= 32 and contract.isalnum():
-                                    # Создаем уникальный ключ для дедупликации
-                                    signal_key = f"{username}:{contract}"
-                                    
-                                    # Проверяем не отправляли ли уже этот сигнал
-                                    if signal_key in VIP_SIGNALS_CACHE:
-                                        continue
-                                    
-                                    logger.info(f"🔥 VIP КОНТРАКТ НАЙДЕН! @{username}: {contract}")
-                                    
-                                    # Проверяем что контракт существует в нашей базе
-                                    db_manager = get_db_manager()
-                                    session_db = db_manager.Session()
-                                    
-                                    try:
-                                        from database import Token
-                                        token = session_db.query(Token).filter_by(mint=contract).first()
-                                        
-                                        # 🚀 АВТОМАТИЧЕСКАЯ ПОКУПКА для @MoriCoinCrypto
-                                        purchase_result = None
-                                        if username == 'MoriCoinCrypto':
-                                            logger.info(f"💰 АВТОМАТИЧЕСКАЯ ПОКУПКА! @{username} упомянул контракт: {contract}")
-                                            
-                                            # Немедленная покупка токена
-                                            purchase_result = await execute_automatic_purchase(contract, username, tweet_text)
-                                            
-                                            if purchase_result['success']:
-                                                logger.info(f"✅ Автоматическая покупка выполнена: {purchase_result['tx_hash']}")
-                                            else:
-                                                logger.error(f"❌ Ошибка автоматической покупки: {purchase_result['error']}")
-                                        
-                                        if token:
-                                            logger.info(f"✅ Токен {token.symbol} найден в БД - отправляем VIP уведомление")
-                                            
-                                            # Добавляем в кэш чтобы не дублировать
-                                            VIP_SIGNALS_CACHE.add(signal_key)
-                                            
-                                            # Создаем VIP уведомление для Twitter сигнала
-                                            await send_vip_twitter_signal(token, username, tweet_text, vip_info, purchase_result if username == 'MoriCoinCrypto' else None)
-                                        else:
-                                            logger.info(f"🆕 VIP КОНТРАКТ НЕ В БД! Отправляем сигнал о неизвестном токене: {contract}")
-                                            
-                                            # Добавляем в кэш чтобы не дублировать
-                                            VIP_SIGNALS_CACHE.add(signal_key)
-                                            
-                                            # Отправляем VIP сигнал для неизвестного контракта
-                                            await send_vip_unknown_contract_signal(contract, username, tweet_text, vip_info, purchase_result if username == 'MoriCoinCrypto' else None)
-                                            
-                                    finally:
-                                        session_db.close()
-                    else:
-                        logger.warning(f"⚠️ Ошибка доступа к @{username}: HTTP {response.status}")
-                        
-    except Exception as e:
-        logger.error(f"❌ Ошибка проверки VIP Twitter аккаунтов: {e}")
+# *** ФУНКЦИЯ ПЕРЕНЕСЕНА В vip_twitter_monitor.py ***
 
-async def send_vip_twitter_signal(token, twitter_username, tweet_text, vip_info, purchase_result=None):
-    """Отправляет VIP уведомление о сигнале из Twitter"""
-    try:
-        # Убираем подсчёт токенов создателя для VIP Twitter сигналов
-        creator_analysis = ""
-        
-        # Обрезаем твит если слишком длинный
-        if len(tweet_text) > 200:
-            tweet_text = tweet_text[:200] + "..."
-        
-        # Создаем VIP сообщение
-        message = (
-            f"🌟 <b>VIP TWITTER СИГНАЛ!</b> 🌟\n\n"
-            f"🔥 <b>{vip_info['description']}</b>\n"
-            f"👤 <b>От:</b> @{twitter_username}\n\n"
-            f"<b>💎 {token.name or 'Unknown Token'}</b>\n"
-            f"<b>🏷️ Символ:</b> {token.symbol or 'UNK'}\n"
-            f"<b>📍 Mint:</b> <code>{token.mint}</code>\n"
-            f"<b>📅 Создан:</b> {token.created_at.strftime('%Y-%m-%d %H:%M:%S') if token.created_at else 'Неизвестно'}\n"
-        )
-        
-        # Добавляем Market Cap если есть
-        if token.market_cap and token.market_cap > 0:
-            message += f"<b>📊 Market Cap:</b> ${token.market_cap:,.0f}\n"
-        
-        # Убираем анализ создателя из VIP Twitter сигналов
-        
-        # Добавляем твит
-        message += f"\n📱 <b>Твит:</b>\n<blockquote>{tweet_text}</blockquote>\n"
-        
-        message += (
-            f"\n⚡ <b>МГНОВЕННЫЙ VIP СИГНАЛ!</b>\n"
-            f"🎯 <b>Приоритет:</b> {vip_info['priority']}\n"
-            f"🚀 <b>Время действовать СЕЙЧАС!</b>\n"
-            f"<b>🕐 Время:</b> {datetime.now().strftime('%H:%M:%S')}"
-        )
-        
-        # Добавляем информацию об автоматической покупке если она была выполнена
-        if purchase_result and twitter_username == 'MoriCoinCrypto':
-            if purchase_result['success']:
-                message += (
-                    f"\n\n💰 <b>АВТОМАТИЧЕСКАЯ ПОКУПКА ВЫПОЛНЕНА!</b>\n"
-                    f"✅ <b>Статус:</b> Успешно\n"
-                    f"💵 <b>Сумма:</b> ${purchase_result['amount_usd']}\n"
-                    f"⚡ <b>Время:</b> {purchase_result['execution_time']:.2f}с\n"
-                    f"🔗 <b>TX:</b> <code>{purchase_result['tx_hash']}</code>"
-                )
-            else:
-                message += (
-                    f"\n\n❌ <b>ОШИБКА АВТОМАТИЧЕСКОЙ ПОКУПКИ</b>\n"
-                    f"⚠️ <b>Ошибка:</b> {purchase_result['error'][:100]}..."
-                )
-        elif twitter_username == 'MoriCoinCrypto':
-            message += f"\n\n🤖 <b>Автоматическая покупка активирована!</b>"
-        
-        # Кнопки
-        bonding_curve_key = token.bonding_curve_key or token.mint
-        keyboard = [
-            [
-                {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/t/{token.mint}"},
-                {"text": "⚡ QUICK BUY", "url": f"https://t.me/alpha_web3_bot?start=call-dex_men-SO-{token.mint}"}
-            ],
-            [
-                {"text": "📊 DexScreener", "url": f"https://dexscreener.com/solana/{token.mint}"}
-            ]
-        ]
-        
-        # URL картинки токена
-        token_image_url = f"https://axiomtrading.sfo3.cdn.digitaloceanspaces.com/{token.mint}.webp"
-        
-        # Отправляем VIP уведомление
-        send_vip_telegram_photo(token_image_url, message, keyboard)
-        
-        logger.info(f"📤 VIP Twitter сигнал отправлен для {token.symbol} от @{twitter_username}")
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки VIP Twitter сигнала: {e}")
+# *** ФУНКЦИЯ ПЕРЕНЕСЕНА В vip_twitter_monitor.py ***
 
-async def send_vip_unknown_contract_signal(contract_address, twitter_username, tweet_text, vip_info, purchase_result=None):
-    """Отправляет VIP уведомление о неизвестном контракте из Twitter"""
-    try:
-        # Обрезаем твит если слишком длинный
-        if len(tweet_text) > 200:
-            tweet_text = tweet_text[:200] + "..."
-        
-        # Создаем VIP сообщение для неизвестного контракта
-        message = (
-            f"🌟 <b>VIP TWITTER СИГНАЛ!</b> 🌟\n\n"
-            f"🔥 <b>{vip_info['description']}</b>\n"
-            f"👤 <b>От:</b> @{twitter_username}\n\n"
-            f"🆕 <b>НЕИЗВЕСТНЫЙ КОНТРАКТ!</b>\n"
-            f"📍 <b>Адрес:</b> <code>{contract_address}</code>\n"
-            f"⚠️ <b>Статус:</b> Не найден в нашей базе данных\n"
-            f"🎯 <b>Возможно:</b> Новый токен или токен с другой платформы\n\n"
-            f"📱 <b>Твит:</b>\n<blockquote>{tweet_text}</blockquote>\n\n"
-            f"⚡ <b>МГНОВЕННЫЙ VIP СИГНАЛ!</b>\n"
-            f"🎯 <b>Приоритет:</b> {vip_info['priority']}\n"
-            f"🔍 <b>Требует исследования!</b>\n"
-            f"<b>🕐 Время:</b> {datetime.now().strftime('%H:%M:%S')}\n\n"
-            f"💡 <b>Действия:</b>\n"
-            f"• Проверьте контракт на DexScreener\n"
-            f"• Убедитесь что это Solana токен\n"
-            f"• Будьте осторожны с неизвестными токенами!"
-        )
-        
-        # Добавляем информацию об автоматической покупке если она была выполнена
-        if purchase_result and twitter_username == 'MoriCoinCrypto':
-            if purchase_result['success']:
-                message += (
-                    f"\n\n💰 <b>АВТОМАТИЧЕСКАЯ ПОКУПКА ВЫПОЛНЕНА!</b>\n"
-                    f"✅ <b>Статус:</b> Успешно\n"
-                    f"💵 <b>Сумма:</b> ${purchase_result['amount_usd']}\n"
-                    f"⚡ <b>Время:</b> {purchase_result['execution_time']:.2f}с\n"
-                    f"🔗 <b>TX:</b> <code>{purchase_result['tx_hash']}</code>"
-                )
-            else:
-                message += (
-                    f"\n\n❌ <b>ОШИБКА АВТОМАТИЧЕСКОЙ ПОКУПКИ</b>\n"
-                    f"⚠️ <b>Ошибка:</b> {purchase_result['error'][:100]}..."
-                )
-        elif twitter_username == 'MoriCoinCrypto':
-            message += f"\n\n🤖 <b>Автоматическая покупка активирована!</b>"
-        
-        # Кнопки как в обычных уведомлениях
-        keyboard = [
-            [
-                {"text": "💎 Купить на Axiom", "url": f"https://axiom.trade/t/{contract_address}"},
-                {"text": "⚡ QUICK BUY", "url": f"https://t.me/alpha_web3_bot?start=call-dex_men-SO-{contract_address}"}
-            ],
-            [
-                {"text": "📊 DexScreener", "url": f"https://dexscreener.com/solana/{contract_address}"}
-            ]
-        ]
-        
-        # Для неизвестного контракта не отправляем картинку (её может не быть)
-        # Отправляем только текстовое сообщение
-        import os
-        VIP_BOT_TOKEN = "8001870018:AAGwL4GiMC9TTKRMKfqghE6FAP4uBgGHXLU"
-        VIP_CHAT_ID = os.getenv('VIP_CHAT_ID')
-        
-        if not VIP_CHAT_ID:
-            logger.error("❌ VIP_CHAT_ID не задан в .env файле!")
-            return False
-        
-        try:
-            payload = {
-                "chat_id": VIP_CHAT_ID,
-                "text": message,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": False,
-                "reply_markup": {"inline_keyboard": keyboard}
-            }
-            
-            vip_url = f"https://api.telegram.org/bot{VIP_BOT_TOKEN}/sendMessage"
-            response = requests.post(vip_url, json=payload)
-            
-            if response.status_code == 200:
-                logger.info(f"✅ VIP сигнал о неизвестном контракте отправлен: {contract_address[:8]}...")
-                return True
-            else:
-                logger.error(f"❌ Ошибка отправки VIP сигнала о неизвестном контракте: {response.text}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка отправки VIP сигнала о неизвестном контракте: {e}")
-            return False
-        
-        logger.info(f"📤 VIP сигнал о неизвестном контракте отправлен от @{twitter_username}")
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки VIP сигнала о неизвестном контракте: {e}")
+# *** ФУНКЦИЯ ПЕРЕНЕСЕНА В vip_twitter_monitor.py ***
 
-async def execute_automatic_purchase(contract_address, twitter_username, tweet_text):
-    """Выполняет автоматическую покупку токена через Axiom.trade API"""
-    try:
-        import os
-        import time
-        
-        # Параметры покупки
-        BUY_AMOUNT_USD = 1062.5  # Реальная сумма для @MoriCoinCrypto
-        SOL_PRICE_USD = 140  # Примерная цена SOL
-        SOL_AMOUNT = BUY_AMOUNT_USD / SOL_PRICE_USD  # Конвертируем в SOL
-        
-        logger.info(f"🚀 Начинаем автоматическую покупку {contract_address} на ${BUY_AMOUNT_USD} ({SOL_AMOUNT:.6f} SOL)")
-        
-        # Используем Axiom.trade для покупки
-        from axiom_trader import execute_axiom_purchase
-        
-        start_time = time.time()
-        
-        # Выполняем покупку через Axiom.trade
-        result = await execute_axiom_purchase(
-            contract_address=contract_address,
-            twitter_username=twitter_username,
-            tweet_text=tweet_text,
-            sol_amount=SOL_AMOUNT
-        )
-        
-        execution_time = time.time() - start_time
-        
-        if result['success']:
-            # Отправляем уведомление об успешной покупке
-            purchase_message = (
-                f"🚀 <b>АВТОМАТИЧЕСКАЯ ПОКУПКА ВЫПОЛНЕНА!</b>\n\n"
-                f"🎯 <b>Сигнал от:</b> @{twitter_username}\n"
-                f"📍 <b>Контракт:</b> <code>{contract_address}</code>\n"
-                f"💵 <b>Сумма:</b> ${BUY_AMOUNT_USD} ({SOL_AMOUNT:.6f} SOL)\n"
-                f"⚡ <b>Время выполнения:</b> {execution_time:.2f}с\n"
-                f"🏪 <b>Биржа:</b> Axiom.trade\n"
-                f"📊 <b>Статус:</b> {result['status']}\n\n"
-                f"📱 <b>Твит:</b> {tweet_text[:100]}{'...' if len(tweet_text) > 100 else ''}\n\n"
-                f"✅ <b>Покупка успешно завершена!</b>"
-            )
-            
-            # Добавляем информацию о swap параметрах если есть
-            if 'response' in result and 'getSwapParams' in result['response']:
-                swap_params = result['response']['getSwapParams']
-                purchase_message += (
-                    f"\n\n💱 <b>Swap параметры:</b>\n"
-                    f"   💰 Amount: {swap_params.get('amount', 'N/A')}\n"
-                    f"   📊 Slippage: {swap_params.get('slippage', 'N/A')}%"
-                )
-            
-            send_telegram(purchase_message)
-            
-            return {
-                'success': True,
-                'response': result.get('response', {}),
-                'execution_time': execution_time,
-                'amount_usd': BUY_AMOUNT_USD,
-                'sol_amount': SOL_AMOUNT,
-                'tx_hash': result.get('tx_hash', 'N/A')
-            }
-        else:
-            return {
-                'success': False,
-                'error': result['error'],
-                'execution_time': execution_time
-            }
-        
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка автоматической покупки: {e}")
-        return {
-            'success': False,
-            'error': f'Critical error: {str(e)}'
-        }
+# *** ФУНКЦИЯ ПЕРЕНЕСЕНА В vip_twitter_monitor.py ***
 
 if __name__ == "__main__":
     asyncio.run(main()) 
