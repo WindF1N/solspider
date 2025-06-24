@@ -8,7 +8,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 from database import get_db_manager, Token
-from pump_bot import search_single_query, send_telegram, send_telegram_photo, extract_tweet_authors, TWITTER_AUTHOR_BLACKLIST, analyze_author_contract_diversity, analyze_author_page_contracts, is_spam_bot_tweet, should_notify_based_on_authors_unified, filter_authors_for_display, format_authors_section
+from pump_bot import search_single_query, send_telegram, send_telegram_photo, extract_tweet_authors, TWITTER_AUTHOR_BLACKLIST, analyze_author_contract_diversity, analyze_author_page_contracts, is_spam_bot_tweet, should_notify_based_on_authors_unified, filter_authors_for_display, format_authors_section, was_twitter_notification_sent_recently, mark_twitter_notification_sent
 from cookie_rotation import background_proxy_cookie_rotator, background_cookie_rotator
 from logger_config import setup_logging
 from twitter_profile_parser import TwitterProfileParser
@@ -128,13 +128,16 @@ class BackgroundTokenMonitor:
                         should_notify = should_notify_based_on_authors_unified(authors)
                         
                         if should_notify:
-                            # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: не отправлялось ли уже отложенное уведомление
-                            if db_token.notification_sent and previous_tweets == 0:
-                                logger.info(f"🚫 Фоновое уведомление для {token.symbol} пропущено - уже было отложенное уведомление")
+                            # ОТПРАВЛЯЕМ УВЕДОМЛЕНИЯ ТОЛЬКО ПРИ ПЕРВОМ ОБНАРУЖЕНИИ
+                            if previous_tweets == 0:
+                                # Первое обнаружение контракта - отправляем уведомление
+                                if db_token.notification_sent:
+                                    logger.info(f"🚫 Фоновое уведомление для {token.symbol} пропущено - уже было отложенное уведомление от основного бота")
+                                else:
+                                    await self.send_contract_alert(token, tweets_count, engagement, authors, is_first_discovery=True)
                             else:
-                                # Отправляем уведомление только о НОВЫХ твитах
-                                is_first_discovery = previous_tweets == 0
-                                await self.send_contract_alert(token, tweets_count, engagement, authors, is_first_discovery)
+                                # Новая активность - НЕ отправляем уведомления
+                                logger.info(f"📈 {token.symbol}: обнаружена новая активность (+{new_tweets_found} твитов), но уведомления о новой активности отключены")
                         else:
                             logger.info(f"🚫 Уведомление для {token.symbol} заблокировано - все авторы являются спамерами")
                         
@@ -161,16 +164,19 @@ class BackgroundTokenMonitor:
 
 
     async def send_contract_alert(self, token, tweets_count, engagement, authors, is_first_discovery=True):
-        """Отправляет уведомление о найденном контракте в Twitter"""
+        """Отправляет уведомление о найденном контракте в Twitter (только первое обнаружение)"""
         try:
-            emoji = "🔥" if is_first_discovery else "🚨"
-            title = "КОНТРАКТ НАЙДЕН В TWITTER!" if is_first_discovery else f"НОВАЯ АКТИВНОСТЬ ПО КОНТРАКТУ! +{tweets_count - (token.twitter_contract_tweets or 0)} новых твитов!"
+            # ПРОВЕРКА ДЕДУПЛИКАЦИИ: не отправлялось ли уже уведомление недавно
+            if was_twitter_notification_sent_recently(token.mint):
+                logger.info(f"🔄 {token.symbol}: уведомление о Twitter активности уже отправлено недавно - пропускаем дублирование")
+                return
+            
+            # Теперь отправляем только уведомления о первом обнаружении
+            emoji = "🔥"
+            title = "КОНТРАКТ НАЙДЕН В TWITTER!"
             
             # Получаем дату создания токена
             token_created_at = token.created_at.strftime('%Y-%m-%d %H:%M:%S') if token.created_at else "Неизвестно"
-            
-            # Убираем подсчёт токенов создателя для фонового мониторинга
-            creator_info = ""
             
             message = (
                 f"{emoji} <b>{title}</b>\n\n"
@@ -178,16 +184,10 @@ class BackgroundTokenMonitor:
                 f"💰 <b>Название:</b> {token.name or 'N/A'}\n"
                 f"📄 <b>Контракт:</b> <code>{token.mint}</code>\n"
                 f"📅 <b>Создан:</b> {token_created_at}\n"
-                f"👤 <b>Создатель:</b>{creator_info}\n"
             )
             
-            # Добавляем информацию о твитах
-            if is_first_discovery:
-                action_text = f"📱 <b>Твитов с контрактом:</b> {tweets_count}"
-            else:
-                previous_tweets = token.twitter_contract_tweets or 0
-                new_tweets = tweets_count - previous_tweets
-                action_text = f"📱 <b>Всего твитов:</b> {tweets_count} (+{new_tweets} новых)"
+            # Информация о твитах (только первое обнаружение)
+            action_text = f"📱 <b>Твитов с контрактом:</b> {tweets_count}"
             
             message += f"\n📊 <b>Активность:</b> {engagement}\n"
             
@@ -221,6 +221,9 @@ class BackgroundTokenMonitor:
             
             send_telegram_photo(token_image_url, message, keyboard)
             logger.info(f"📤 Отправлено уведомление о контракте {token.symbol} в Telegram")
+            
+            # Отмечаем что уведомление отправлено
+            mark_twitter_notification_sent(token.mint)
             
         except Exception as e:
             logger.error(f"❌ Ошибка отправки уведомления: {e}")

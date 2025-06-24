@@ -862,15 +862,12 @@ async def format_new_token(data):
     # Получаем дату создания токена (для новых токенов используем текущее время)
     token_created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
-    # Убираем подсчёт токенов создателя для обычных уведомлений
-    creator_info = ""
-    
     message = (
         f"🚀 <b>НОВЫЙ ТОКЕН НА PUMP.FUN!</b>\n\n"
         f"<b>💎 <a href='https://pump.fun/{mint}'>{name}</a></b>\n"
         f"<b>🏷️ Символ:</b> {symbol}\n"
         f"<b>📍 Mint:</b> <code>{mint}</code>\n"
-        f"<b>👤 Создатель:</b> <code>{creator[:8] if len(creator) > 8 else creator}...</code>{creator_info}\n"
+        f"<b>👤 Создатель:</b> <code>{creator[:8] if len(creator) > 8 else creator}...</code>\n"
         f"<b>📅 Создан:</b> {token_created_at}\n"
         f"<b>💰 Начальная покупка:</b> {initial_buy} SOL\n"
     )
@@ -2048,6 +2045,11 @@ def should_send_delayed_notification(twitter_analysis, symbol, mint):
         logger.debug(f"🚫 {symbol}: контракт не найден в Twitter - пропускаем уведомление")
         return False
     
+    # НОВАЯ ПРОВЕРКА: дедупликация уведомлений
+    if was_twitter_notification_sent_recently(mint):
+        logger.info(f"🔄 {symbol}: уведомление о Twitter активности уже отправлено недавно - пропускаем дублирование")
+        return False
+    
     # Получаем авторов твитов с контрактом
     contract_authors = twitter_analysis.get('contract_authors', [])
     
@@ -2060,6 +2062,68 @@ def should_send_delayed_notification(twitter_analysis, symbol, mint):
         logger.info(f"🚫 {symbol}: контракт найден, но авторы не подходят - пропускаем уведомление")
     
     return should_notify
+
+def was_twitter_notification_sent_recently(mint, time_window_minutes=10):
+    """Проверяет, было ли отправлено уведомление о Twitter активности в последние N минут"""
+    try:
+        db_manager = get_db_manager()
+        session = db_manager.Session()
+        
+        # Получаем токен из базы
+        token = session.query(Token).filter_by(mint=mint).first()
+        
+        if not token:
+            logger.debug(f"🔍 {mint[:8]}...: токен не найден в БД")
+            return False
+            
+        if not token.last_twitter_notification:
+            logger.debug(f"🔍 {mint[:8]}...: уведомления еще не отправлялись")
+            return False
+        
+        # Проверяем прошло ли достаточно времени
+        from datetime import datetime, timedelta
+        current_time = datetime.utcnow()
+        time_threshold = current_time - timedelta(minutes=time_window_minutes)
+        last_notification = token.last_twitter_notification
+        
+        # Если последнее уведомление было ПОСЛЕ порога (недавно) - блокируем
+        if last_notification > time_threshold:
+            minutes_ago = (current_time - last_notification).total_seconds() / 60
+            logger.debug(f"📅 {mint[:8]}...: уведомление {minutes_ago:.2f} минут назад (порог {time_window_minutes} мин) - БЛОКИРУЕМ")
+            return True
+        else:
+            minutes_ago = (current_time - last_notification).total_seconds() / 60
+            logger.debug(f"📅 {mint[:8]}...: уведомление {minutes_ago:.2f} минут назад (порог {time_window_minutes} мин) - РАЗРЕШАЕМ")
+            return False
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки дедупликации для {mint}: {e}")
+        return False
+    finally:
+        session.close()
+
+def mark_twitter_notification_sent(mint):
+    """Отмечает что уведомление о Twitter активности было отправлено"""
+    try:
+        db_manager = get_db_manager()
+        session = db_manager.Session()
+        
+        # Обновляем время последнего уведомления
+        token = session.query(Token).filter_by(mint=mint).first()
+        if token:
+            from datetime import datetime
+            current_time = datetime.utcnow()
+            token.last_twitter_notification = current_time
+            session.commit()
+            logger.debug(f"✅ Отмечено уведомление для {mint[:8]}... в {current_time}")
+        else:
+            logger.warning(f"⚠️ Токен {mint[:8]}... не найден в БД для отметки уведомления")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отметки уведомления для {mint}: {e}")
+        session.rollback()
+    finally:
+        session.close()
 
 async def send_delayed_twitter_notification(token_data, twitter_analysis):
     """Отправляет отложенное уведомление после анализа Twitter"""
@@ -2139,6 +2203,9 @@ async def send_delayed_twitter_notification(token_data, twitter_analysis):
         
         send_telegram_photo(token_image_url, message, keyboard)
         logger.info(f"📤 Отправлено отложенное уведомление для {symbol}")
+        
+        # Отмечаем что уведомление отправлено
+        mark_twitter_notification_sent(mint)
         
     except Exception as e:
         logger.error(f"❌ Ошибка отправки отложенного уведомления: {e}")
@@ -2603,7 +2670,7 @@ def filter_authors_for_display(authors):
     """
     ЕДИНАЯ ФУНКЦИЯ ФИЛЬТРАЦИИ АВТОРОВ ДЛЯ ОТОБРАЖЕНИЯ
     Используется в pump_bot.py И background_monitor.py
-    Удаляет спам-ботов и авторов из черного списка
+    Удаляет спамеров, спам-ботов и авторов из черного списка
     """
     filtered_authors = []
     
@@ -2618,11 +2685,19 @@ def filter_authors_for_display(authors):
         
         # Проверяем на спам-бота
         is_spam_bot, spam_bot_reason = is_spam_bot_tweet(tweet_text, username)
-        
-        if not is_spam_bot:
-            filtered_authors.append(author)
-        else:
+        if is_spam_bot:
             logger.info(f"🤖 Скрываем спам-бота @{username} из уведомления: {spam_bot_reason}")
+            continue
+        
+        # НОВАЯ ПРОВЕРКА: исключаем авторов с высоким разнообразием контрактов (спамеров)
+        is_spam_likely = author.get('is_spam_likely', False)
+        if is_spam_likely:
+            spam_analysis = author.get('spam_analysis', 'превышен порог разнообразия контрактов')
+            logger.info(f"🚫 Скрываем спамера @{username} из уведомления: {spam_analysis}")
+            continue
+        
+        # Автор прошел все проверки - добавляем в отображение
+        filtered_authors.append(author)
     
     return filtered_authors
 
@@ -2670,7 +2745,7 @@ def format_authors_section(authors, prefix_newline=True):
         unique_contracts = author.get('unique_contracts_count', 0)
         spam_analysis = author.get('spam_analysis', 'Нет данных')
         
-        # Эмодзи для статуса автора
+        # Эмодзи для статуса автора (спамеры исключены фильтрацией)
         spam_indicator = ""
         if spam_percent >= 80:
             spam_indicator = " 🔥"  # Вспышка активности
@@ -2678,8 +2753,7 @@ def format_authors_section(authors, prefix_newline=True):
             spam_indicator = " ⭐"  # Высокая концентрация
         elif spam_percent >= 40:
             spam_indicator = " 🟡"  # Умеренная концентрация
-        elif is_spam_likely:
-            spam_indicator = " 🚫"  # Много разных контрактов
+        # Убрали проверку на is_spam_likely, поскольку спамеры теперь исключаются фильтром
         
         message += f"{i+1}. <b>@{username}</b> {verified}{spam_indicator}\n"
         if display_name != username:

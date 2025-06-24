@@ -50,6 +50,7 @@ class Token(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     notification_sent = Column(Boolean, default=False)
+    last_twitter_notification = Column(DateTime, nullable=True)  # Время последнего уведомления о Twitter активности
     
     # Индексы для оптимизации запросов
     __table_args__ = (
