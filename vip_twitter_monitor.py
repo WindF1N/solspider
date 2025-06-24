@@ -249,9 +249,12 @@ class VipTwitterMonitor:
             logger.error(f"❌ Ошибка отправки VIP фото: {e}")
             return await self.send_vip_notification(caption, keyboard)
     
-    async def execute_automatic_purchase(self, contract: str, username: str, tweet_text: str, amount_usd: float) -> Dict:
+    async def execute_automatic_purchase(self, contract: str, username: str, tweet_text: str, amount_sol: float) -> Dict:
         """Выполняет автоматическую покупку токена"""
-        logger.info(f"🚀 АВТОМАТИЧЕСКАЯ ПОКУПКА: {contract} на ${amount_usd} от @{username}")
+        logger.info(f"🚀 АВТОМАТИЧЕСКАЯ ПОКУПКА: {contract} на {amount_sol} SOL от @{username}")
+        
+        import time
+        start_time = time.time()
         
         # Проверяем настройки автопокупки
         if self.auto_buy_config.get('simulate_only', True):
@@ -269,7 +272,7 @@ class VipTwitterMonitor:
                     return {
                         'success': True,
                         'tx_hash': f"mock_tx_{int(time.time())}",
-                        'amount_usd': amount_usd,
+                        'sol_amount': amount_sol,
                         'execution_time': 2.0,
                         'status': 'Симуляция - успешно выполнено'
                     }
@@ -287,13 +290,64 @@ class VipTwitterMonitor:
                     'execution_time': 0
                 }
         else:
-            # Реальная автопокупка (требует интеграции с DEX API)
-            logger.warning("⚠️ Реальная автопокупка не реализована - включите simulate_only")
-            return {
-                'success': False,
-                'error': 'Real auto-buy not implemented',
-                'execution_time': 0
-            }
+            # 🚀 РЕАЛЬНАЯ АВТОПОКУПКА через Axiom.trade
+            logger.info(f"💰 ВЫПОЛНЯЕМ РЕАЛЬНУЮ ПОКУПКУ через {self.auto_buy_config.get('trading_platform', 'axiom')}")
+            
+            try:
+                # Используем SOL напрямую без конвертации
+                sol_amount = amount_sol
+                
+                # Импортируем Axiom трейдер если есть
+                try:
+                    from axiom_trader import execute_axiom_purchase
+                    
+                    # Выполняем реальную покупку через Axiom.trade
+                    result = await execute_axiom_purchase(
+                        contract_address=contract,
+                        twitter_username=username,
+                        tweet_text=tweet_text,
+                        sol_amount=sol_amount,
+                        slippage=self.auto_buy_config.get('slippage_percent', 15),
+                        priority_fee=self.auto_buy_config.get('priority_fee', 0.001)
+                    )
+                    
+                    execution_time = time.time() - start_time
+                    
+                    if result.get('success', False):
+                        logger.info(f"✅ Автопокупка успешна! TX: {result.get('tx_hash', 'N/A')}")
+                        return {
+                            'success': True,
+                            'tx_hash': result.get('tx_hash', 'N/A'),
+                            'sol_amount': sol_amount,
+                            'execution_time': execution_time,
+                            'status': f'Axiom.trade - покупка {sol_amount:.6f} SOL',
+                            'platform': 'Axiom.trade'
+                        }
+                    else:
+                        error_msg = result.get('error', 'Unknown error from Axiom')
+                        logger.error(f"❌ Ошибка автопокупки: {error_msg}")
+                        return {
+                            'success': False,
+                            'error': error_msg,
+                            'execution_time': execution_time
+                        }
+                        
+                except ImportError:
+                    logger.error("❌ axiom_trader модуль не найден! Установите Axiom интеграцию")
+                    return {
+                        'success': False,
+                        'error': 'axiom_trader module not found',
+                        'execution_time': time.time() - start_time
+                    }
+                    
+            except Exception as e:
+                execution_time = time.time() - start_time
+                logger.error(f"❌ Критическая ошибка автопокупки: {e}")
+                return {
+                    'success': False,
+                    'error': f'Critical error: {str(e)}',
+                    'execution_time': execution_time
+                }
     
     async def check_twitter_account(self, username: str, account_config: Dict) -> List[Dict]:
         """Проверяет один Twitter аккаунт на наличие контрактов"""
@@ -405,9 +459,9 @@ class VipTwitterMonitor:
         # Автоматическая покупка если включена
         purchase_result = None
         if account_config.get('auto_buy', False):
-            amount_usd = account_config.get('buy_amount_usd', self.auto_buy_config['default_amount_usd'])
+            amount_sol = account_config.get('buy_amount_sol', self.auto_buy_config['default_amount_sol'])
             purchase_result = await self.execute_automatic_purchase(
-                contract, username, tweet_text, amount_usd
+                contract, username, tweet_text, amount_sol
             )
         
         # Создаем VIP уведомление используя шаблон
@@ -451,7 +505,7 @@ class VipTwitterMonitor:
                 message += format_vip_message(
                     'auto_buy_success',
                     status=purchase_result['status'],
-                    amount_usd=purchase_result['amount_usd'],
+                    sol_amount=purchase_result['sol_amount'],
                     execution_time=purchase_result['execution_time'],
                     tx_hash=purchase_result['tx_hash']
                 )

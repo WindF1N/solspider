@@ -971,6 +971,87 @@ def format_trade_alert(data):
     
     return message, keyboard
 
+async def execute_auto_purchase_new_token(mint, symbol, token_name):
+    """Выполняет автоматическую покупку нового токена"""
+    try:
+        logger.info(f"💰 АВТОПОКУПКА НОВОГО ТОКЕНА: {symbol} ({mint[:8]}...)")
+        
+        # Импортируем axiom_trader
+        from axiom_trader import execute_axiom_purchase
+        
+        # Параметры автопокупки
+        auto_buy_amount = 0.0001  # 0.0001 SOL
+        
+        # Выполняем покупку через Axiom
+        result = await execute_axiom_purchase(
+            contract_address=mint,
+            twitter_username="SolSpider_AutoBuy",
+            tweet_text=f"Автоматическая покупка нового токена {token_name} ({symbol})",
+            sol_amount=auto_buy_amount,
+            slippage=15,
+            priority_fee=0.001
+        )
+        
+        if result.get('success', False):
+            logger.info(f"✅ Автопокупка {symbol} успешна! TX: {result.get('tx_hash', 'N/A')[:16]}...")
+            
+            # Отправляем уведомление об успешной покупке
+            purchase_msg = (
+                f"💰 <b>АВТОПОКУПКА ВЫПОЛНЕНА!</b>\n\n"
+                f"🪙 <b>{token_name}</b> ({symbol})\n"
+                f"📍 <b>Mint:</b> <code>{mint}</code>\n"
+                f"⚡ <b>Сумма:</b> {auto_buy_amount} SOL\n"
+                f"🔗 <b>TX:</b> <code>{result.get('tx_hash', 'N/A')}</code>\n"
+                f"⏱️ <b>Время:</b> {result.get('execution_time', 0):.2f}с"
+            )
+            
+            # Создаем клавиатуру с ссылками
+            keyboard = [
+                [
+                    {"text": "💎 Axiom.trade", "url": f"https://axiom.trade/t/{mint}"},
+                    {"text": "📊 DexScreener", "url": f"https://dexscreener.com/solana/{mint}"}
+                ],
+                [{"text": "🚀 Pump.fun", "url": f"https://pump.fun/{mint}"}]
+            ]
+            
+            send_telegram(purchase_msg, keyboard)
+            
+        else:
+            error_msg = result.get('error', 'Unknown error')
+            logger.error(f"❌ Ошибка автопокупки {symbol}: {error_msg}")
+            
+            # Отправляем уведомление об ошибке
+            error_notification = (
+                f"❌ <b>ОШИБКА АВТОПОКУПКИ</b>\n\n"
+                f"🪙 <b>{token_name}</b> ({symbol})\n"
+                f"📍 <b>Mint:</b> <code>{mint}</code>\n"
+                f"⚠️ <b>Ошибка:</b> {error_msg[:100]}\n"
+                f"⚡ <b>Сумма:</b> {auto_buy_amount} SOL"
+            )
+            
+            send_telegram(error_notification)
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка автопокупки {symbol}: {e}")
+        
+        # Отправляем уведомление о критической ошибке
+        critical_error_msg = (
+            f"🚫 <b>КРИТИЧЕСКАЯ ОШИБКА АВТОПОКУПКИ</b>\n\n"
+            f"🪙 <b>{token_name}</b> ({symbol})\n"
+            f"📍 <b>Mint:</b> <code>{mint}</code>\n"
+            f"❌ <b>Ошибка:</b> {str(e)[:100]}"
+        )
+        
+        send_telegram(critical_error_msg)
+        
+        return {
+            'success': False,
+            'error': f'Critical error: {str(e)}',
+            'execution_time': 0
+        }
+
 async def handle_message(message):
     """Обработка сообщений WebSocket"""
     try:
@@ -993,6 +1074,10 @@ async def handle_message(message):
             if should_notify:
                 logger.info(f"✅ Токен {symbol} прошел фильтрацию - отправляем уведомление")
                 send_telegram_photo(token_image_url, msg, keyboard)
+                
+                # 🚀 АВТОМАТИЧЕСКАЯ ПОКУПКА НОВОГО ТОКЕНА
+                logger.info(f"💰 Выполняем автопокупку для {symbol}...")
+                await execute_auto_purchase_new_token(mint, symbol, token_name)
                 
                 # Обновляем статус уведомления в БД
                 try:

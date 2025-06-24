@@ -11,7 +11,7 @@ VIP_TWITTER_ACCOUNTS = {
         'description': 'Сильный инфлюенсер - мгновенные сигналы',
         'priority': 'HIGH',
         'auto_buy': True,  # Автоматическая покупка активирована
-        'buy_amount_usd': 1062.5,  # Сумма для автопокупки
+        'buy_amount_sol': 7.59,  # Сумма для автопокупки в SOL
         'check_interval': 0.1,  # Проверка каждую секунду - мгновенные сигналы
         'notify_unknown_contracts': True,  # Уведомлять о неизвестных контрактах
         'bypass_filters': True  # Обходить все фильтры
@@ -22,7 +22,7 @@ VIP_TWITTER_ACCOUNTS = {
         'description': 'Илон Маск - глобальные сигналы',
         'priority': 'ULTRA',
         'auto_buy': False,
-        'buy_amount_usd': 500.0,
+        'buy_amount_sol': 3.57,  # ~$500 при курсе $140/SOL
         'check_interval': 60,
         'notify_unknown_contracts': True,
         'bypass_filters': True
@@ -33,7 +33,7 @@ VIP_TWITTER_ACCOUNTS = {
         'description': 'Виталик Бутерин - экспертные сигналы',
         'priority': 'ULTRA',
         'auto_buy': False,
-        'buy_amount_usd': 1000.0,
+        'buy_amount_sol': 7.14,  # ~$1000 при курсе $140/SOL
         'check_interval': 60,
         'notify_unknown_contracts': True,
         'bypass_filters': True
@@ -44,7 +44,7 @@ VIP_TWITTER_ACCOUNTS = {
         'description': 'CZ Binance - биржевые сигналы',
         'priority': 'HIGH',
         'auto_buy': False,
-        'buy_amount_usd': 750.0,
+        'buy_amount_sol': 5.36,  # ~$750 при курсе $140/SOL
         'check_interval': 45,
         'notify_unknown_contracts': True,
         'bypass_filters': True
@@ -130,12 +130,14 @@ VIP_PROXIES = [
 # НАСТРОЙКИ АВТОМАТИЧЕСКОЙ ПОКУПКИ
 AUTO_BUY_CONFIG = {
     'enabled_accounts': ['MoriCoinCrypto'],  # Аккаунты с автопокупкой
-    'default_amount_usd': 100.0,  # Сумма по умолчанию
-    'max_amount_usd': 2000.0,  # Максимальная сумма
-    'sol_price_usd_estimate': 140.0,  # Примерная цена SOL для расчётов
+    'default_amount_sol': 0.71,  # Сумма по умолчанию в SOL (~$100)
+    'max_amount_sol': 14.29,  # Максимальная сумма в SOL (~$2000)
     'execution_timeout': 30,  # Таймаут выполнения покупки
     'retry_attempts': 2,  # Попытки при ошибках
-    'simulate_only': True  # Только симуляция (для тестирования)
+    'simulate_only': False,  # 🚀 РЕАЛЬНАЯ АВТОПОКУПКА ВКЛЮЧЕНА!
+    'trading_platform': 'axiom',  # Используемая платформа (axiom/jupiter)
+    'slippage_percent': 15,  # Проскальзывание %
+    'priority_fee': 0.001  # Приоритетная комиссия SOL
 }
 
 # КНОПКИ ДЛЯ VIP УВЕДОМЛЕНИЙ
@@ -166,8 +168,8 @@ VIP_MESSAGE_TEMPLATES = {
 
 💰 <b>АВТОМАТИЧЕСКАЯ ПОКУПКА ВЫПОЛНЕНА!</b>
 ✅ <b>Статус:</b> {status}
-💵 <b>Сумма:</b> ${amount_usd}
-⚡ <b>Время:</b> {execution_time:.2f}с
+⚡ <b>Сумма:</b> {sol_amount:.6f} SOL
+⏱️ <b>Время:</b> {execution_time:.2f}с
 🔗 <b>TX:</b> <code>{tx_hash}</code>""",
 
     'auto_buy_error': """
