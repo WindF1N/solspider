@@ -95,6 +95,32 @@ class TwitterProfileParser:
             # Fallback к стандартному методу
             return element.get_text(strip=True)
     
+    def extract_contracts_from_text(self, text):
+        """
+        ЕДИНАЯ ФУНКЦИЯ для извлечения Solana контрактов из текста твита
+        Возвращает список уникальных контрактов длиной 32-44 символа
+        """
+        if not text:
+            return []
+        
+        # Используем границы слов для точного поиска
+        contracts = re.findall(r'\b[A-Za-z0-9]{32,44}\b', text)
+        
+        # Очищаем и фильтруем контракты
+        clean_contracts = []
+        for contract in contracts:
+            # Убираем "pump" с конца если есть
+            clean_contract = contract
+            if contract.endswith('pump'):
+                clean_contract = contract[:-4]
+            
+            # Проверяем что это похоже на Solana адрес (32-44 символа, только буквы и цифры)
+            if 32 <= len(clean_contract) <= 44 and clean_contract.isalnum():
+                clean_contracts.append(clean_contract)
+        
+        # Возвращаем уникальные контракты
+        return list(set(clean_contracts))
+    
     def extract_profile_data(self, html_content):
         """Извлекает данные профиля из HTML"""
         try:
@@ -357,8 +383,8 @@ class TwitterProfileParser:
                     # Улучшенное извлечение текста с правильными разделителями
                     tweet_text = self.extract_clean_text(tweet_content)
                     if tweet_text:
-                        # Ищем контракты в тексте твита (адреса длиной 32-44 символа)
-                        contracts = re.findall(r'\b[A-Za-z0-9]{32,44}\b', tweet_text)
+                        # Используем единую функцию для извлечения контрактов
+                        contracts = self.extract_contracts_from_text(tweet_text)
                         
                         if contracts:
                             # Также извлекаем дату твита

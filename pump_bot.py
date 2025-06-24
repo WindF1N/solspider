@@ -2148,9 +2148,8 @@ def analyze_author_contract_diversity(author_username, db_manager=None):
         contract_mentions = {}  # контракт -> количество упоминаний
         
         for mention in tweet_mentions:
-            # Ищем контракты в тексте твита (адреса длиной 32-48 символов)
-            # Улучшенное регулярное выражение для поиска Solana адресов (включая с "pump" на конце)
-            contracts_in_tweet = re.findall(r'[A-Za-z0-9]{32,48}', mention.tweet_text)
+            # Используем единую функцию для извлечения контрактов
+            contracts_in_tweet = extract_contracts_from_text(mention.tweet_text)
             
             # Также добавляем контракт из поля mint если есть
             if mention.mint:
@@ -2158,15 +2157,8 @@ def analyze_author_contract_diversity(author_username, db_manager=None):
             
             # Добавляем найденные контракты
             for contract in contracts_in_tweet:
-                # Обрезаем "pump" с конца если есть, чтобы получить настоящий адрес
-                clean_contract = contract
-                if contract.endswith('pump'):
-                    clean_contract = contract[:-4]  # Убираем "pump"
-                
-                # Проверяем что это похоже на Solana адрес (32-44 символа)
-                if 32 <= len(clean_contract) <= 44 and clean_contract.isalnum():
-                    all_contracts.add(clean_contract)
-                    contract_mentions[clean_contract] = contract_mentions.get(clean_contract, 0) + 1
+                all_contracts.add(contract)
+                contract_mentions[contract] = contract_mentions.get(contract, 0) + 1
         
         total_tweets = len(tweet_mentions)
         unique_contracts = len(all_contracts)
@@ -2334,20 +2326,12 @@ async def analyze_author_page_contracts(author_username, tweets_on_page=None, lo
     contract_mentions = {}
     
     for tweet_text in tweets_on_page:
-        # Ищем контракты в тексте твита (адреса длиной 32-48 символов)
-        # Улучшенное регулярное выражение для поиска Solana адресов (включая с "pump" на конце)
-        contracts_in_tweet = re.findall(r'[A-Za-z0-9]{32,48}', tweet_text)
+        # Используем единую функцию для извлечения контрактов
+        contracts_in_tweet = extract_contracts_from_text(tweet_text)
         
         for contract in contracts_in_tweet:
-            # Обрезаем "pump" с конца если есть, чтобы получить настоящий адрес
-            clean_contract = contract
-            if contract.endswith('pump'):
-                clean_contract = contract[:-4]  # Убираем "pump"
-            
-            # Проверяем что это похоже на Solana адрес (32-44 символа)
-            if 32 <= len(clean_contract) <= 44 and clean_contract.isalnum():
-                all_contracts.add(clean_contract)
-                contract_mentions[clean_contract] = contract_mentions.get(clean_contract, 0) + 1
+            all_contracts.add(contract)
+            contract_mentions[contract] = contract_mentions.get(contract, 0) + 1
     
     total_tweets = len(tweets_on_page)
     unique_contracts = len(all_contracts)
@@ -2423,6 +2407,39 @@ async def analyze_author_page_contracts(author_username, tweets_on_page=None, lo
         'diversity_category': get_diversity_category(max_contract_spam_percent),
         'spam_analysis': spam_analysis
     }
+
+def extract_contracts_from_text(text):
+    """
+    ЕДИНАЯ ФУНКЦИЯ для извлечения Solana контрактов из текста твита
+    Возвращает список уникальных контрактов длиной 32-44 символа
+    """
+    if not text:
+        return []
+    
+    # Используем более гибкое регулярное выражение:
+    # 1. Ищем последовательности из 32-48 символов (включая возможное "pump")
+    # 2. Не требуем строгих границ слов, но исключаем полностью буквенные строки
+    contracts = re.findall(r'[A-Za-z0-9]{32,48}', text)
+    
+    # Очищаем и фильтруем контракты
+    clean_contracts = []
+    for contract in contracts:
+        # Убираем "pump" с конца если есть
+        clean_contract = contract
+        if contract.endswith('pump'):
+            clean_contract = contract[:-4]
+        
+        # Проверяем что это похоже на Solana адрес:
+        # - 32-44 символа
+        # - только буквы и цифры
+        # - содержит хотя бы одну цифру (чтобы исключить чисто буквенные строки)
+        if (32 <= len(clean_contract) <= 44 and 
+            clean_contract.isalnum() and 
+            any(c.isdigit() for c in clean_contract)):
+            clean_contracts.append(clean_contract)
+    
+    # Возвращаем уникальные контракты
+    return list(set(clean_contracts))
 
 def should_filter_author_by_diversity(author_username, diversity_threshold=30):
     """
@@ -3119,16 +3136,18 @@ async def check_vip_twitter_accounts():
                             if retweet_header:
                                 continue
                             
-                            # Получаем текст твита
+                            # Получаем текст твита с правильным извлечением
                             tweet_content = tweet.find('div', class_='tweet-content')
                             if not tweet_content:
                                 continue
-                                
-                            tweet_text = tweet_content.get_text(strip=True)
                             
-                            # Ищем контракты (Solana адреса 32-44 символа)
-                            import re
-                            contracts = re.findall(r'\b[A-Za-z0-9]{32,44}\b', tweet_text)
+                            # Используем правильное извлечение текста как в twitter_profile_parser
+                            from twitter_profile_parser import TwitterProfileParser
+                            parser = TwitterProfileParser()
+                            tweet_text = parser.extract_clean_text(tweet_content)
+                            
+                            # Используем единую функцию для извлечения контрактов
+                            contracts = extract_contracts_from_text(tweet_text)
                             
                             for contract in contracts:
                                 # Проверяем что это похоже на Solana адрес
