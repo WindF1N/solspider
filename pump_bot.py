@@ -610,7 +610,7 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
                     logger.info(f"📄 Пагинация для '{query}': {len(result)} твитов, {len(authors)} авторов")
                 else:
                     # Для символов используем обычный поиск
-                result = await search_single_query(query, headers, use_quotes=use_quotes, cycle_cookie=cycle_cookie)
+                    result = await search_single_query(query, headers, use_quotes=use_quotes, cycle_cookie=cycle_cookie)
                 
                 # Проверяем если результат содержит информацию об ошибке
                 if isinstance(result, dict) and "error" in result:
@@ -872,24 +872,24 @@ async def format_new_token(data):
             
             # Добавляем дату публикации если есть
             if tweet_date:
-                    message += f"   📅 Опубликован: {tweet_date}\n"
+                message += f"   📅 Опубликован: {tweet_date}\n"
+            
+            # Добавляем тип твита
+            tweet_type = author.get('tweet_type', 'Твит')
+            type_emoji = "💬" if tweet_type == "Ответ" else "🐦"
+            message += f"   {type_emoji} Тип: {tweet_type}\n"
+            
+            # Добавляем исторические данные автора
+            historical_data = db_manager.get_author_historical_data(author.get('username', ''))
+            if historical_data and historical_data.get('total_mentions', 0) > 0:
+                total_mentions = historical_data.get('total_mentions', 0)
+                unique_tokens = historical_data.get('unique_tokens', 0)
+                recent_7d = historical_data.get('recent_mentions_7d', 0)
+                recent_30d = historical_data.get('recent_mentions_30d', 0)
                 
-                # Добавляем тип твита
-                tweet_type = author.get('tweet_type', 'Твит')
-                type_emoji = "💬" if tweet_type == "Ответ" else "🐦"
-                message += f"   {type_emoji} Тип: {tweet_type}\n"
-                
-                # Добавляем исторические данные автора
-                historical_data = db_manager.get_author_historical_data(author.get('username', ''))
-                if historical_data and historical_data.get('total_mentions', 0) > 0:
-                    total_mentions = historical_data.get('total_mentions', 0)
-                    unique_tokens = historical_data.get('unique_tokens', 0)
-                    recent_7d = historical_data.get('recent_mentions_7d', 0)
-                    recent_30d = historical_data.get('recent_mentions_30d', 0)
-                    
-                    message += f"   📊 История: {total_mentions} упоминаний ({unique_tokens} токенов)\n"
-                    if recent_7d > 0 or recent_30d > 0:
-                        message += f"   📈 Активность: {recent_7d} за 7д, {recent_30d} за 30д\n"
+                message += f"   📊 История: {total_mentions} упоминаний ({unique_tokens} токенов)\n"
+                if recent_7d > 0 or recent_30d > 0:
+                    message += f"   📈 Активность: {recent_7d} за 7д, {recent_30d} за 30д\n"
             
             # Показываем анализ концентрации контрактов
             if total_contract_tweets > 0:
@@ -2477,16 +2477,16 @@ async def analyze_author_page_contracts(author_username, tweets_on_page=None, lo
             diversity_threshold = 40  # Умеренный порог для больших выборок
         
         if diversity_percent >= diversity_threshold:
-        is_spam_likely = True
+            is_spam_likely = True
             recommendation = "🚫 СПАМЕР - слишком много разных контрактов!"
             spam_analysis = f"СПАМ! {diversity_percent:.1f}% разных контрактов - превышен порог {diversity_threshold}% для {total_tweets} твитов"
-    else:
-        # ИСПРАВЛЕННАЯ ЛОГИКА: низкое разнообразие = хорошо
+        else:
+            # ИСПРАВЛЕННАЯ ЛОГИКА: низкое разнообразие = хорошо
             if diversity_percent <= 10:  # ≤10% разных контрактов = отлично
-            is_spam_likely = False
+                is_spam_likely = False
                 recommendation = "✅ ОТЛИЧНЫЙ - очень низкое разнообразие контрактов"
                 spam_analysis = f"Отлично: {diversity_percent:.1f}% разнообразия - высокий фокус на конкретных токенах"
-        else:
+            else:
                 is_spam_likely = False
                 recommendation = "🟡 ПРИЕМЛЕМЫЙ - низкое разнообразие контрактов"
                 spam_analysis = f"Приемлемо: {diversity_percent:.1f}% разнообразия (порог {diversity_threshold}% для {total_tweets} твитов)"
