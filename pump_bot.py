@@ -276,11 +276,8 @@ def send_vip_telegram_photo(photo_url, caption, inline_keyboard=None):
 
 async def search_single_query(query, headers, retry_count=0, use_quotes=False, cycle_cookie=None):
     """Выполняет одиночный поисковый запрос к Nitter с повторными попытками при 429 и ротацией cookies"""
-    # Добавляем вчерашнюю дату в параметр since (локальное время для корректной работы с часовыми поясами)
-    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-    
-    # Убираем поиск с кавычками - используем только без кавычек
-    url = f"https://nitter.tiekoetter.com/search?f=tweets&q={quote(query)}&since={yesterday}&until=&near="
+    # Убираем параметр since - ищем по всем твитам без временных ограничений
+    url = f"https://nitter.tiekoetter.com/search?f=tweets&q={quote(query)}"
     
     # Используем переданные прокси+cookie для цикла или получаем новые
     if cycle_cookie:
@@ -396,7 +393,8 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=False, c
                             tweet_data.append({
                                 'id': tweet_id,
                                 'engagement': 0,  # будет заполнено ниже
-                                'authors': authors_data if is_contract_query else []
+                                'authors': authors_data if is_contract_query else [],
+                                'html': tweet  # Сохраняем HTML для дальнейшего использования
                             })
                     
                     # Анализируем активность в твитах
@@ -461,6 +459,172 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=False, c
             # Возвращаем информацию об ошибке для анализа
             return {"error": error_category, "message": error_msg, "type": error_type}
 
+def extract_next_page_url(soup):
+    """Извлекает URL следующей страницы из кнопки 'Load more'"""
+    try:
+        show_more = soup.find('div', class_='show-more')
+        if show_more:
+            link = show_more.find('a')
+            if link and 'href' in link.attrs:
+                return link['href']
+        return None
+    except Exception as e:
+        logger.debug(f"Ошибка извлечения URL следующей страницы: {e}")
+        return None
+
+async def search_with_pagination(query, headers, max_pages=3, cycle_cookie=None):
+    """Выполняет поиск с пагинацией, проходя по всем доступным страницам"""
+    try:
+        all_tweets = []
+        all_authors = []
+        page_count = 0
+        current_url = f"https://nitter.tiekoetter.com/search?f=tweets&q={quote(query)}"
+        
+        # Используем переданные прокси+cookie для цикла или получаем новые
+        if cycle_cookie:
+            # Если передан cycle_cookie, ищем соответствующую связку прокси
+            proxy = None
+            current_cookie = cycle_cookie
+            for pair in proxy_cookie_rotator.proxy_cookie_pairs:
+                if pair['cookie'] == cycle_cookie:
+                    proxy = pair['proxy']
+                    break
+        else:
+            proxy, current_cookie = proxy_cookie_rotator.get_next_proxy_cookie()
+
+        # Обновляем заголовки с cookie
+        headers_with_cookie = headers.copy()
+        headers_with_cookie['Cookie'] = current_cookie
+        
+        # Настройка соединения (прокси или без прокси)
+        connector = aiohttp.TCPConnector(ssl=False)
+        request_kwargs = {}
+        if proxy:
+            request_kwargs['proxy'] = proxy
+            
+        logger.info(f"🔄 Начинаем поиск с пагинацией для '{query}' (до {max_pages} страниц)")
+        
+        async with aiohttp.ClientSession(connector=connector) as session:
+            while page_count < max_pages and current_url:
+                page_count += 1
+                logger.info(f"📄 Загружаем страницу {page_count}/{max_pages} для '{query}'")
+                
+                try:
+                    async with session.get(current_url, headers=headers_with_cookie, timeout=20, **request_kwargs) as response:
+                        if response.status == 200:
+                            html = await response.text()
+                            soup = BeautifulSoup(html, 'html.parser')
+                            
+                            # Проверяем на блокировку Nitter
+                            title = soup.find('title')
+                            if title and 'Making sure you\'re not a bot!' in title.get_text():
+                                logger.error(f"🚫 NITTER ЗАБЛОКИРОВАН на странице {page_count} для '{query}'")
+                                break
+                            
+                            # Находим все твиты на текущей странице
+                            tweets = soup.find_all('div', class_='timeline-item')
+                            # Исключаем элементы show-more и top-ref
+                            tweets = [t for t in tweets if not t.find('div', class_='show-more') and not t.find('div', class_='top-ref')]
+                            
+                            page_tweet_count = len(tweets)
+                            logger.info(f"📱 Страница {page_count}: найдено {page_tweet_count} твитов")
+                            
+                            # Проверяем, это запрос по контракту (длинная строка)
+                            is_contract_query = len(query) > 20
+                            
+                            # Парсим авторов если найдены твиты по контракту
+                            page_authors = []
+                            if is_contract_query and page_tweet_count > 0:
+                                page_authors = await extract_tweet_authors(soup, query, True)
+                                all_authors.extend(page_authors)
+                                logger.info(f"👥 Страница {page_count}: найдено {len(page_authors)} авторов")
+                            
+                            # Обрабатываем твиты текущей страницы
+                            for tweet in tweets:
+                                # Извлекаем уникальные данные твита
+                                tweet_link = tweet.find('a', class_='tweet-link')
+                                tweet_time = tweet.find('span', class_='tweet-date')
+                                tweet_text = tweet.find('div', class_='tweet-content')
+                                
+                                tweet_id = None
+                                if tweet_link and 'href' in tweet_link.attrs:
+                                    tweet_id = tweet_link['href']
+                                elif tweet_time and tweet_text:
+                                    time_text = tweet_time.get_text(strip=True) if tweet_time else ""
+                                    content_text = tweet_text.get_text(strip=True)[:50] if tweet_text else ""
+                                    tweet_id = f"{time_text}_{hash(content_text)}"
+                                
+                                if tweet_id:
+                                    # Анализируем активность твита
+                                    engagement = 0
+                                    stats = tweet.find_all('span', class_='tweet-stat')
+                                    for stat in stats:
+                                        icon_container = stat.find('div', class_='icon-container')
+                                        if icon_container:
+                                            text = icon_container.get_text(strip=True)
+                                            numbers = re.findall(r'\d+', text)
+                                            if numbers:
+                                                engagement += int(numbers[0])
+                                    
+                                    all_tweets.append({
+                                        'id': tweet_id,
+                                        'engagement': engagement,
+                                        'authors': page_authors if is_contract_query else [],
+                                        'page': page_count
+                                    })
+                            
+                            # Ищем ссылку на следующую страницу
+                            next_page_url = extract_next_page_url(soup)
+                            if next_page_url and page_count < max_pages:
+                                # Формируем полный URL
+                                if next_page_url.startswith('?'):
+                                    current_url = f"https://nitter.tiekoetter.com/search{next_page_url}"
+                                elif next_page_url.startswith('/search'):
+                                    current_url = f"https://nitter.tiekoetter.com{next_page_url}"
+                                else:
+                                    current_url = next_page_url
+                                
+                                logger.debug(f"🔗 Следующая страница: {current_url}")
+                                
+                                # Пауза между страницами
+                                await asyncio.sleep(0.5)
+                            else:
+                                logger.info(f"📄 Больше страниц нет или достигнут лимит для '{query}'")
+                                break
+                                
+                        elif response.status == 429:
+                            logger.warning(f"⚠️ Nitter 429 на странице {page_count} для '{query}' - останавливаем пагинацию")
+                            break
+                        else:
+                            logger.warning(f"❌ Nitter ответил {response.status} на странице {page_count} для '{query}'")
+                            break
+                            
+                except Exception as e:
+                    logger.error(f"❌ Ошибка загрузки страницы {page_count} для '{query}': {e}")
+                    break
+        
+        # Дедупликация твитов
+        unique_tweets = {}
+        for tweet in all_tweets:
+            tweet_id = tweet['id']
+            if tweet_id in unique_tweets:
+                # Берем максимальную активность
+                unique_tweets[tweet_id]['engagement'] = max(
+                    unique_tweets[tweet_id]['engagement'], 
+                    tweet['engagement']
+                )
+            else:
+                unique_tweets[tweet_id] = tweet
+        
+        final_tweets = list(unique_tweets.values())
+        logger.info(f"🎯 Пагинация завершена для '{query}': {len(final_tweets)} уникальных твитов с {page_count} страниц")
+        
+        return final_tweets, all_authors
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка поиска с пагинацией для '{query}': {e}")
+        return [], []
+
 async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
     """Анализ упоминаний токена в Twitter через Nitter (2 запроса без кавычек с дедупликацией)"""
     try:
@@ -479,18 +643,26 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
             'Upgrade-Insecure-Requests': '1',
         }
         
-        # 2 запроса: символ и контракт, только без кавычек
+        # 2 запроса: символ (обычный поиск) и контракт (с пагинацией)
         search_queries = [
-            (f'${symbol}', False),  # Символ без кавычек
-            (mint, False)           # Контракт без кавычек
+            (f'${symbol}', False, False),  # Символ без кавычек, без пагинации
+            (mint, False, True)            # Контракт без кавычек, с пагинацией
         ]
         
         # Выполняем запросы последовательно с паузами для избежания блокировки
         results = []
+        all_contract_authors = []
         error_details = []
-        for i, (query, use_quotes) in enumerate(search_queries):
+        for i, (query, use_quotes, use_pagination) in enumerate(search_queries):
             try:
-                result = await search_single_query(query, headers, use_quotes=use_quotes, cycle_cookie=cycle_cookie)
+                if use_pagination:
+                    # Для контрактов используем пагинацию (до 3 страниц)
+                    result, authors = await search_with_pagination(query, headers, max_pages=3, cycle_cookie=cycle_cookie)
+                    all_contract_authors.extend(authors)
+                    logger.info(f"📄 Пагинация для '{query}': {len(result)} твитов, {len(authors)} авторов")
+                else:
+                    # Для символов используем обычный поиск
+                    result = await search_single_query(query, headers, use_quotes=use_quotes, cycle_cookie=cycle_cookie)
                 
                 # Проверяем если результат содержит информацию об ошибке
                 if isinstance(result, dict) and "error" in result:
@@ -512,13 +684,12 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
                     "error_message": str(e),
                     "error_type": type(e).__name__
                 })
-                results.append(e)
+                results.append([])
         
         # Собираем все твиты в один словарь для дедупликации
         all_tweets = {}
         symbol_tweets_count = 0
         contract_tweets_count = 0
-        contract_authors = []  # Авторы твитов с контрактами
         
         for i, result in enumerate(results):
             if isinstance(result, Exception) or not result:
@@ -527,7 +698,6 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
             for tweet_data in result:
                 tweet_id = tweet_data['id']
                 engagement = tweet_data['engagement']
-                authors = tweet_data.get('authors', [])
                 
                 # Если твит уже есть, берем максимальное значение активности
                 if tweet_id in all_tweets:
@@ -540,8 +710,6 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
                         symbol_tweets_count += 1
                     else:  # Второй запрос - контракт
                         contract_tweets_count += 1
-                        # Добавляем авторов контрактных твитов
-                        contract_authors.extend(authors)
         
         # Итоговые подсчеты
         total_tweets = len(all_tweets)
@@ -587,7 +755,7 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
             'score': round(score, 1),
             'rating': rating,
             'contract_found': contract_tweets_count > 0,
-            'contract_authors': contract_authors,
+            'contract_authors': all_contract_authors,
             'error_details': error_details  # Добавляем детали ошибок
         }
         
@@ -665,22 +833,8 @@ async def format_new_token(data):
     # Получаем дату создания токена (для новых токенов используем текущее время)
     token_created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
-    # Получаем историю создателя для анализа (быстрый запрос)
-    creator_history = await get_creator_token_history(creator)
+    # Убираем подсчёт токенов создателя для обычных уведомлений
     creator_info = ""
-    
-    if creator_history['success']:
-        total_tokens = creator_history['total_tokens']
-        if creator_history['is_first_time']:
-            creator_info = " 🆕"
-        elif total_tokens == 1:
-            creator_info = " 🥇"
-        elif total_tokens <= 3:
-            creator_info = f" 🔥({total_tokens})"
-        elif creator_history['is_serial_creator']:
-            creator_info = f" ⚠️({total_tokens})"
-        else:
-            creator_info = f" 📊({total_tokens})"
     
     message = (
         f"🚀 <b>НОВЫЙ ТОКЕН НА PUMP.FUN!</b>\n\n"
@@ -1377,7 +1531,7 @@ async def extract_tweet_authors(soup, query, contract_found):
             #     logger.info(f"🚫 Автор @{username} исключен из результатов - подозрительные метрики")
             #     continue
             
-            # УПРОЩЕННАЯ ЛОГИКА: исключаем только чистых спамеров (90%+ контрактов)
+            # УПРОЩЕННАЯ ЛОГИКА: исключаем только чистых спамеров (80%+ контрактов)
             diversity_percent = author.get('contract_diversity', 0)
             spam_percent = author.get('max_contract_spam', 0)
             total_tweets = author.get('total_contract_tweets', 0)
@@ -1807,8 +1961,8 @@ def should_notify_based_on_authors_unified(authors):
             logger.info(f"🤖 @{username}: СПАМ-БОТ - {spam_bot_reason}")
             continue  # Пропускаем остальные проверки для спам-ботов
         
-        # ПРОСТАЯ ПРОВЕРКА: если автор пишет контракты в 90%+ сообщений = чистый спамер
-        if total_tweets >= 3 and (spam_percent >= 90 or diversity_percent >= 90):
+        # ПРОСТАЯ ПРОВЕРКА: если автор пишет контракты в 80%+ сообщений = чистый спамер
+        if total_tweets >= 3 and (spam_percent >= 80 or diversity_percent >= 80):
             pure_spammers += 1
             logger.info(f"🚫 @{username}: ЧИСТЫЙ СПАМЕР - контракты в {max(spam_percent, diversity_percent):.1f}% сообщений")
         else:
@@ -1828,7 +1982,7 @@ def should_notify_based_on_authors_unified(authors):
     logger.info(f"   🚫 В черном списке: {blacklisted_authors}")
     logger.info(f"   ✅ Валидных авторов: {valid_authors}")
     logger.info(f"   🤖 Спам-ботов: {spam_bots}")
-    logger.info(f"   🚫 Чистых спамеров (90%+ контрактов): {pure_spammers - spam_bots}")
+    logger.info(f"   🚫 Чистых спамеров (80%+ контрактов): {pure_spammers - spam_bots}")
     logger.info(f"   ✅ Нормальных авторов: {valid_authors - pure_spammers}")
     logger.info(f"   🎯 РЕШЕНИЕ: {'ОТПРАВИТЬ' if should_notify else 'ЗАБЛОКИРОВАТЬ'}")
     
@@ -2036,7 +2190,7 @@ def analyze_author_contract_diversity(author_username, db_manager=None):
             is_spam_likely = True
             recommendation = "🚫 СПАМЕР - каждый твит новый контракт!"
             spam_analysis = f"СПАМ! {diversity_percent:.1f}% разных контрактов - явный спамер"
-        elif diversity_percent >= 50:  # ≥50% разных контрактов
+        elif diversity_percent >= 80:  # ≥80% разных контрактов
             is_spam_likely = True
             recommendation = "🚫 ПЛОХОЙ - слишком много разных контрактов"
             spam_analysis = f"Низкое качество: {diversity_percent:.1f}% разных контрактов - нет фокуса"
@@ -2216,7 +2370,7 @@ async def analyze_author_page_contracts(author_username, tweets_on_page=None, lo
         is_spam_likely = True
         recommendation = "🚫 СПАМЕР - каждый твит новый контракт!"
         spam_analysis = f"СПАМ! {diversity_percent:.1f}% разных контрактов на странице - явный спамер"
-    elif diversity_percent >= 50:
+    elif diversity_percent >= 80:
         is_spam_likely = True
         recommendation = "🚫 ПЛОХОЙ - слишком много разных контрактов"
         spam_analysis = f"Низкое качество: {diversity_percent:.1f}% разных контрактов - нет фокуса"
@@ -3013,25 +3167,8 @@ async def check_vip_twitter_accounts():
 async def send_vip_twitter_signal(token, twitter_username, tweet_text, vip_info, purchase_result=None):
     """Отправляет VIP уведомление о сигнале из Twitter"""
     try:
-        # Получаем историю создателя
-        creator_history = await get_creator_token_history(token.creator)
-        
-        # Анализируем создателя
+        # Убираем подсчёт токенов создателя для VIP Twitter сигналов
         creator_analysis = ""
-        if creator_history['success']:
-            total_tokens = creator_history['total_tokens']
-            if creator_history['is_first_time']:
-                creator_analysis = "🆕 ПЕРВЫЙ ТОКЕН СОЗДАТЕЛЯ!"
-            elif total_tokens == 1:
-                creator_analysis = f"🥇 Второй токен"
-            elif total_tokens <= 3:
-                creator_analysis = f"🔥 Опытный создатель ({total_tokens} токенов)"
-            elif creator_history['is_serial_creator']:
-                creator_analysis = f"⚠️ Серийный создатель ({total_tokens} токенов)"
-            else:
-                creator_analysis = f"📊 {total_tokens} токенов"
-        else:
-            creator_analysis = "❓ Не удалось получить историю"
         
         # Обрезаем твит если слишком длинный
         if len(tweet_text) > 200:
@@ -3052,8 +3189,7 @@ async def send_vip_twitter_signal(token, twitter_username, tweet_text, vip_info,
         if token.market_cap and token.market_cap > 0:
             message += f"<b>📊 Market Cap:</b> ${token.market_cap:,.0f}\n"
         
-        # Добавляем анализ создателя
-        message += f"\n🎯 <b>Создатель:</b> {creator_analysis}\n"
+        # Убираем анализ создателя из VIP Twitter сигналов
         
         # Добавляем твит
         message += f"\n📱 <b>Твит:</b>\n<blockquote>{tweet_text}</blockquote>\n"

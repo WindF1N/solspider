@@ -691,7 +691,7 @@ class TwitterProfileParser:
             elif contract_diversity_percent >= 80:
                 quality_analysis = "Очень высокое разнообразие"
                 spam_likelihood = "Высокая"
-            elif contract_diversity_percent >= 50:
+            elif contract_diversity_percent >= 80:
                 quality_analysis = "Высокое разнообразие"
                 spam_likelihood = "Высокая"
             else:

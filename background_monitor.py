@@ -8,7 +8,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 from database import get_db_manager, Token
-from pump_bot import search_single_query, send_telegram, send_telegram_photo, extract_tweet_authors, TWITTER_AUTHOR_BLACKLIST, analyze_author_contract_diversity, analyze_author_page_contracts, is_spam_bot_tweet, should_notify_based_on_authors_unified, filter_authors_for_display, format_authors_section, get_creator_token_history
+from pump_bot import search_single_query, send_telegram, send_telegram_photo, extract_tweet_authors, TWITTER_AUTHOR_BLACKLIST, analyze_author_contract_diversity, analyze_author_page_contracts, is_spam_bot_tweet, should_notify_based_on_authors_unified, filter_authors_for_display, format_authors_section
 from cookie_rotation import background_proxy_cookie_rotator, background_cookie_rotator
 from logger_config import setup_logging
 from twitter_profile_parser import TwitterProfileParser
@@ -144,22 +144,8 @@ class BackgroundTokenMonitor:
             # Получаем дату создания токена
             token_created_at = token.created_at.strftime('%Y-%m-%d %H:%M:%S') if token.created_at else "Неизвестно"
             
-            # Получаем историю создателя
-            creator_history = await get_creator_token_history(token.creator)
+            # Убираем подсчёт токенов создателя для фонового мониторинга
             creator_info = ""
-            
-            if creator_history['success']:
-                total_tokens = creator_history['total_tokens']
-                if creator_history['is_first_time']:
-                    creator_info = " 🆕 ПЕРВЫЙ ТОКЕН!"
-                elif total_tokens == 1:
-                    creator_info = " 🥇 ВТОРОЙ ТОКЕН"
-                elif total_tokens <= 3:
-                    creator_info = f" 🔥 ОПЫТНЫЙ ({total_tokens} токенов)"
-                elif creator_history['is_serial_creator']:
-                    creator_info = f" ⚠️ СЕРИЙНЫЙ ({total_tokens} токенов)"
-                else:
-                    creator_info = f" 📊 {total_tokens} токенов"
             
             message = (
                 f"{emoji} <b>{title}</b>\n\n"
@@ -360,16 +346,12 @@ class BackgroundTokenMonitor:
         logger.info("🛑 Остановка фонового мониторинга...")
 
     async def get_contract_mentions_with_authors(self, token, proxy, cycle_cookie):
-        """Получает HTML ответы для парсинга авторов С БЫСТРЫМИ ТАЙМАУТАМИ"""
+        """Получает HTML ответы для парсинга авторов С БЫСТРЫМИ ТАЙМАУТАМИ и пагинацией"""
         try:
-            # Добавляем вчерашнюю дату и убираем поиск с кавычками (локальное время для корректной работы с часовыми поясами)
-            from datetime import datetime, timedelta
-            yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-            
-            # Делаем только один запрос без кавычек
-            urls = [
-                f"https://nitter.tiekoetter.com/search?f=tweets&q={token.mint}&since={yesterday}&until=&near="
-            ]
+            # Убираем параметр since - ищем по всем твитам без временных ограничений
+            # Делаем только один запрос без кавычек с пагинацией
+            base_url = f"https://nitter.tiekoetter.com/search?f=tweets&q={token.mint}"
+            urls_to_process = [base_url]
             
             headers_with_cookie = self.headers.copy()
             headers_with_cookie['Cookie'] = cycle_cookie
@@ -378,27 +360,35 @@ class BackgroundTokenMonitor:
             tweets_count = 0
             engagement = 0
             
-            for url in urls:
+            # ПАГИНАЦИЯ: проходим по страницам до максимума 3 страниц для фонового мониторинга
+            page_count = 0
+            max_pages = 3
+            current_url = base_url
+            
+            # Настройка прокси если требуется
+            connector = None
+            request_kwargs = {}
+            if proxy:
                 try:
-                    # ОПТИМИЗАЦИЯ: быстрый таймаут 5 секунд (быстрее чем pump_bot)
-                    # Настройка прокси если требуется
-                    connector = None
-                    request_kwargs = {}
-                    if proxy:
-                        try:
-                            # Пробуем новый API (aiohttp 3.8+)
-                            connector = aiohttp.ProxyConnector.from_url(proxy)
-                            proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
-                            logger.debug(f"🌐 Фоновый мониторинг использует прокси через ProxyConnector: {proxy_info}")
-                        except AttributeError:
-                            # Для aiohttp 3.9.1 - прокси передается напрямую в get()
-                            connector = aiohttp.TCPConnector()
-                            request_kwargs['proxy'] = proxy
-                            proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
-                            logger.debug(f"🌐 Фоновый мониторинг использует прокси напрямую: {proxy_info}")
+                    # Пробуем новый API (aiohttp 3.8+)
+                    connector = aiohttp.ProxyConnector.from_url(proxy)
+                    proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
+                    logger.debug(f"🌐 Фоновый мониторинг использует прокси через ProxyConnector: {proxy_info}")
+                except AttributeError:
+                    # Для aiohttp 3.9.1 - прокси передается напрямую в get()
+                    connector = aiohttp.TCPConnector()
+                    request_kwargs['proxy'] = proxy
+                    proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
+                    logger.debug(f"🌐 Фоновый мониторинг использует прокси напрямую: {proxy_info}")
+            
+            async with aiohttp.ClientSession(connector=connector) as session:
+                while page_count < max_pages and current_url:
+                    page_count += 1
+                    logger.debug(f"📄 Фоновый мониторинг {token.symbol}: страница {page_count}/{max_pages}")
                     
-                    async with aiohttp.ClientSession(connector=connector) as session:
-                        async with session.get(url, headers=headers_with_cookie, timeout=5, **request_kwargs) as response:
+                    try:
+                        # ОПТИМИЗАЦИЯ: быстрый таймаут 5 секунд (быстрее чем pump_bot)
+                        async with session.get(current_url, headers=headers_with_cookie, timeout=5, **request_kwargs) as response:
                             if response.status == 200:
                                 html = await response.text()
                                 soup = BeautifulSoup(html, 'html.parser')
@@ -412,9 +402,13 @@ class BackgroundTokenMonitor:
                                     logger.error(f"🍪 Cookie: {cycle_cookie}")
                                     continue
                                 
-                                # Подсчитываем твиты
+                                # Подсчитываем твиты (исключаем элементы навигации)
                                 tweets = soup.find_all('div', class_='timeline-item')
-                                tweets_count += len(tweets)
+                                tweets = [t for t in tweets if not t.find('div', class_='show-more') and not t.find('div', class_='top-ref')]
+                                page_tweets_count = len(tweets)
+                                tweets_count += page_tweets_count
+                                
+                                logger.debug(f"📱 Фоновый мониторинг {token.symbol}: страница {page_count} содержит {page_tweets_count} твитов")
                                 
                                 # Парсим авторов если найдены твиты
                                 if tweets:
@@ -474,46 +468,70 @@ class BackgroundTokenMonitor:
                                 # УСПЕХ: сбрасываем счетчик ошибок
                                 self.consecutive_errors = max(0, self.consecutive_errors - 1)
                                 
-                            elif response.status == 429:
-                                logger.warning(f"🚫 ФОНОВЫЙ МОНИТОРИНГ: 429 ОШИБКА для {token.symbol}")
-                                logger.warning(f"📋 ПРИЧИНА: слишком много запросов к Nitter серверу")
-                                logger.warning(f"🔧 ДЕЙСТВИЕ: быстрый пропуск токена")
-                                self.consecutive_errors += 1
-                                continue
-                            else:
-                                logger.warning(f"⚠️ Статус {response.status} для {token.symbol}")
-                                self.consecutive_errors += 1
-                                continue
+                                # Ищем ссылку на следующую страницу
+                                if page_count < max_pages:
+                                    show_more = soup.find('div', class_='show-more')
+                                    if show_more:
+                                        link = show_more.find('a')
+                                        if link and 'href' in link.attrs:
+                                            next_page_url = link['href']
+                                            # Формируем полный URL
+                                            if next_page_url.startswith('?'):
+                                                current_url = f"https://nitter.tiekoetter.com/search{next_page_url}"
+                                            elif next_page_url.startswith('/search'):
+                                                current_url = f"https://nitter.tiekoetter.com{next_page_url}"
+                                            else:
+                                                current_url = next_page_url
+                                            logger.debug(f"🔗 Фоновый мониторинг {token.symbol}: следующая страница {current_url}")
+                                            # Пауза между страницами
+                                            await asyncio.sleep(0.3)
+                                        else:
+                                            current_url = None  # Нет больше страниц
+                                    else:
+                                        current_url = None  # Нет больше страниц
+                                else:
+                                    current_url = None  # Достигнут лимит страниц
                                 
-                except asyncio.TimeoutError:
-                    logger.warning(f"⏰ ФОНОВЫЙ МОНИТОРИНГ: ТАЙМАУТ для {token.symbol}")
-                    logger.warning(f"📋 ПРИЧИНА: медленный ответ Nitter сервера (>5 секунд)")
-                    logger.warning(f"🔧 ДЕЙСТВИЕ: пропускаем токен и переходим к следующему")
-                    self.consecutive_errors += 1
-                    continue
-                except Exception as e:
-                    # ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ОШИБОК В ФОНОВОМ МОНИТОРЕ
-                    error_type = type(e).__name__
-                    error_msg = str(e)
-                    
-                    if "ConnectionError" in error_type:
-                        logger.error(f"🔌 ФОНОВЫЙ МОНИТОРИНГ: ОШИБКА СОЕДИНЕНИЯ для {token.symbol}")
-                        logger.error(f"📋 ПРИЧИНА: сеть недоступна или Nitter сервер недоступен")
-                    elif "SSLError" in error_type:
-                        logger.error(f"🔒 ФОНОВЫЙ МОНИТОРИНГ: SSL ОШИБКА для {token.symbol}")
-                        logger.error(f"📋 ПРИЧИНА: проблемы с HTTPS сертификатом")
-                    elif "HTTPError" in error_type:
-                        logger.error(f"🌐 ФОНОВЫЙ МОНИТОРИНГ: HTTP ОШИБКА для {token.symbol}")
-                        logger.error(f"📋 ПРИЧИНА: ошибка HTTP протокола")
-                    else:
-                        logger.error(f"❓ ФОНОВЫЙ МОНИТОРИНГ: НЕИЗВЕСТНАЯ ОШИБКА для {token.symbol}")
-                        logger.error(f"📋 ТИП: {error_type}")
-                    
-                    logger.error(f"📄 ДЕТАЛИ: {error_msg}")
-                    logger.error(f"🔧 ДЕЙСТВИЕ: пропускаем токен и переходим к следующему")
-                    
-                    self.consecutive_errors += 1
-                    continue
+                            elif response.status == 429:
+                                logger.warning(f"🚫 ФОНОВЫЙ МОНИТОРИНГ: 429 ОШИБКА для {token.symbol} на странице {page_count}")
+                                logger.warning(f"📋 ПРИЧИНА: слишком много запросов к Nitter серверу")
+                                logger.warning(f"🔧 ДЕЙСТВИЕ: останавливаем пагинацию")
+                                self.consecutive_errors += 1
+                                break  # Прерываем цикл пагинации
+                            else:
+                                logger.warning(f"⚠️ Статус {response.status} для {token.symbol} на странице {page_count}")
+                                self.consecutive_errors += 1
+                                break  # Прерываем цикл пагинации
+                                
+                    except asyncio.TimeoutError:
+                        logger.warning(f"⏰ ФОНОВЫЙ МОНИТОРИНГ: ТАЙМАУТ для {token.symbol} на странице {page_count}")
+                        logger.warning(f"📋 ПРИЧИНА: медленный ответ Nitter сервера (>5 секунд)")
+                        logger.warning(f"🔧 ДЕЙСТВИЕ: останавливаем пагинацию")
+                        self.consecutive_errors += 1
+                        break  # Прерываем цикл пагинации
+                    except Exception as e:
+                        # ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ОШИБОК В ФОНОВОМ МОНИТОРЕ
+                        error_type = type(e).__name__
+                        error_msg = str(e)
+                        
+                        if "ConnectionError" in error_type:
+                            logger.error(f"🔌 ФОНОВЫЙ МОНИТОРИНГ: ОШИБКА СОЕДИНЕНИЯ для {token.symbol} на странице {page_count}")
+                            logger.error(f"📋 ПРИЧИНА: сеть недоступна или Nitter сервер недоступен")
+                        elif "SSLError" in error_type:
+                            logger.error(f"🔒 ФОНОВЫЙ МОНИТОРИНГ: SSL ОШИБКА для {token.symbol} на странице {page_count}")
+                            logger.error(f"📋 ПРИЧИНА: проблемы с HTTPS сертификатом")
+                        elif "HTTPError" in error_type:
+                            logger.error(f"🌐 ФОНОВЫЙ МОНИТОРИНГ: HTTP ОШИБКА для {token.symbol} на странице {page_count}")
+                            logger.error(f"📋 ПРИЧИНА: ошибка HTTP протокола")
+                        else:
+                            logger.error(f"❓ ФОНОВЫЙ МОНИТОРИНГ: НЕИЗВЕСТНАЯ ОШИБКА для {token.symbol} на странице {page_count}")
+                            logger.error(f"📋 ТИП: {error_type}")
+                        
+                        logger.error(f"📄 ДЕТАЛИ: {error_msg}")
+                        logger.error(f"🔧 ДЕЙСТВИЕ: останавливаем пагинацию")
+                        
+                        self.consecutive_errors += 1
+                        break  # Прерываем цикл пагинации
             
             # Убираем дубликаты авторов и проверяем черный список
             unique_authors = []
