@@ -592,16 +592,16 @@ class TelegramVipTelethon:
                 if not chat_config:
                     return
                 
-                # Фильтрация сообщений
-                if MESSAGE_FILTERS['ignore_bots']:
-                    sender = await message.get_sender()
-                    if sender and hasattr(sender, 'bot') and sender.bot:
-                        return
+                # Специальная обработка для ботов
+                is_bot_chat = chat_config.get('is_bot', False)
                 
-                if MESSAGE_FILTERS['ignore_forwards'] and message.forward:
+                # Упрощенная фильтрация - все VIP чаты обрабатывают сообщения от ботов
+                # Проверяем только пересланные сообщения (если отключено в настройках чата)
+                if not chat_config.get('monitor_forwards', True) and message.forward:
                     return
                 
-                # Проверяем возраст сообщения
+                # Для ботов пропускаем дополнительные проверки
+                # Проверяем возраст сообщения для всех типов чатов
                 max_age = self.monitor_settings['max_message_age']
                 if message.date:
                     # Приводим к UTC для корректного сравнения
@@ -660,13 +660,37 @@ class TelegramVipTelethon:
             # Проверяем доступ к чатам
             for chat_id in self.chat_ids:
                 try:
-                    entity = await self.client.get_entity(chat_id)
-                    if hasattr(entity, 'title'):
-                        logger.info(f"✅ Доступ к чату: {entity.title} ({chat_id})")
+                    # Получаем конфигурацию чата для проверки типа
+                    chat_config = self.get_chat_config(chat_id)
+                    
+                    # Специальная обработка для ботов
+                    if chat_config and chat_config.get('is_bot', False):
+                        try:
+                            # Для ботов пробуем получить через username или ID
+                            entity = await self.client.get_entity(chat_id)
+                            logger.info(f"🤖 Доступ к боту: {chat_id}")
+                        except Exception as bot_error:
+                            logger.warning(f"⚠️ Не удалось подключиться к боту {chat_id}: {bot_error}")
+                            logger.info(f"💡 Попробуйте начать диалог с ботом вручную: @{chat_id}")
+                            continue
                     else:
-                        logger.info(f"✅ Доступ к чату: {chat_id}")
+                        # Обычная обработка для групп/каналов
+                        entity = await self.client.get_entity(chat_id)
+                        if hasattr(entity, 'title'):
+                            logger.info(f"✅ Доступ к чату: {entity.title} ({chat_id})")
+                        else:
+                            logger.info(f"✅ Доступ к чату: {chat_id}")
+                            
                 except Exception as e:
                     logger.error(f"❌ Нет доступа к чату {chat_id}: {e}")
+                    
+                    # Для ботов даем дополнительные инструкции
+                    chat_config = self.get_chat_config(chat_id)
+                    if chat_config and chat_config.get('is_bot', False):
+                        logger.info(f"💡 Для работы с ботом {chat_id}:")
+                        logger.info(f"   1. Найдите бота в Telegram")
+                        logger.info(f"   2. Нажмите /start")
+                        logger.info(f"   3. Перезапустите мониторинг")
             
             # Отправляем уведомление о запуске
             if self.monitor_settings.get('send_startup_notification', True):
