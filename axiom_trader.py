@@ -174,7 +174,7 @@ class AxiomTrader:
 # Глобальный экземпляр трейдера
 axiom_trader = AxiomTrader()
 
-async def execute_axiom_purchase(contract_address, twitter_username, tweet_text, sol_amount=0.01, slippage=15, priority_fee=0.19):
+async def execute_axiom_purchase(contract_address, twitter_username, tweet_text, sol_amount=0.01, slippage=100, priority_fee=0.19):
     """Выполняет автоматическую покупку через Axiom"""
     try:
         start_time = time.time()
