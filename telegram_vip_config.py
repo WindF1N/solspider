@@ -28,10 +28,10 @@ VIP_TELEGRAM_CHATS = {
         'min_message_length': 10  # Минимальная длина сообщения для обработки
     },
     
-    'bot_8026010431': {
-        'chat_id': 8026010431,  # Telegram бот ID
+    'bot_MORIAPPBOT': {
+        'chat_id': 'MORIAPPBOT',  # Username бота без @
         'enabled': True,
-        'description': 'Telegram бот для поиска контрактов',
+        'description': 'MORI APP Bot - официальный бот для сигналов',
         'priority': 'VIP',  # VIP приоритет газа 0.19 SOL
         'auto_buy': True,  # Автоматическая покупка активирована
         'buy_amount_sol': 6.4,  # VIP автопокупка: 6.4 SOL (~$896 при $140/SOL)

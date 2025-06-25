@@ -282,7 +282,7 @@ class TelegramVipTelethon:
             # Выполняем реальную покупку через Axiom.trade
             result = await execute_axiom_purchase(
                 contract_address=contract,
-                twitter_username=f"TelegramVIP_Chat_{abs(chat_id)}",
+                twitter_username=f"TelegramVIP_Chat_{abs(chat_id) if isinstance(chat_id, (int, float)) else chat_id}",
                 tweet_text=f"Автопокупка из Telegram чата: {message_text[:100]}...",
                 sol_amount=amount_sol,
                 slippage=15,
@@ -700,7 +700,7 @@ class TelegramVipTelethon:
                 start_message = format_telegram_message(
                     'startup',
                     active_chats=len(active_chats),
-                    auto_buy_chats=', '.join([f"Chat_{abs(config['chat_id'])}" for config in auto_buy_chats.values()]),
+                    auto_buy_chats=', '.join([f"Chat_{abs(config['chat_id']) if isinstance(config['chat_id'], (int, float)) else config['chat_id']}" for config in auto_buy_chats.values()]),
                     timestamp=datetime.now().strftime('%H:%M:%S %d.%m.%Y')
                 )
                 
