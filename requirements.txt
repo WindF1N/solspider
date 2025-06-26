@@ -10,9 +10,7 @@ aiohttp==3.9.1
 solders==0.21.0
 base58==2.1.1
 websockets==15.0.1
-solders==0.21.0
-base58==2.1.1
-# Telegram VIP мониторинг
-
 # Telegram VIP мониторинг через Telethon
 telethon
+# Solana RPC мониторинг
+solana==0.30.2

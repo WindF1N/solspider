@@ -52,7 +52,7 @@ class BackgroundTokenMonitor:
     def __init__(self):
         self.db_manager = get_db_manager()
         self.running = False
-        self.max_token_age_minutes = 20  # Мониторим токены не старше 20 минут
+        self.max_token_age_minutes = 5  # Мониторим токены не старше 5 минут
         self.batch_delay = 0  # Задержка между батчами (адаптивная)
         self.consecutive_errors = 0  # Счетчик последовательных ошибок
         self.batch_mode = False  # Режим пакетной обработки
@@ -72,11 +72,11 @@ class BackgroundTokenMonitor:
         """Получает токены для мониторинга (продолжает мониторить даже найденные)"""
         session = self.db_manager.Session()
         try:
-            # Токены созданные не более 20 минут назад (убираем фильтр по twitter_contract_tweets)
+            # Токены созданные не более 5 минут назад (убираем фильтр по twitter_contract_tweets)
             cutoff_time = datetime.utcnow() - timedelta(minutes=self.max_token_age_minutes)
             
             tokens = session.query(Token).filter(
-                Token.created_at >= cutoff_time,           # Не старше 20 минут
+                Token.created_at >= cutoff_time,           # Не старше 5 минут
                 # УБРАЛИ ФИЛЬТР: Token.twitter_contract_tweets == 0,  # Теперь мониторим ВСЕ токены
                 Token.mint.isnot(None),                    # Есть адрес контракта
                 Token.symbol.isnot(None)                   # Есть символ
@@ -705,7 +705,7 @@ class BackgroundTokenMonitor:
                     try:
                         existing_author = session.query(TwitterAuthor).filter_by(username=username).first()
                         if existing_author:
-                            # Проверяем возраст данных (обновляем если старше 20 минут)
+                            # Проверяем возраст данных (обновляем если старше 5 минут)
                             time_since_update = datetime.utcnow() - existing_author.last_updated
                             minutes_since_update = time_since_update.total_seconds() / 60
                             

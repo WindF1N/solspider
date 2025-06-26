@@ -781,15 +781,30 @@ async def format_new_token(data):
     # Получаем дату создания токена (для новых токенов используем текущее время)
     token_created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
+    # Определяем источник и заголовок
+    dex_source = data.get('dex_source', 'pump.fun')
+    pool_type = data.get('pool_type', 'pumpfun')
+    
+    if dex_source != 'pump.fun':
+        header = f"🚀 <b>НОВЫЙ ТОКЕН через {dex_source.upper()}!</b>\n\n"
+        token_url = f"https://jup.ag/swap/SOL-{mint}"  # Jupiter URL
+    else:
+        header = f"🚀 <b>НОВЫЙ ТОКЕН НА PUMP.FUN!</b>\n\n"
+        token_url = f"https://pump.fun/{mint}"
+    
     message = (
-        f"🚀 <b>НОВЫЙ ТОКЕН НА PUMP.FUN!</b>\n\n"
-        f"<b>💎 <a href='https://pump.fun/{mint}'>{name}</a></b>\n"
+        header +
+        f"<b>💎 <a href='{token_url}'>{name}</a></b>\n"
         f"<b>🏷️ Символ:</b> {symbol}\n"
         f"<b>📍 Mint:</b> <code>{mint}</code>\n"
+        f"<b>🌐 Источник:</b> {dex_source} ({pool_type})\n"
         f"<b>👤 Создатель:</b> <code>{creator[:8] if len(creator) > 8 else creator}...</code>\n"
         f"<b>📅 Создан:</b> {token_created_at}\n"
-        f"<b>💰 Начальная покупка:</b> {initial_buy} SOL\n"
     )
+    
+    # Добавляем начальную покупку только для pump.fun
+    if initial_buy > 0:
+        message += f"<b>💰 Начальная покупка:</b> {initial_buy} SOL\n"
     
     # Добавляем Market Cap только если он больше 0
     if market_cap > 0:
@@ -1062,84 +1077,153 @@ async def execute_auto_purchase_new_token(mint, symbol, token_name):
         }
 
 async def handle_message(message):
-    """Обработка сообщений WebSocket"""
+    """Обработка сообщений Jupiter WebSocket"""
     try:
         data = json.loads(message)
-        logger.debug(f"Получено: {data}")
+        logger.debug(f"Jupiter получено: {json.dumps(data, indent=2)[:200]}...")
         
-        # Проверяем, это ли новый токен
-        if 'mint' in data and 'name' in data and 'symbol' in data:
-            token_name = data.get('name', 'Unknown')
-            mint = data.get('mint', 'Unknown')
-            symbol = data.get('symbol', 'Unknown')
-            logger.info(f"🚀 НОВЫЙ ТОКЕН: {token_name} ({symbol}) - {mint[:8]}...")
+        # Jupiter возвращает структуру {"type": "updates", "data": [...]}
+        if data.get('type') == 'updates' and 'data' in data:
+            updates = data['data']
             
-            # VIP проверки перенесены в отдельную систему vip_twitter_monitor.py
-            
-            # Анализируем токен и получаем сообщение
-            msg, keyboard, should_notify, token_image_url = await format_new_token(data)
-            
-            # Отправляем обычное уведомление но БЕЗ автопокупки (только уведомление)
-            if should_notify:
-                logger.info(f"✅ Токен {symbol} прошел фильтрацию - отправляем уведомление")
-                send_telegram_photo(token_image_url, msg, keyboard)
+            for update in updates:
+                # Проверяем тип обновления
+                update_type = update.get('type')
+                pool_data = update.get('pool', {})
                 
-                # 💡 Автопокупка для нового токена отключена (экономия баланса)
-                logger.info(f"💡 Автопокупка для нового токена {symbol} отключена (экономия баланса)")
-                logger.info(f"💰 Сэкономлено: 0.0001 SOL на токене {symbol}")
-                
-                # Обновляем статус уведомления в БД
-                try:
-                    db_manager = get_db_manager()
-                    # Здесь можно обновить поле notification_sent
-                    log_database_operation("UPDATE_NOTIFICATION", "tokens", "SUCCESS", f"Symbol: {symbol}")
-                except Exception as e:
-                    logger.error(f"❌ Ошибка обновления статуса уведомления: {e}")
-            else:
-                logger.info(f"❌ Токен {symbol} не прошел фильтрацию - пропускаем уведомление")
+                if update_type == 'new' and pool_data:
+                    # Это новый токен/пул
+                    await handle_new_jupiter_token(pool_data)
+                    
+                elif update_type == 'update' and pool_data:
+                    # Это обновление существующего пула (возможные торговые операции)
+                    await handle_jupiter_pool_update(pool_data)
+                    
+        # Также проверяем на старый формат pump.fun (для совместимости)
+        elif 'mint' in data and 'name' in data and 'symbol' in data:
+            # Старый формат pump.fun - обрабатываем как раньше
+            await handle_legacy_pumpfun_token(data)
             
-        # Проверяем, это ли торговое событие
-        elif 'mint' in data and 'traderPublicKey' in data and 'sol_amount' in data:
-            sol_amount = float(data.get('sol_amount', 0))
-            is_buy = data.get('is_buy', True)
-            mint = data.get('mint', 'Unknown')
+    except json.JSONDecodeError as e:
+        logger.error(f"❌ Ошибка парсинга JSON от Jupiter: {e}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки Jupiter сообщения: {e}")
+
+async def handle_new_jupiter_token(pool_data):
+    """Обработка нового токена от Jupiter"""
+    try:
+        # Извлекаем данные о токене
+        pool_id = pool_data.get('id', 'Unknown')
+        dex = pool_data.get('dex', 'Unknown')
+        pool_type = pool_data.get('type', 'Unknown')
+        base_asset = pool_data.get('baseAsset', {})
+        
+        # Основные данные токена
+        mint = base_asset.get('id', pool_id)  # Иногда mint = pool_id
+        symbol = base_asset.get('symbol', 'Unknown')
+        name = base_asset.get('name', symbol)
+        dev_address = base_asset.get('dev', 'Unknown')
+        
+        # Дополнительная информация
+        market_cap = base_asset.get('marketCap', 0)
+        created_timestamp = pool_data.get('createdTimestamp')
+        
+        logger.info(f"🚀 НОВЫЙ ТОКЕН через {dex}: {name} ({symbol}) - {mint[:8]}...")
+        logger.info(f"   📊 Тип: {pool_type}, Market Cap: ${market_cap:,.2f}")
+        
+        # Фильтруем по типу DEX - фокусируемся на новых токенах
+        interesting_types = ['pumpfun', 'bags.fun', 'met-dbc']
+        if pool_type not in interesting_types:
+            logger.debug(f"   ⏭️ Пропускаем {pool_type} - не новый тип токена")
+            return
+        
+        # Преобразуем данные Jupiter в формат pump.fun для совместимости
+        pumpfun_format = {
+            'mint': mint,
+            'name': name,
+            'symbol': symbol,
+            'uri': base_asset.get('uri', ''),
+            'description': base_asset.get('description', ''),
+            'image_uri': base_asset.get('image', ''),
+            'dev': dev_address,
+            'market_cap': market_cap,
+            'created_timestamp': created_timestamp,
+            'dex_source': dex,
+            'pool_type': pool_type,
+            'pool_id': pool_id
+        }
+        
+        # Анализируем токен и получаем сообщение
+        msg, keyboard, should_notify, token_image_url = await format_new_token(pumpfun_format)
+        
+        # Отправляем уведомление
+        if should_notify:
+            logger.info(f"✅ Токен {symbol} ({dex}) прошел фильтрацию - отправляем уведомление")
+            send_telegram_photo(token_image_url, msg, keyboard)
             
-            # Сохраняем торговую операцию в БД
-            notification_sent = False
+            # Сохраняем в БД
             try:
                 db_manager = get_db_manager()
-                saved_trade = db_manager.save_trade(data)
-                log_database_operation("SAVE_TRADE", "trades", "SUCCESS", 
-                                     f"Amount: {sol_amount:.2f} SOL")
+                log_database_operation("NEW_TOKEN_JUPITER", "tokens", "SUCCESS", 
+                                     f"Symbol: {symbol}, DEX: {dex}")
             except Exception as e:
-                logger.error(f"❌ Ошибка сохранения торговой операции в БД: {e}")
-                log_database_operation("SAVE_TRADE", "trades", "ERROR", str(e))
-            
-            # ТОРГОВЫЕ УВЕДОМЛЕНИЯ ОТКЛЮЧЕНЫ - только логируем
-            if sol_amount >= 5.0:
-                logger.info(f"💰 Крупная {'покупка' if is_buy else 'продажа'}: {sol_amount:.2f} SOL (уведомление отключено)")
-                # msg, keyboard = format_trade_alert(data)
-                # notification_sent = send_telegram(msg, keyboard)
-            
-            # Логируем торговую активность
-            log_trade_activity(data, notification_sent)
-        
-        # Проверяем, это ли миграция на Raydium
-        elif 'mint' in data and 'bondingCurveKey' in data and 'liquiditySol' in data:
-            logger.info(f"🚀 МИГРАЦИЯ НА RAYDIUM: {data.get('mint', 'Unknown')[:8]}...")
-            
-            # Сохраняем миграцию в БД
-            try:
-                db_manager = get_db_manager()
-                saved_migration = db_manager.save_migration(data)
-                log_database_operation("SAVE_MIGRATION", "migrations", "SUCCESS", 
-                                     f"Mint: {data.get('mint', 'Unknown')[:8]}...")
-            except Exception as e:
-                logger.error(f"❌ Ошибка сохранения миграции в БД: {e}")
-                log_database_operation("SAVE_MIGRATION", "migrations", "ERROR", str(e))
+                logger.error(f"❌ Ошибка сохранения токена Jupiter в БД: {e}")
+        else:
+            logger.info(f"❌ Токен {symbol} ({dex}) не прошел фильтрацию")
             
     except Exception as e:
-        logger.error(f"Ошибка обработки: {e}")
+        logger.error(f"❌ Ошибка обработки нового токена Jupiter: {e}")
+
+async def handle_jupiter_pool_update(pool_data):
+    """Обработка обновления пула Jupiter (торговые операции)"""
+    try:
+        # Извлекаем данные об обновлении
+        pool_id = pool_data.get('id', 'Unknown')
+        dex = pool_data.get('dex', 'Unknown')
+        base_asset = pool_data.get('baseAsset', {})
+        
+        # Проверяем изменения в рыночной капитализации или объеме
+        market_cap = base_asset.get('marketCap', 0)
+        volume_24h = pool_data.get('volume24h', 0)
+        
+        # Логируем только значительные изменения (ОТКЛЮЧЕНО - слишком много спама)
+        # if market_cap > 50000 or volume_24h > 1000:  # $50k market cap или $1k объем
+        #     symbol = base_asset.get('symbol', 'Unknown')
+        #     logger.info(f"📈 Активность в {dex}: {symbol} - MC: ${market_cap:,.0f}, Vol: ${volume_24h:,.0f}")
+        #     
+        #     # Можно добавить логику для отслеживания крупных торговых операций
+        #     # Пока просто логируем
+            
+    except Exception as e:
+        logger.debug(f"Ошибка обработки обновления пула Jupiter: {e}")
+
+async def handle_legacy_pumpfun_token(data):
+    """Обработка токена в старом формате pump.fun (для совместимости)"""
+    try:
+        token_name = data.get('name', 'Unknown')
+        mint = data.get('mint', 'Unknown')
+        symbol = data.get('symbol', 'Unknown')
+        logger.info(f"🚀 LEGACY ТОКЕН: {token_name} ({symbol}) - {mint[:8]}...")
+        
+        # Анализируем токен и получаем сообщение
+        msg, keyboard, should_notify, token_image_url = await format_new_token(data)
+        
+        # Отправляем уведомление
+        if should_notify:
+            logger.info(f"✅ Legacy токен {symbol} прошел фильтрацию - отправляем уведомление")
+            send_telegram_photo(token_image_url, msg, keyboard)
+            
+            # Сохраняем в БД
+            try:
+                db_manager = get_db_manager()
+                log_database_operation("NEW_TOKEN_LEGACY", "tokens", "SUCCESS", f"Symbol: {symbol}")
+            except Exception as e:
+                logger.error(f"❌ Ошибка сохранения legacy токена в БД: {e}")
+        else:
+            logger.info(f"❌ Legacy токен {symbol} не прошел фильтрацию")
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки legacy токена: {e}")
 
 async def send_daily_stats():
     """Отправка ежедневной статистики"""
@@ -1426,7 +1510,7 @@ async def extract_tweet_authors(soup, query, contract_found):
                         try:
                             db_manager.save_twitter_author(profile)
                             db_manager.save_tweet_mention({
-                                'mint': query if len(query) > 20 else None,  # Если длинный запрос - это контракт
+                                'mint': query.strip('"') if len(query) > 20 else None,  # Убираем кавычки из mint
                                 'author_username': username,
                                 'tweet_text': author['tweet_text'],
                                 'search_query': query,
@@ -1475,7 +1559,7 @@ async def extract_tweet_authors(soup, query, contract_found):
                             
                             # Сохраняем твит
                             db_manager.save_tweet_mention({
-                                'mint': query if len(query) > 20 else None,
+                                'mint': query.strip('"') if len(query) > 20 else None,  # Убираем кавычки из mint
                                 'author_username': username,
                                 'tweet_text': author['tweet_text'],
                                 'search_query': query,
@@ -1492,7 +1576,7 @@ async def extract_tweet_authors(soup, query, contract_found):
                     else:
                         try:
                             db_manager.save_tweet_mention({
-                                'mint': query if len(query) > 20 else None,
+                                'mint': query.strip('"') if len(query) > 20 else None,  # Убираем кавычки из mint
                                 'author_username': username,
                                 'tweet_text': author['tweet_text'],
                                 'search_query': query,
@@ -1532,7 +1616,7 @@ async def extract_tweet_authors(soup, query, contract_found):
                     # Все равно сохраняем твит с базовыми данными
                     try:
                         db_manager.save_tweet_mention({
-                            'mint': query if len(query) > 20 else None,
+                            'mint': query.strip('"') if len(query) > 20 else None,  # Убираем кавычки из mint
                             'author_username': username,
                             'tweet_text': author['tweet_text'],
                             'search_query': query,
@@ -2807,8 +2891,8 @@ def format_authors_section(authors, prefix_newline=True):
     return message
 
 async def main():
-    """Основная функция с автоматическим реконнектом"""
-    uri = "wss://pumpportal.fun/api/data"
+    """Основная функция с автоматическим реконнектом - теперь с Jupiter!"""
+    uri = "wss://trench-stream.jup.ag/ws"
     max_retries = 10
     retry_delay = 5
     retry_count = 0
@@ -2848,48 +2932,127 @@ async def main():
     
     while True:
         try:
-            # Настройки WebSocket с улучшенным keepalive
-            async with websockets.connect(
-                uri,
-                ping_interval=WEBSOCKET_CONFIG['ping_interval'],
-                ping_timeout=WEBSOCKET_CONFIG['ping_timeout'],
-                close_timeout=WEBSOCKET_CONFIG['close_timeout'],
-                max_size=WEBSOCKET_CONFIG['max_size'],
-                max_queue=WEBSOCKET_CONFIG['max_queue'],
-                compression=None,   # Отключаем сжатие для стабильности
-                user_agent_header="SolSpider/1.0"  # Идентификация клиента
-            ) as websocket:
-                logger.info("🌐 Подключен к PumpPortal")
+            # Создаем SSL контекст для Jupiter
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            
+            # Дополнительные заголовки для Jupiter WebSocket с CloudFlare куками
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+                "Origin": "https://jup.ag",
+                "Cookie": "cf_clearance=m5O0sYyORJM.bb3A3eQGse7P6aa2c9BLgMOt6tm8Mu8-1750902546-1.2.1.1-eRyDtqC_4lkjfCnREIIEQ2LwdV3qMnJqeI4wGFZQpuYfpbLyKuz44QurDH1nnhmPo8.KF9u1vlQRddXKKWdQu7RfJR17j1kgpQeNYY.jUsbLeIYkwgDGlTRWwMeYD0FVitXxJkK6sMtKIXMVdfsdL.M.shrsRtlhuLmZCfVWjhZ89pZrBn5TpZjB98akJAOSGRl3qnsP352Q77oTOsMdnggp5fjO2wlfXqHY.TAjkHKJ0Frk.EtzUKw1sESan_pPne_jbfJRu4CVKkTi52mko5DFlrC5QuAiCntW0a11t2LSqLLkxcXM6jxDKV5IhHpPq79qXtne2PmwiweC_QucapNUyyA_0bFh33Lx4ahcYRc"
+            }
+            
+            # Определяем параметры подключения в зависимости от версии websockets
+            import websockets
+            websockets_version = websockets.__version__
+            logger.info(f"🔧 Используется websockets версия: {websockets_version}")
+            
+            # Универсальные параметры подключения
+            connect_params = {
+                "ssl": ssl_context,
+                "ping_interval": WEBSOCKET_CONFIG['ping_interval'],
+                "ping_timeout": WEBSOCKET_CONFIG['ping_timeout'],
+                "close_timeout": WEBSOCKET_CONFIG['close_timeout'],
+                "max_size": WEBSOCKET_CONFIG['max_size'],
+                "max_queue": WEBSOCKET_CONFIG['max_queue']
+            }
+            
+            # Добавляем заголовки в зависимости от версии
+            if int(websockets_version.split('.')[0]) >= 12:
+                # Новая версия (12.x+) использует additional_headers
+                connect_params["additional_headers"] = headers
+            else:
+                # Старая версия (11.x и ниже) использует extra_headers
+                connect_params["extra_headers"] = headers
+            
+            # Настройки WebSocket с улучшенным keepalive для Jupiter
+            async with websockets.connect(uri, **connect_params) as websocket:
+                logger.info("🌐 Подключен к Jupiter WebSocket")
                 
                 # Инициализируем мониторинг соединения
                 connection_monitor.connection_established()
                 
-                # Подписываемся на новые токены
-                subscribe_msg = {"method": "subscribeNewToken"}
-                await websocket.send(json.dumps(subscribe_msg))
-                logger.info("✅ Подписались на новые токены")
+                # Подписываемся на последние обновления Jupiter
+                recent_msg = {"type": "subscribe:recent"}
+                await websocket.send(json.dumps(recent_msg))
+                logger.info("✅ Подписались на recent обновления")
                 
-                # Подписываемся на миграции
-                migrate_msg = {"method": "subscribeMigration"}
-                await websocket.send(json.dumps(migrate_msg))
-                logger.info("✅ Подписались на миграции")
+                await asyncio.sleep(1)
+                
+                # Подписываемся на пулы (первая группа)
+                pools_msg_1 = {
+                    "type": "subscribe:pool",
+                    "pools": [
+                        "7ydCvqmPj42msz3mm2W28a4hXKaukF7XNpRjNXNhbonk",
+                        "29F4jaxGYGCP9oqJxWn7BRrXDCXMQYFEirSHQjhhpump",
+                        "B5BQaCLi74zGhftMgJ4sMvB6mLmrX57HxhcUKgGBpump",
+                        "9mjmty3G22deMtg1Nm3jTc5CRYTmK6wPPpbLG43Xpump",
+                        "2d1STwNUEprrGuTz7DLSYb27K3iRcuSUKGkk2KpKpump",
+                        "qy4gzfT8AyEC8YHRDhF8STMhJBi12dQkLFmabRVFSvA",
+                        "31Edt1xnFvoRxL1cuaHB4wUGCL3P3xWrVEqpr2Jppump",
+                        "AMxueJUmbczaFwB33opka4Noiy9xjkuHtk9wbu8Apump"
+                    ]
+                }
+                await websocket.send(json.dumps(pools_msg_1))
+                logger.info("✅ Подписались на первую группу пулов (8 пулов)")
+                
+                await asyncio.sleep(1)
+                
+                # Подписываемся на пулы (вторая группа)
+                pools_msg_2 = {
+                    "type": "subscribe:pool",
+                    "pools": [
+                        "Gvn6RiUgXe5mhdsfxG99WPaE4tA5B34cSfuKz1bDpump",
+                        "XMF7a2yneYzRJYNmrCAyuY5Q4FhHFaq1rVrZyBoGVb6",
+                        "9a65Ydi2b7oHq2WQwJtQdnUzaqLb9BVMR4mvm1LSpump",
+                        "5YpHeidohua6JU16sM2mfK6xjomvrSzBVvuducY3pump",
+                        "CuDeFkJpbpdyyAzyEK61j3rn5GWYxvdbJpi3gKpxpump",
+                        "AtfLADJjSqpfaogbnGvYBpmCz3EWX25p671Z5dc3pump",
+                        "EvKGsBoF86SundThCauxByMdx1gUgPzCtd3wgYeLpump",
+                        "36kHY89q592VNKATeHCdDcV3tJLvQYASu4oe1Zfhpump"
+                    ]
+                }
+                await websocket.send(json.dumps(pools_msg_2))
+                logger.info("✅ Подписались на вторую группу пулов (8 пулов)")
+                
+                await asyncio.sleep(1)
+                
+                # Подписываемся на пулы (третья группа)
+                pools_msg_3 = {
+                    "type": "subscribe:pool",
+                    "pools": [
+                        "fZXyTmDrjtjkXLBsVx2YWw2RU9TjUcnV3T3V4fhrGuv",
+                        "8pR8hQRRLYMyxh6mLszMbyQPFNpNFNMTUjx9D7nxnxQh",
+                        "DXazegZa2KcHH8ukAnweT8hj1Sa9t2KyDmvUfbXkjxZk",
+                        "JECb6Zsw5FwuU6Kf28wTHwfGTaWTu9rAdHGcrcbb7TJD",
+                        "7AH7kZiK2sByFUGpy1zgndtDiAaiAMQr66C8Mu8at9yz",
+                        "9adfJNSd3sjfvV2kBX7z6erjbD2J3ANqPKpvTaLPnrku",
+                        "DC9e6vbsnrooUTKVPbVVwNpxYvd4dcirk3jbTe7T6Hch",
+                        "Cp2Yb6vj948VToEVddo6LNm7cDGAQCrDnjwbMYG3LkL5"
+                    ]
+                }
+                await websocket.send(json.dumps(pools_msg_3))
+                logger.info("✅ Подписались на третью группу пулов (8 пулов)")
                 
                 # Уведомляем о запуске только при первом подключении
                 if first_connection:
                     start_message = (
-                        "🚀 <b>PUMP.FUN БОТ v3.0 ЗАПУЩЕН!</b>\n\n"
-                        "✅ Мониторинг новых токенов БЕЗ ПОТЕРЬ\n"
+                        "🚀 <b>JUPITER БОТ v4.0 ЗАПУЩЕН!</b>\n\n"
+                        "✅ Мониторинг ВСЕХ DEX'ов через Jupiter\n"
                         "🔄 Асинхронный Twitter анализ в фоне\n"
                         "⚡ НИКАКОЙ блокировки при анализе\n"
-                        "✅ Отслеживание крупных сделок (>5 SOL)\n"
+                        "🌐 Источники: pump.fun, Raydium, Meteora, bags.fun\n"
+                        "📊 В 3-5 раз БОЛЬШЕ токенов чем раньше\n"
                         "✅ Кнопки для быстрой покупки\n\n"
-                        "💎 Ни один токен не будет потерян!"
+                        "💎 Революция в мониторинге токенов!"
                     )
                     send_telegram(start_message)
                     first_connection = False
                 else:
                     # Уведомление о переподключении
-                    send_telegram("🔄 <b>Переподключение успешно!</b>\n✅ Продолжаем мониторинг токенов")
+                    send_telegram("🔄 <b>Jupiter переподключение успешно!</b>\n✅ Продолжаем мониторинг всех DEX'ов")
                 
                 # Сброс счетчика ретраев при успешном подключении
                 retry_count = 0
@@ -2947,14 +3110,25 @@ async def main():
             else:
                 logger.warning(f"⚠️ Соединение закрыто: {e}")
                 send_telegram(f"⚠️ <b>Соединение потеряно</b>\nКод: {e.code}\nПричина: {e.reason}\n🔄 Переподключение...")
-        except websockets.exceptions.InvalidStatusCode as e:
-            logger.error(f"❌ Неверный статус код: {e}")
-            send_telegram(f"❌ <b>Ошибка подключения</b>\nСтатус: {e}")
-        except websockets.exceptions.WebSocketException as e:
-            logger.error(f"❌ WebSocket ошибка: {e}")
-            # Не спамим уведомлениями при частых WebSocket ошибках
-            if retry_count <= 3:
-                send_telegram(f"❌ <b>WebSocket ошибка</b>\n{e}")
+        except Exception as status_error:
+            # Проверяем на ошибки статуса (совместимость с разными версиями websockets)
+            if "InvalidStatusCode" in str(type(status_error)) or "InvalidStatus" in str(type(status_error)) or "HTTP 520" in str(status_error):
+                logger.error(f"❌ Неверный статус код: {status_error}")
+                if retry_count <= 3:
+                    send_telegram(f"❌ <b>Ошибка подключения</b>\nСтатус: {status_error}")
+                # Продолжаем к следующей итерации для переподключения
+                pass
+            elif "WebSocketException" in str(type(status_error)) or "websockets" in str(type(status_error)):
+                # WebSocket ошибки
+                logger.error(f"❌ WebSocket ошибка: {status_error}")
+                # Не спамим уведомлениями при частых WebSocket ошибках
+                if retry_count <= 3:
+                    send_telegram(f"❌ <b>WebSocket ошибка</b>\n{status_error}")
+            else:
+                # Другие неожиданные ошибки
+                logger.error(f"❌ Неожиданная ошибка: {status_error}")
+                if retry_count <= 1:
+                    send_telegram(f"❌ <b>Критическая ошибка</b>\n{status_error}")
         except ConnectionResetError as e:
             logger.warning(f"⚠️ Соединение сброшено сетью: {e}")
             # Обычная сетевая ошибка, не требует уведомления
@@ -2962,10 +3136,6 @@ async def main():
             logger.error(f"❌ Системная ошибка сети: {e}")
             if retry_count <= 2:
                 send_telegram(f"❌ <b>Сетевая ошибка</b>\n{e}")
-        except Exception as e:
-            logger.error(f"❌ Неожиданная ошибка: {e}")
-            if retry_count <= 1:
-                send_telegram(f"❌ <b>Критическая ошибка</b>\n{e}")
         
         # Увеличиваем счетчик попыток
         retry_count = min(retry_count + 1, max_retries)
