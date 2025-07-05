@@ -8,8 +8,9 @@ import logging
 import time
 from datetime import datetime, timedelta
 from database import get_db_manager, Token
-from pump_bot import search_single_query, send_telegram, send_telegram_photo, extract_tweet_authors, TWITTER_AUTHOR_BLACKLIST, analyze_author_contract_diversity, analyze_author_page_contracts, is_spam_bot_tweet, should_notify_based_on_authors_unified, filter_authors_for_display, format_authors_section, was_twitter_notification_sent_recently, mark_twitter_notification_sent
-from cookie_rotation import background_proxy_cookie_rotator, background_cookie_rotator
+from pump_bot import search_single_query, send_telegram, send_telegram_general, send_telegram_photo, extract_tweet_authors, TWITTER_AUTHOR_BLACKLIST, analyze_author_contract_diversity, analyze_author_page_contracts, is_spam_bot_tweet, should_notify_based_on_authors_unified, filter_authors_for_display, format_authors_section, was_twitter_notification_sent_recently, mark_twitter_notification_sent
+# Старая система cookie_rotation удалена - используем только dynamic_cookie_rotation
+from dynamic_cookie_rotation import get_background_proxy_cookie_async
 from logger_config import setup_logging
 from twitter_profile_parser import TwitterProfileParser
 import re
@@ -95,11 +96,11 @@ class BackgroundTokenMonitor:
         finally:
             session.close()
     
-    async def check_contract_mentions(self, token, proxy, cycle_cookie):
+    async def check_contract_mentions(self, token, proxy, cycle_cookie, session=None):
         """Проверяет появление НОВЫХ упоминаний контракта в Twitter с парсингом авторов"""
         try:
             # Получаем данные с авторами
-            tweets_count, engagement, authors = await self.get_contract_mentions_with_authors(token, proxy, cycle_cookie)
+            tweets_count, engagement, authors = await self.get_contract_mentions_with_authors(token, proxy, cycle_cookie, session)
             
             # Проверяем если возвращается 0,0 - возможно блокировка
             if tweets_count == 0 and engagement == 0:
@@ -135,7 +136,14 @@ class BackgroundTokenMonitor:
                                 if db_token.notification_sent:
                                     logger.info(f"🚫 Фоновое уведомление для {token.symbol} пропущено - уже было отложенное уведомление от основного бота")
                                 else:
-                                    await self.send_contract_alert(token, tweets_count, engagement, authors, is_first_discovery=True)
+                                    # В режиме шилинга (CONTRACT_SEARCH_DISABLED=true) уведомления о контрактах отключены
+                                    import os
+                                    contract_search_disabled = os.getenv('CONTRACT_SEARCH_DISABLED', 'false').lower() == 'true'
+                                    
+                                    if contract_search_disabled:
+                                        logger.info(f"🎯 {token.symbol}: фоновое уведомление о контракте пропущено - включен режим шилинга (CONTRACT_SEARCH_DISABLED=true)")
+                                    else:
+                                        await self.send_contract_alert(token, tweets_count, engagement, authors, is_first_discovery=True)
                                     
                                     # ❌ АВТОПОКУПКА TWITTER ТОКЕНОВ ОТКЛЮЧЕНА для экономии баланса  
                                     logger.info(f"💡 Автопокупка для Twitter токена {token.symbol} отключена (экономия баланса)")
@@ -327,13 +335,26 @@ class BackgroundTokenMonitor:
             logger.error(f"❌ Ошибка отправки уведомления: {e}")
     
     async def monitor_cycle(self):
-        """Один цикл мониторинга"""
+        """Один цикл мониторинга с динамическими куки"""
+        import aiohttp
+        
+        # Создаем сессию для всего цикла
+        session = aiohttp.ClientSession()
+        
         try:
+            # В режиме шилинга (CONTRACT_SEARCH_DISABLED=true) фоновый мониторинг контрактов отключен
+            import os
+            contract_search_disabled = os.getenv('CONTRACT_SEARCH_DISABLED', 'false').lower() == 'true'
+            
+            if contract_search_disabled:
+                logger.debug("🎯 Фоновый мониторинг контрактов пропущен - режим шилинга активен (CONTRACT_SEARCH_DISABLED=true)")
+                return
+            
             start_time = time.time()
             
-            # Получаем связку прокси+cookie для всего цикла
-            proxy, cycle_cookie = background_proxy_cookie_rotator.get_cycle_proxy_cookie()
-            logger.info("🔄 Начинаем цикл фонового мониторинга с новой связкой прокси+cookie...")
+            # Получаем связку прокси+cookie для всего цикла с новой динамической системой
+            proxy, cycle_cookie = await get_background_proxy_cookie_async(session)
+            logger.info("🔄 [DYNAMIC] Начинаем цикл фонового мониторинга с динамической связкой прокси+cookie...")
             
             # Получаем токены для проверки
             tokens = self.get_tokens_to_monitor()
@@ -362,7 +383,7 @@ class BackgroundTokenMonitor:
                 logger.info(f"🔍 Проверяем батч {i//batch_size + 1}: токены {i+1}-{min(i+batch_size, len(tokens))}")
                 
                 # Проверяем батч параллельно с одной связкой прокси+cookie для всего цикла
-                tasks = [self.check_contract_mentions(token, proxy, cycle_cookie) for token in batch]
+                tasks = [self.check_contract_mentions(token, proxy, cycle_cookie, session) for token in batch]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 
                 # Подсчитываем найденные контракты и ошибки
@@ -400,6 +421,9 @@ class BackgroundTokenMonitor:
         except Exception as e:
             logger.error(f"❌ Ошибка в цикле мониторинга: {e}")
             self.consecutive_errors += 1
+        finally:
+            # Закрываем сессию
+            await session.close()
     
     async def emergency_clear_monitor_overload(self):
         """Экстренная очистка при перегрузке фонового мониторинга"""
@@ -432,20 +456,37 @@ class BackgroundTokenMonitor:
     async def start_monitoring(self):
         """Запускает непрерывный фоновый мониторинг"""
         self.running = True
-        logger.info(f"🚀 Запуск непрерывного фонового мониторинга")
         
-        # Отправляем уведомление о запуске
-        start_message = (
-            f"🤖 <b>НЕПРЕРЫВНЫЙ ФОНОВЫЙ МОНИТОРИНГ ЗАПУЩЕН!</b>\n\n"
-            f"🔍 <b>Отслеживаем:</b> все упоминания адресов контрактов в Twitter\n"
-            f"⚡ <b>Режим:</b> непрерывный мониторинг каждого нового твита\n"
-            f"📊 <b>Мониторим токены:</b> не старше {self.max_token_age_minutes} минут\n"
-            f"🔄 <b>Ротация:</b> 10 cookies для фонового мониторинга\n"
-            f"🚨 <b>Уведомления:</b> каждый новый уникальный твит с контрактом\n"
-            f"🎯 <b>Цель:</b> полный охват растущего интереса\n\n"
-            f"🚀 <b>Готов ловить каждый момент роста!</b>"
-        )
-        send_telegram(start_message)
+        # Проверяем режим работы
+        import os
+        contract_search_disabled = os.getenv('CONTRACT_SEARCH_DISABLED', 'false').lower() == 'true'
+        
+        if contract_search_disabled:
+            logger.info(f"🎯 Фоновый мониторинг в режиме шилинга - поиск контрактов отключен")
+            # Отправляем уведомление о режиме шилинга
+            start_message = (
+                f"🎯 <b>ФОНОВЫЙ МОНИТОРИНГ В РЕЖИМЕ ШИЛИНГА!</b>\n\n"
+                f"⚡ <b>Статус:</b> поиск контрактов в Twitter ОТКЛЮЧЕН\n"
+                f"🚫 <b>Режим:</b> CONTRACT_SEARCH_DISABLED=true\n"
+                f"🎯 <b>Фокус:</b> только обнаружение дубликатов токенов\n"
+                f"⚡ <b>Производительность:</b> максимальная скорость обработки\n\n"
+                f"🚀 <b>Система сфокусирована на шилинге!</b>"
+            )
+        else:
+            logger.info(f"🚀 Запуск непрерывного фонового мониторинга")
+            # Отправляем стандартное уведомление
+            start_message = (
+                f"🤖 <b>НЕПРЕРЫВНЫЙ ФОНОВЫЙ МОНИТОРИНГ ЗАПУЩЕН!</b>\n\n"
+                f"🔍 <b>Отслеживаем:</b> все упоминания адресов контрактов в Twitter\n"
+                f"⚡ <b>Режим:</b> непрерывный мониторинг каждого нового твита\n"
+                f"📊 <b>Мониторим токены:</b> не старше {self.max_token_age_minutes} минут\n"
+                f"🔄 <b>Ротация:</b> 10 cookies для фонового мониторинга\n"
+                f"🚨 <b>Уведомления:</b> каждый новый уникальный твит с контрактом\n"
+                f"🎯 <b>Цель:</b> полный охват растущего интереса\n\n"
+                f"🚀 <b>Готов ловить каждый момент роста!</b>"
+            )
+        
+        send_telegram_general(start_message)
         
         monitor_cycle_count = 0
         while self.running:
@@ -471,7 +512,7 @@ class BackgroundTokenMonitor:
         self.running = False
         logger.info("🛑 Остановка фонового мониторинга...")
 
-    async def get_contract_mentions_with_authors(self, token, proxy, cycle_cookie):
+    async def get_contract_mentions_with_authors(self, token, proxy, cycle_cookie, session=None):
         """Получает HTML ответы для парсинга авторов С БЫСТРЫМИ ТАЙМАУТАМИ и пагинацией"""
         try:
             # Убираем параметр since - ищем по всем твитам без временных ограничений
@@ -508,26 +549,80 @@ class BackgroundTokenMonitor:
                     proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
                     logger.debug(f"🌐 Фоновый мониторинг использует прокси напрямую: {proxy_info}")
             
-            async with aiohttp.ClientSession(connector=connector) as session:
+            # Используем переданную сессию или создаем новую
+            if session:
+                current_session = session
+                session_created_locally = False
+            else:
+                current_session = aiohttp.ClientSession(connector=connector)
+                session_created_locally = True
+            
+            try:
                 while page_count < max_pages and current_url:
                     page_count += 1
                     logger.debug(f"📄 Фоновый мониторинг {token.symbol}: страница {page_count}/{max_pages}")
                     
                     try:
                         # ОПТИМИЗАЦИЯ: быстрый таймаут 5 секунд (быстрее чем pump_bot)
-                        async with session.get(current_url, headers=headers_with_cookie, timeout=5, **request_kwargs) as response:
+                        async with current_session.get(current_url, headers=headers_with_cookie, timeout=5, **request_kwargs) as response:
                             if response.status == 200:
                                 html = await response.text()
                                 soup = BeautifulSoup(html, 'html.parser')
                                 
-                                # Проверяем на блокировку
+                                # Проверяем на блокировку (современный Anubis challenge)
                                 title = soup.find('title')
-                                if title and 'Making sure you\'re not a bot!' in title.get_text():
-                                    logger.error(f"🤖 ФОНОВЫЙ МОНИТОРИНГ: БЛОКИРОВКА для {token.symbol}")
-                                    logger.error(f"📋 ПРИЧИНА: защита Nitter от ботов ('Making sure you're not a bot!')")
-                                    logger.error(f"🔧 ДЕЙСТВИЕ: требуется обновление cookie")
-                                    logger.error(f"🍪 Cookie: {cycle_cookie}")
-                                    continue
+                                has_challenge_text = title and 'Making sure you\'re not a bot!' in title.get_text()
+                                has_anubis_script = 'id="anubis_challenge"' in html
+                                
+                                if has_challenge_text or has_anubis_script:
+                                    logger.warning(f"🤖 ФОНОВЫЙ МОНИТОРИНГ: Обнаружен Anubis challenge для {token.symbol}, пытаемся решить...")
+                                    
+                                    # Попытка автоматического решения challenge
+                                    try:
+                                        from anubis_handler import handle_anubis_challenge_for_session
+                                        
+                                        new_cookies = await handle_anubis_challenge_for_session(
+                                            current_session, 
+                                            str(response.url), 
+                                            html
+                                        )
+                                        
+                                        if new_cookies:
+                                            # Обновляем куки в заголовках
+                                            updated_cookie = "; ".join([f"{name}={value}" for name, value in new_cookies.items()])
+                                            headers_with_cookie['Cookie'] = updated_cookie
+                                            
+                                            logger.info(f"✅ ФОНОВЫЙ: Challenge решен для {token.symbol}, повторяем запрос")
+                                            
+                                            # Повторяем запрос с новыми куки
+                                            async with current_session.get(current_url, headers=headers_with_cookie, timeout=5, **request_kwargs) as retry_response:
+                                                if retry_response.status == 200:
+                                                    retry_html = await retry_response.text()
+                                                    retry_soup = BeautifulSoup(retry_html, 'html.parser')
+                                                    
+                                                    # Проверяем что challenge больше нет
+                                                    retry_title = retry_soup.find('title')
+                                                    retry_has_challenge_text = retry_title and 'Making sure you\'re not a bot!' in retry_title.get_text()
+                                                    retry_has_anubis_script = 'id="anubis_challenge"' in retry_html
+                                                    
+                                                    if retry_has_challenge_text or retry_has_anubis_script:
+                                                        logger.error(f"❌ ФОНОВЫЙ: Challenge не решен для {token.symbol}")
+                                                        continue
+                                                    
+                                                    logger.info(f"🎉 ФОНОВЫЙ: Страница доступна для {token.symbol} после решения challenge")
+                                                    # Продолжаем с retry_soup вместо soup
+                                                    soup = retry_soup
+                                                    html = retry_html
+                                                else:
+                                                    logger.error(f"❌ ФОНОВЫЙ: Ошибка повторного запроса для {token.symbol}: {retry_response.status}")
+                                                    continue
+                                        else:
+                                            logger.error(f"❌ ФОНОВЫЙ: Не удалось решить challenge для {token.symbol}")
+                                            continue
+                                            
+                                    except Exception as challenge_error:
+                                        logger.error(f"❌ ФОНОВЫЙ: Ошибка решения challenge для {token.symbol}: {challenge_error}")
+                                        continue
                                 
                                 # Подсчитываем твиты (исключаем элементы навигации)
                                 tweets = soup.find_all('div', class_='timeline-item')
@@ -662,6 +757,14 @@ class BackgroundTokenMonitor:
                         
                         self.consecutive_errors += 1
                         break  # Прерываем цикл пагинации
+            except Exception as e:
+                # Обрабатываем ошибки внешнего try блока
+                logger.error(f"❌ Фоновый мониторинг: ошибка сессии для {token.symbol}: {e}")
+                return [], 0  # Возвращаем пустой результат
+            finally:
+                # Закрываем сессию если она была создана локально
+                if session_created_locally and current_session:
+                    await current_session.close()
             
             # Убираем дубликаты авторов и проверяем черный список
             unique_authors = []

@@ -9,7 +9,8 @@ import asyncio
 from bs4 import BeautifulSoup
 from datetime import datetime
 import logging
-from cookie_rotation import background_proxy_cookie_rotator
+from dynamic_cookie_rotation import get_background_proxy_cookie_async
+from anubis_handler import handle_anubis_challenge_for_session
 
 logger = logging.getLogger(__name__)
 
@@ -18,11 +19,7 @@ class TwitterProfileParser:
     
     def __init__(self):
         self.session = None
-        try:
-            self.cookie_rotator = background_proxy_cookie_rotator
-        except Exception as e:
-            logger.error(f"❌ Ошибка инициализации cookie_rotator: {e}")
-            self.cookie_rotator = None
+        # Убираем старый cookie_rotator - используем динамическую систему с Anubis handler
         
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -228,22 +225,24 @@ class TwitterProfileParser:
             return None
     
     async def get_profile(self, username):
-        """Получает данные профиля пользователя"""
+        """Получает данные профиля пользователя с динамической системой куки и Anubis handler"""
         try:
             # Убираем @ если есть
             username = username.replace('@', '')
             
-            # Получаем актуальные cookies
-            if not self.cookie_rotator:
-                logger.error(f"❌ Cookie rotator не инициализирован для @{username}")
+            # Проверяем что session инициализирована
+            if not self.session:
+                logger.error(f"❌ Session не инициализирована для @{username}")
                 return None
-                
-            cookies_string = self.cookie_rotator.get_next_cookie()
             
-            # Проверяем что cookies_string не None
+            # Получаем динамические cookies через новую систему
+            proxy, cookies_string = await get_background_proxy_cookie_async(self.session)
+            
             if not cookies_string:
                 logger.error(f"❌ Не удалось получить cookies для @{username}")
                 return None
+                
+            logger.info(f"🔍 Загружаем профиль @{username} (прокси: {'✅' if proxy else '❌'})")
             
             # Парсим строку cookies в словарь для aiohttp
             cookies = {}
@@ -259,7 +258,7 @@ class TwitterProfileParser:
             url = f"https://nitter.tiekoetter.com/{username}"
             
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.5',
                 'Accept-Encoding': 'gzip, deflate, br',
@@ -268,16 +267,49 @@ class TwitterProfileParser:
                 'Upgrade-Insecure-Requests': '1'
             }
             
-            logger.info(f"🔍 Загружаем профиль @{username}")
-            
-            # Проверяем что session инициализирована
-            if not self.session:
-                logger.error(f"❌ Session не инициализирована для @{username}")
-                return None
-            
             async with self.session.get(url, headers=headers, cookies=cookies) as response:
-                if response.status == 200:
-                    html_content = await response.text()
+                html_content = await response.text()
+                
+                # 🔍 ПРОВЕРЯЕМ НА ANUBIS CHALLENGE
+                if ('id="anubis_challenge"' in html_content or "Making sure you're not a bot!" in html_content):
+                    logger.warning(f"🚫 Обнаружен Anubis challenge для @{username} - автоматически решаем...")
+                    
+                    try:
+                        # Автоматически решаем challenge
+                        new_cookies = await handle_anubis_challenge_for_session(
+                            self.session, url, html_content, force_fresh_challenge=True
+                        )
+                        
+                        if new_cookies:
+                            logger.info(f"✅ Challenge решен для @{username}, повторяем запрос...")
+                            
+                            # Обновляем cookies и повторяем запрос
+                            for key, value in new_cookies.items():
+                                cookies[key] = value
+                                
+                            async with self.session.get(url, headers=headers, cookies=cookies) as retry_response:
+                                if retry_response.status == 200:
+                                    html_content = await retry_response.text()
+                                    profile_data = self.extract_profile_data(html_content)
+                                    
+                                    if profile_data and profile_data.get('username'):
+                                        logger.info(f"✅ Профиль @{username} успешно загружен после решения challenge")
+                                        return profile_data
+                                    else:
+                                        logger.warning(f"⚠️ Не удалось извлечь данные профиля @{username} после challenge")
+                                        return None
+                                else:
+                                    logger.warning(f"⚠️ Ошибка после challenge @{username}: {retry_response.status}")
+                                    return None
+                        else:
+                            logger.error(f"❌ Не удалось решить challenge для @{username}")
+                            return None
+                            
+                    except Exception as challenge_error:
+                        logger.error(f"❌ Ошибка решения challenge для @{username}: {challenge_error}")
+                        return None
+                
+                elif response.status == 200:
                     profile_data = self.extract_profile_data(html_content)
                     
                     if profile_data and profile_data.get('username'):
@@ -288,12 +320,6 @@ class TwitterProfileParser:
                         
                 elif response.status == 429:
                     logger.warning(f"⚠️ Rate limit при загрузке профиля @{username}")
-                    # Помечаем текущий cookie как заблокированный
-                    try:
-                        if hasattr(self.cookie_rotator, 'mark_cookie_failed'):
-                            self.cookie_rotator.mark_cookie_failed(cookies_string)
-                    except Exception as e:
-                        logger.warning(f"⚠️ Ошибка при отметке cookie как неудачный: {e}")
                     await asyncio.sleep(2)
                     return None
                     
@@ -417,14 +443,14 @@ class TwitterProfileParser:
             # Убираем @ если есть
             username = username.replace('@', '')
             
-            # Получаем актуальные cookies
-            if not self.cookie_rotator:
-                logger.error(f"❌ Cookie rotator не инициализирован для @{username}")
+            # Проверяем что session инициализирована
+            if not self.session:
+                logger.error(f"❌ Session не инициализирована для @{username}")
                 return None, []
-                
-            cookies_string = self.cookie_rotator.get_next_cookie()
             
-            # Проверяем что cookies_string не None
+            # Получаем динамические cookies через новую систему
+            proxy, cookies_string = await get_background_proxy_cookie_async(self.session)
+            
             if not cookies_string:
                 logger.error(f"❌ Не удалось получить cookies для @{username}")
                 return None, []
@@ -441,7 +467,7 @@ class TwitterProfileParser:
                 return None, []
             
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.5',
                 'Accept-Encoding': 'gzip, deflate, br',
@@ -475,10 +501,30 @@ class TwitterProfileParser:
                         if response.status == 200:
                             html_content = await response.text()
                             
-                            # Проверяем на блокировку Nitter
-                            if "Making sure you're not a bot!" in html_content:
-                                logger.warning(f"🚫 Nitter заблокирован для @{username}")
-                                break
+                            # 🔍 ПРОВЕРЯЕМ НА ANUBIS CHALLENGE
+                            if ('id="anubis_challenge"' in html_content or "Making sure you're not a bot!" in html_content):
+                                logger.warning(f"🚫 Обнаружен Anubis challenge для @{username} - автоматически решаем...")
+                                
+                                try:
+                                    # Автоматически решаем challenge
+                                    new_cookies = await handle_anubis_challenge_for_session(
+                                        self.session, current_url, html_content, force_fresh_challenge=True
+                                    )
+                                    
+                                    if new_cookies:
+                                        logger.info(f"✅ Challenge решен для @{username}, обновляем cookies...")
+                                        # Обновляем cookies для дальнейших запросов
+                                        for key, value in new_cookies.items():
+                                            cookies[key] = value
+                                        # Повторяем текущий запрос с новыми cookies
+                                        continue
+                                    else:
+                                        logger.error(f"❌ Не удалось решить challenge для @{username}")
+                                        break
+                                        
+                                except Exception as challenge_error:
+                                    logger.error(f"❌ Ошибка решения challenge для @{username}: {challenge_error}")
+                                    break
                             
                             # Извлекаем данные профиля только с первой страницы
                             if page_count == 1:
@@ -515,12 +561,7 @@ class TwitterProfileParser:
                                 
                         elif response.status == 429:
                             logger.warning(f"⚠️ Rate limit при загрузке страницы {page_count} для @{username}")
-                            # Помечаем текущий cookie как заблокированный
-                            try:
-                                if hasattr(self.cookie_rotator, 'mark_cookie_failed'):
-                                    self.cookie_rotator.mark_cookie_failed(cookies_string)
-                            except Exception as e:
-                                logger.warning(f"⚠️ Ошибка при отметке cookie как неудачный: {e}")
+                            await asyncio.sleep(2)
                             break
                             
                         elif response.status == 404:
@@ -564,14 +605,14 @@ class TwitterProfileParser:
             # Убираем @ если есть
             username = username.replace('@', '')
             
-            # Получаем актуальные cookies
-            if not self.cookie_rotator:
-                logger.error(f"❌ Cookie rotator не инициализирован для @{username}")
+            # Проверяем что session инициализирована
+            if not self.session:
+                logger.error(f"❌ Session не инициализирована для @{username}")
                 return None, []
-                
-            cookies_string = self.cookie_rotator.get_next_cookie()
             
-            # Проверяем что cookies_string не None
+            # Получаем динамические cookies через новую систему
+            proxy, cookies_string = await get_background_proxy_cookie_async(self.session)
+            
             if not cookies_string:
                 logger.error(f"❌ Не удалось получить cookies для @{username}")
                 return None, []
@@ -590,7 +631,7 @@ class TwitterProfileParser:
             url = f"https://nitter.tiekoetter.com/{username}"
             
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.5',
                 'Accept-Encoding': 'gzip, deflate, br',
@@ -627,12 +668,7 @@ class TwitterProfileParser:
                         
                 elif response.status == 429:
                     logger.warning(f"⚠️ Rate limit при загрузке профиля @{username}")
-                    # Помечаем текущий cookie как заблокированный
-                    try:
-                        if hasattr(self.cookie_rotator, 'mark_cookie_failed'):
-                            self.cookie_rotator.mark_cookie_failed(cookies_string)
-                    except Exception as e:
-                        logger.warning(f"⚠️ Ошибка при отметке cookie как неудачный: {e}")
+                    # Используем новую динамическую систему - куки автоматически ротируются при ошибках
                     await asyncio.sleep(2)
                     return None, []
                     

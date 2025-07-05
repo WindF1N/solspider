@@ -197,12 +197,17 @@ class TelegramVipTelethon:
         return final_contracts
     
     async def send_telegram_notification(self, message: str, keyboard: Optional[List] = None) -> bool:
-        """Отправляет уведомление в Telegram"""
+        """Отправляет уведомление в Telegram группу в тему"""
         try:
             import requests
             
+            # Отправляем в группу в тему вместо отдельного чата
+            target_chat_id = -1002680160752  # ID группы из https://t.me/c/2680160752/13
+            message_thread_id = 13  # ID темы
+            
             payload = {
-                "chat_id": self.notification_chat_id,
+                "chat_id": target_chat_id,
+                "message_thread_id": message_thread_id,
                 "text": message,
                 "parse_mode": self.notification_config['parse_mode'],
                 "disable_web_page_preview": self.notification_config['disable_web_page_preview']
@@ -215,23 +220,28 @@ class TelegramVipTelethon:
             response = requests.post(url, json=payload, timeout=self.notification_config['timeout'])
             
             if response.status_code == 200:
-                logger.info("✅ Telegram уведомление отправлено")
+                logger.info(f"✅ Telegram уведомление отправлено в группу {target_chat_id} в тему {message_thread_id}")
                 return True
             else:
-                logger.error(f"❌ Ошибка отправки Telegram уведомления: {response.text}")
+                logger.error(f"❌ Ошибка отправки Telegram уведомления в группу: {response.text}")
                 return False
                 
         except Exception as e:
-            logger.error(f"❌ Критическая ошибка отправки уведомления: {e}")
+            logger.error(f"❌ Критическая ошибка отправки уведомления в группу: {e}")
             return False
     
     async def send_telegram_photo_notification(self, photo_url: str, caption: str, keyboard: Optional[List] = None) -> bool:
-        """Отправляет уведомление с фото в Telegram"""
+        """Отправляет уведомление с фото в Telegram группу в тему"""
         try:
             import requests
             
+            # Отправляем в группу в тему вместо отдельного чата
+            target_chat_id = -1002680160752  # ID группы из https://t.me/c/2680160752/13
+            message_thread_id = 13  # ID темы
+            
             payload = {
-                "chat_id": self.notification_chat_id,
+                "chat_id": target_chat_id,
+                "message_thread_id": message_thread_id,
                 "photo": photo_url,
                 "caption": caption,
                 "parse_mode": self.notification_config['parse_mode']
@@ -244,14 +254,14 @@ class TelegramVipTelethon:
             response = requests.post(url, json=payload, timeout=self.notification_config['timeout'])
             
             if response.status_code == 200:
-                logger.info("✅ Telegram фото уведомление отправлено")
+                logger.info(f"✅ Telegram фото уведомление отправлено в группу {target_chat_id} в тему {message_thread_id}")
                 return True
             else:
-                logger.warning(f"⚠️ Не удалось отправить фото, отправляю текст: {response.text}")
+                logger.warning(f"⚠️ Не удалось отправить фото в группу, отправляю текст: {response.text}")
                 return await self.send_telegram_notification(caption, keyboard)
                 
         except Exception as e:
-            logger.error(f"❌ Ошибка отправки Telegram фото: {e}")
+            logger.error(f"❌ Ошибка отправки Telegram фото в группу: {e}")
             return await self.send_telegram_notification(caption, keyboard)
     
     async def execute_automatic_purchase(self, contract: str, chat_id: int, message_text: str, 

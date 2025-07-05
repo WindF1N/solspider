@@ -54,3 +54,5 @@ backup.log
 restore.log
 
 *.xlsx
+
+google/*.json

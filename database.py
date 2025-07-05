@@ -7,6 +7,17 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
 import pymysql
 
+# Загрузка переменных окружения из .env файла
+try:
+    from dotenv import load_dotenv
+    # Явно указываем путь к .env файлу относительно текущего файла
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    env_path = os.path.join(current_dir, '.env')
+    load_dotenv(env_path)
+except ImportError:
+    # python-dotenv не установлен, используем системные переменные окружения
+    pass
+
 # Установка pymysql как драйвера по умолчанию для MySQL
 pymysql.install_as_MySQLdb()
 
@@ -182,6 +193,70 @@ class TweetMention(Base):
         Index('idx_mention_mint_author', 'mint', 'author_username'),
         Index('idx_mention_author_followers', 'author_followers_at_time'),
         Index('idx_mention_market_impact', 'market_impact_24h'),
+    )
+
+class DuplicateToken(Base):
+    """Модель для хранения токенов для анализа дубликатов"""
+    __tablename__ = 'duplicate_tokens'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    mint = Column(String(44), unique=True, nullable=False, index=True)  # ID токена
+    name = Column(String(255), nullable=True, index=True)  # Название токена
+    symbol = Column(String(50), nullable=True, index=True)  # Символ токена
+    
+    # Медиа и социальные сети для сравнения
+    icon = Column(String(500), nullable=True, index=True)  # URL иконки
+    twitter = Column(String(255), nullable=True, index=True)  # Twitter аккаунт
+    telegram = Column(String(255), nullable=True)  # Telegram канал
+    website = Column(String(1000), nullable=True)  # Официальный сайт
+    
+    # Информация о запуске
+    launchpad = Column(String(50), nullable=True, index=True)  # pump.fun, jupiter, etc
+    pool_type = Column(String(50), nullable=True)  # pumpfun, raydium, etc
+    creator = Column(String(44), nullable=True, index=True)  # Адрес создателя
+    
+    # Финансовая информация на момент обнаружения
+    market_cap = Column(Float, default=0.0)
+    initial_buy = Column(Float, default=0.0)
+    
+    # Нормализованные поля для быстрого поиска дубликатов
+    normalized_name = Column(String(255), nullable=True, index=True)  # Название в нижнем регистре
+    normalized_symbol = Column(String(50), nullable=True, index=True)  # Символ в нижнем регистре
+    twitter_username = Column(String(100), nullable=True, index=True)  # @username без URL
+    
+    # Метаданные
+    created_at = Column(DateTime, nullable=True, index=True)  # Реальная дата создания токена из Jupiter API
+    first_seen = Column(DateTime, default=datetime.utcnow, index=True)  # Дата обнаружения ботом
+    last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Индексы для быстрого поиска похожих токенов
+    __table_args__ = (
+        Index('idx_duplicate_name_symbol', 'normalized_name', 'normalized_symbol'),
+        Index('idx_duplicate_icon', 'icon'),
+        Index('idx_duplicate_twitter', 'twitter_username'),
+        Index('idx_duplicate_created', 'created_at'),  # Индекс по реальной дате создания
+        Index('idx_duplicate_first_seen', 'first_seen'),  # Индекс по дате обнаружения
+        Index('idx_duplicate_search_short', 'normalized_name', 'normalized_symbol'),  # Только короткие поля
+    )
+
+class DuplicatePair(Base):
+    """Модель для отслеживания уже отправленных пар дубликатов"""
+    __tablename__ = 'duplicate_pairs'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    token1_mint = Column(String(44), nullable=False, index=True)  # Первый токен в паре
+    token2_mint = Column(String(44), nullable=False, index=True)  # Второй токен в паре
+    pair_key = Column(String(100), unique=True, nullable=False, index=True)  # Уникальный ключ пары
+    
+    # Информация об уведомлении
+    notification_sent_at = Column(DateTime, default=datetime.utcnow)
+    similarity_score = Column(Float, nullable=True)  # Схожесть на момент обнаружения
+    similarity_reasons = Column(Text, nullable=True)  # Причины схожести
+    
+    # Индексы для быстрого поиска
+    __table_args__ = (
+        Index('idx_pair_tokens', 'token1_mint', 'token2_mint'),
+        Index('idx_pair_sent_at', 'notification_sent_at'),
     )
 
 class DatabaseManager:
@@ -558,6 +633,305 @@ class DatabaseManager:
                 'recent_mentions_30d': 0,
                 'recent_mentions_7d': 0
             }
+        finally:
+            session.close()
+
+    def _parse_jupiter_date(self, date_string):
+        """Парсинг даты из Jupiter API формата '2025-06-30T01:47:45Z'"""
+        if not date_string:
+            return None
+            
+        try:
+            from datetime import datetime
+            # Убираем 'Z' в конце и парсим
+            if date_string.endswith('Z'):
+                date_string = date_string[:-1]
+            
+            # Парсим дату в формате ISO
+            parsed_date = datetime.fromisoformat(date_string)
+            return parsed_date
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка парсинга даты '{date_string}': {e}")
+            return None
+
+    def save_duplicate_token(self, token_data):
+        """Сохранение токена для анализа дубликатов"""
+        session = self.Session()
+        try:
+            mint = token_data.get('id') or token_data.get('mint')
+            if not mint:
+                logger.warning("⚠️ Токен без mint/id - пропускаем")
+                return None
+            
+            # Проверяем, существует ли токен
+            existing_token = session.query(DuplicateToken).filter_by(mint=mint).first()
+            if existing_token:
+                logger.debug(f"📋 Токен {token_data.get('symbol', 'Unknown')} уже в БД дубликатов")
+                return existing_token
+            
+            # Нормализуем данные для поиска
+            name = token_data.get('name', '')
+            symbol = token_data.get('symbol', '')
+            twitter_url = token_data.get('twitter', '')
+            telegram_url = token_data.get('telegram', '')
+            website_url = token_data.get('website', '')
+            
+            # Обрезаем длинные URL чтобы они помещались в БД
+            if twitter_url and len(twitter_url) > 255:
+                twitter_url = twitter_url[:252] + "..."
+                logger.warning(f"⚠️ Twitter URL обрезан до 255 символов для токена {symbol}")
+            
+            if telegram_url and len(telegram_url) > 255:
+                telegram_url = telegram_url[:252] + "..."
+                logger.warning(f"⚠️ Telegram URL обрезан до 255 символов для токена {symbol}")
+                
+            if website_url and len(website_url) > 1000:
+                website_url = website_url[:997] + "..."
+                logger.warning(f"⚠️ Website URL обрезан до 1000 символов для токена {symbol}")
+            
+            # Извлекаем username из Twitter URL
+            twitter_username = None
+            if twitter_url:
+                from urllib.parse import urlparse
+                parsed = urlparse(twitter_url)
+                if parsed.path:
+                    twitter_username = parsed.path.strip('/').split('/')[-1]
+            
+            # Извлекаем реальную дату создания токена из firstPool.createdAt
+            token_created_at = None
+            first_pool = token_data.get('firstPool', {})
+            if first_pool and first_pool.get('createdAt'):
+                token_created_at = self._parse_jupiter_date(first_pool.get('createdAt'))
+                
+            # Создаем новый токен
+            duplicate_token = DuplicateToken(
+                mint=mint,
+                name=name,
+                symbol=symbol,
+                icon=token_data.get('icon'),
+                twitter=twitter_url,
+                telegram=telegram_url,
+                website=website_url,
+                launchpad=token_data.get('launchpad'),
+                pool_type=token_data.get('pool_type'),
+                creator=token_data.get('dev') or token_data.get('creator'),
+                market_cap=float(token_data.get('marketCap', 0)),
+                initial_buy=float(token_data.get('initialBuy', 0)),
+                
+                # Даты
+                created_at=token_created_at,  # Реальная дата создания токена
+                
+                # Нормализованные поля
+                normalized_name=name.lower().strip() if name else None,
+                normalized_symbol=symbol.lower().strip() if symbol else None,
+                twitter_username=twitter_username.lower() if twitter_username else None
+            )
+            
+            session.add(duplicate_token)
+            session.commit()
+            
+            created_info = f" (создан {token_created_at.strftime('%d.%m.%Y %H:%M')})" if token_created_at else ""
+            logger.info(f"💾 Токен {symbol} ({mint[:8]}...){created_info} сохранен в БД дубликатов")
+            return duplicate_token
+            
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"❌ Ошибка сохранения токена в БД дубликатов: {e}")
+            raise
+        finally:
+            session.close()
+
+    def find_similar_tokens(self, token_data, similarity_threshold=0.8):
+        """Поиск похожих токенов в базе данных"""
+        session = self.Session()
+        try:
+            current_mint = token_data.get('id') or token_data.get('mint')
+            if not current_mint:
+                return []
+            
+            # Нормализуем данные текущего токена
+            current_name = (token_data.get('name', '') or '').lower().strip()
+            current_symbol = (token_data.get('symbol', '') or '').lower().strip()
+            current_icon = token_data.get('icon', '')
+            current_twitter = token_data.get('twitter', '')
+            
+            # Извлекаем username из Twitter URL
+            current_twitter_username = None
+            if current_twitter:
+                from urllib.parse import urlparse
+                parsed = urlparse(current_twitter)
+                if parsed.path:
+                    current_twitter_username = parsed.path.strip('/').split('/')[-1].lower()
+            
+            # Поиск потенциальных дубликатов
+            query = session.query(DuplicateToken).filter(DuplicateToken.mint != current_mint)
+            
+            # Быстрый поиск по точным совпадениям
+            conditions = []
+            if current_name:
+                conditions.append(DuplicateToken.normalized_name == current_name)
+            if current_symbol:
+                conditions.append(DuplicateToken.normalized_symbol == current_symbol)
+            if current_icon:
+                conditions.append(DuplicateToken.icon == current_icon)
+            if current_twitter_username:
+                conditions.append(DuplicateToken.twitter_username == current_twitter_username)
+            
+            if conditions:
+                from sqlalchemy import or_
+                candidates = query.filter(or_(*conditions)).all()
+            else:
+                candidates = []
+            
+            # Дополнительная проверка схожести
+            similar_tokens = []
+            for candidate in candidates:
+                # Подсчитываем совпадения
+                matches = 0
+                total_checks = 0
+                reasons = []
+                
+                # Проверяем название
+                if current_name and candidate.normalized_name:
+                    total_checks += 1
+                    if current_name == candidate.normalized_name:
+                        matches += 1
+                        reasons.append("одинаковое название")
+                
+                # Проверяем символ
+                if current_symbol and candidate.normalized_symbol:
+                    total_checks += 1
+                    if current_symbol == candidate.normalized_symbol:
+                        matches += 1
+                        reasons.append("одинаковый символ")
+                
+                # Проверяем иконку
+                if current_icon and candidate.icon:
+                    total_checks += 1
+                    if current_icon == candidate.icon:
+                        matches += 1
+                        reasons.append("одинаковая иконка")
+                
+                # Проверяем Twitter
+                if current_twitter_username and candidate.twitter_username:
+                    total_checks += 1
+                    if current_twitter_username == candidate.twitter_username:
+                        matches += 1
+                        reasons.append("одинаковый Twitter")
+                
+                # Вычисляем схожесть
+                if total_checks > 0:
+                    similarity = matches / total_checks
+                    if similarity >= similarity_threshold:
+                        similar_tokens.append({
+                            'token': candidate,
+                            'similarity': similarity,
+                            'reasons': reasons
+                        })
+            
+            # Сортируем по схожести (убывание)
+            similar_tokens.sort(key=lambda x: x['similarity'], reverse=True)
+            
+            logger.debug(f"🔍 Найдено {len(similar_tokens)} похожих токенов для {current_symbol}")
+            return similar_tokens
+            
+        except SQLAlchemyError as e:
+            logger.error(f"❌ Ошибка поиска похожих токенов: {e}")
+            return []
+        finally:
+            session.close()
+
+    def get_duplicate_tokens_count(self):
+        """Получение количества токенов в БД дубликатов"""
+        session = self.Session()
+        try:
+            count = session.query(DuplicateToken).count()
+            return count
+        except SQLAlchemyError as e:
+            logger.error(f"❌ Ошибка подсчета токенов: {e}")
+            return 0
+        finally:
+            session.close()
+
+    def is_token_already_processed(self, mint):
+        """Проверка, обработан ли уже токен"""
+        session = self.Session()
+        try:
+            exists = session.query(DuplicateToken).filter_by(mint=mint).first() is not None
+            return exists
+        except SQLAlchemyError as e:
+            logger.error(f"❌ Ошибка проверки токена: {e}")
+            return False
+        finally:
+            session.close()
+
+    def is_duplicate_pair_already_sent(self, token1_mint, token2_mint):
+        """Проверка, отправлена ли уже пара дубликатов"""
+        session = self.Session()
+        try:
+            # Создаем уникальный ключ пары (порядок не важен)
+            pair_key = self._create_duplicate_pair_key(token1_mint, token2_mint)
+            
+            exists = session.query(DuplicatePair).filter_by(pair_key=pair_key).first() is not None
+            return exists
+            
+        except SQLAlchemyError as e:
+            logger.error(f"❌ Ошибка проверки пары дубликатов: {e}")
+            return False
+        finally:
+            session.close()
+
+    def mark_duplicate_pair_as_sent(self, token1_mint, token2_mint, similarity_score=None, reasons=None):
+        """Маркировка пары дубликатов как отправленной"""
+        session = self.Session()
+        try:
+            # Создаем уникальный ключ пары (порядок не важен)
+            pair_key = self._create_duplicate_pair_key(token1_mint, token2_mint)
+            
+            # Проверяем, не существует ли уже
+            existing = session.query(DuplicatePair).filter_by(pair_key=pair_key).first()
+            if existing:
+                logger.debug(f"📋 Пара {token1_mint[:8]}... - {token2_mint[:8]}... уже отмечена")
+                return existing
+            
+            # Создаем новую запись
+            duplicate_pair = DuplicatePair(
+                token1_mint=token1_mint,
+                token2_mint=token2_mint,
+                pair_key=pair_key,
+                similarity_score=similarity_score,
+                similarity_reasons=', '.join(reasons) if reasons else None
+            )
+            
+            session.add(duplicate_pair)
+            session.commit()
+            
+            logger.info(f"✅ Пара дубликатов {token1_mint[:8]}... - {token2_mint[:8]}... отмечена как отправленная")
+            return duplicate_pair
+            
+        except SQLAlchemyError as e:
+            session.rollback()
+            logger.error(f"❌ Ошибка маркировки пары дубликатов: {e}")
+            raise
+        finally:
+            session.close()
+
+    def _create_duplicate_pair_key(self, token1_mint, token2_mint):
+        """Создание уникального ключа для пары токенов (порядок не важен)"""
+        # Сортируем mint адреса чтобы порядок не влиял на ключ
+        sorted_mints = sorted([token1_mint, token2_mint])
+        return f"{sorted_mints[0]}_{sorted_mints[1]}"
+
+    def get_duplicate_pairs_count(self):
+        """Получение количества отправленных пар дубликатов"""
+        session = self.Session()
+        try:
+            count = session.query(DuplicatePair).count()
+            return count
+        except SQLAlchemyError as e:
+            logger.error(f"❌ Ошибка подсчета пар дубликатов: {e}")
+            return 0
         finally:
             session.close()
 

@@ -15,11 +15,14 @@ import colorlog
 import threading
 import aiohttp
 from urllib.parse import quote
-from database import get_db_manager, TwitterAuthor, Token, Trade, Migration, TweetMention
-from logger_config import setup_logging, log_token_analysis, log_trade_activity, log_database_operation, log_daily_stats
+from database import get_db_manager, TwitterAuthor, Token, Trade, Migration, TweetMention, DuplicateToken, DuplicatePair
+from logger_config import setup_logging, log_token_analysis, log_token_decision, log_trade_activity, log_database_operation, log_daily_stats
 from connection_monitor import connection_monitor
-from cookie_rotation import proxy_cookie_rotator, background_proxy_cookie_rotator, cookie_rotator
+# Старая система cookie_rotation удалена - используем только dynamic_cookie_rotation с anubis_handler
+from dynamic_cookie_rotation import get_next_proxy_cookie_async
 from twitter_profile_parser import TwitterProfileParser
+# Новая система групп дубликатов с Google Sheets интеграцией
+from duplicate_groups_manager import get_duplicate_groups_manager, initialize_duplicate_groups_manager
 
 
 # Загрузка переменных окружения из .env файла
@@ -51,8 +54,6 @@ CHAT_IDS = [
 
 # WebSocket конфигурация
 WEBSOCKET_CONFIG = {
-    'ping_interval': 30,     # Ping каждые 30 секунд
-    'ping_timeout': 20,      # Ожидание pong 20 секунд 
     'close_timeout': 15,     # Таймаут закрытия
     'max_size': 10**7,       # Максимальный размер сообщения (10MB)
     'max_queue': 32,         # Размер очереди
@@ -89,136 +90,145 @@ twitter_analysis_queue = asyncio.Queue()
 # Словарь для хранения результатов анализа
 twitter_analysis_results = {}
 
-# VIP функции перенесены в отдельную систему vip_twitter_monitor.py
+# Система обнаружения дубликатов токенов (через базу данных)
+duplicate_detection_enabled = os.getenv("DUPLICATE_DETECTION_ENABLED", "true").lower() == "true"
+# Отключение поиска контрактов в Twitter (фокус только на шилинге)
+contract_search_disabled = os.getenv("CONTRACT_SEARCH_DISABLED", "true").lower() == "true"
+duplicate_message_ids = {}  # Словарь {token_id: message_id} для отслеживания первых сообщений о дубликатах
 
 def send_telegram(message, inline_keyboard=None):
-    """Отправка сообщения в Telegram во все чаты"""
-    success_count = 0
-    total_chats = 0
+    """Отправка сообщения в Telegram группу в тему"""
+    # Отправляем в группу в тему вместо отдельных пользователей
+    target_chat_id = -1002680160752  # ID группы из https://t.me/c/2680160752/13
+    message_thread_id = 13  # ID темы
     
-    for chat_id in CHAT_IDS:
-        # Пропускаем пустые или неверные chat_id
-        if not chat_id or chat_id in ["YOUR_CHAT_ID", ""]:
-            continue
-            
-        total_chats += 1
+    try:
+        payload = {
+            "chat_id": target_chat_id,
+            "message_thread_id": message_thread_id,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False
+        }
         
-        try:
-            payload = {
-                "chat_id": chat_id,
-                "text": message,
+        if inline_keyboard:
+            payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
+        
+        response = requests.post(TELEGRAM_URL, json=payload)
+        if response.status_code == 200:
+            logger.info(f"✅ Сообщение отправлено в группу {target_chat_id} в тему {message_thread_id}")
+            return True
+        else:
+            logger.error(f"❌ Ошибка отправки в группу: {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки в группу: {e}")
+        return False
+
+def send_telegram_general(message, inline_keyboard=None):
+    """Отправка сообщения в Telegram группу в ОБЩИЙ ЧАТ (без темы)"""
+    # Отправляем в общий чат группы без указания темы
+    target_chat_id = -1002680160752  # ID группы
+    
+    try:
+        payload = {
+            "chat_id": target_chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False
+        }
+        
+        if inline_keyboard:
+            payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
+        
+        response = requests.post(TELEGRAM_URL, json=payload)
+        if response.status_code == 200:
+            logger.info(f"✅ Сообщение отправлено в общий чат группы {target_chat_id}")
+            return True
+        else:
+            logger.error(f"❌ Ошибка отправки в общий чат: {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки в общий чат: {e}")
+        return False
+
+def send_telegram_photo(photo_url, caption, inline_keyboard=None):
+    """Отправка фото с подписью в Telegram группу в тему"""
+    # Отправляем в группу в тему вместо отдельных пользователей
+    target_chat_id = -1002680160752  # ID группы из https://t.me/c/2680160752/13
+    message_thread_id = 13  # ID темы
+    
+    try:
+        # Сначала пробуем отправить фото
+        photo_url_to_send = f"https://cf-ipfs.com/ipfs/{photo_url.split('/')[-1]}" if photo_url and not photo_url.startswith('http') else photo_url
+        
+        payload = {
+            "chat_id": target_chat_id,
+            "message_thread_id": message_thread_id,
+            "photo": photo_url_to_send,
+            "caption": caption,
+            "parse_mode": "HTML"
+        }
+        
+        if inline_keyboard:
+            payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
+        
+        photo_response = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto", json=payload)
+        
+        if photo_response.status_code == 200:
+            logger.info(f"✅ Фото отправлено в группу {target_chat_id} в тему {message_thread_id}")
+            return True
+        else:
+            # Если фото не удалось отправить, отправляем обычное сообщение
+            logger.warning(f"⚠️ Не удалось отправить фото в группу, отправляю текст: {photo_response.text}")
+            text_payload = {
+                "chat_id": target_chat_id,
+                "message_thread_id": message_thread_id,
+                "text": caption,
                 "parse_mode": "HTML",
                 "disable_web_page_preview": False
             }
             
             if inline_keyboard:
-                payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
+                text_payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
             
-            response = requests.post(TELEGRAM_URL, json=payload)
-            if response.status_code == 200:
-                logger.info(f"✅ Сообщение отправлено в чат {chat_id}")
-                success_count += 1
+            text_response = requests.post(TELEGRAM_URL, json=text_payload)
+            if text_response.status_code == 200:
+                logger.info(f"✅ Текстовое сообщение отправлено в группу {target_chat_id} в тему {message_thread_id}")
+                return True
             else:
-                logger.error(f"❌ Ошибка Telegram для чата {chat_id}: {response.text}")
-                
-        except Exception as e:
-            logger.error(f"Ошибка Telegram для чата {chat_id}: {e}")
-    
-    if success_count > 0:
-        logger.info(f"📤 Сообщение отправлено в {success_count}/{total_chats} чатов")
-        return True
-    else:
-        logger.error("❌ Не удалось отправить сообщение ни в один чат")
-        return False
-
-def send_telegram_photo(photo_url, caption, inline_keyboard=None):
-    """Отправка фото с подписью в Telegram во все чаты"""
-    success_count = 0
-    total_chats = 0
-    
-    for chat_id in CHAT_IDS:
-        # Пропускаем пустые или неверные chat_id
-        if not chat_id or chat_id in ["YOUR_CHAT_ID", ""]:
-            continue
+                logger.error(f"❌ Ошибка отправки текста в группу: {text_response.text}")
+                return False
             
-        total_chats += 1
-        
-        try:
-            # Сначала пробуем отправить фото
-            photo_url_to_send = f"https://cf-ipfs.com/ipfs/{photo_url.split('/')[-1]}" if photo_url and not photo_url.startswith('http') else photo_url
-            
-            payload = {
-                "chat_id": chat_id,
-                "photo": photo_url_to_send,
-                "caption": caption,
-                "parse_mode": "HTML"
-            }
-            
-            if inline_keyboard:
-                payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
-            
-            photo_response = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto", json=payload)
-            
-            if photo_response.status_code == 200:
-                logger.info(f"✅ Фото отправлено в чат {chat_id}")
-                success_count += 1
-            else:
-                # Если фото не удалось отправить, отправляем обычное сообщение
-                logger.warning(f"⚠️ Не удалось отправить фото в чат {chat_id}, отправляю текст: {photo_response.text}")
-                text_payload = {
-                    "chat_id": chat_id,
-                    "text": caption,
-                    "parse_mode": "HTML",
-                    "disable_web_page_preview": False
-                }
-                
-                if inline_keyboard:
-                    text_payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
-                
-                text_response = requests.post(TELEGRAM_URL, json=text_payload)
-                if text_response.status_code == 200:
-                    logger.info(f"✅ Текстовое сообщение отправлено в чат {chat_id}")
-                    success_count += 1
-                else:
-                    logger.error(f"❌ Ошибка отправки в чат {chat_id}: {text_response.text}")
-                
-        except Exception as e:
-            logger.error(f"Ошибка отправки в чат {chat_id}: {e}")
-    
-    if success_count > 0:
-        logger.info(f"📤 Сообщение отправлено в {success_count}/{total_chats} чатов")
-        return True
-    else:
-        logger.error("❌ Не удалось отправить сообщение ни в один чат")
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки в группу: {e}")
         return False
 
 # send_vip_telegram_photo функция перенесена в vip_twitter_monitor.py
 
-async def search_single_query(query, headers, retry_count=0, use_quotes=False, cycle_cookie=None):
-    """Выполняет одиночный поисковый запрос к Nitter с повторными попытками при 429 и ротацией cookies"""
+async def search_single_query(query, headers, retry_count=0, use_quotes=False, cycle_cookie=None, session=None):
+    """Выполняет одиночный поисковый запрос к Nitter с повторными попытками при 429 и динамическими cookies"""
     # Добавляем пустые параметры since, until, near как требует Nitter
     url = f"https://nitter.tiekoetter.com/search?f=tweets&q={quote(query)}&since=&until=&near="
     
-    # Используем переданные прокси+cookie для цикла или получаем новые
-    if cycle_cookie:
-        # Если передан cycle_cookie, ищем соответствующую связку прокси
-        proxy = None
-        current_cookie = cycle_cookie
-        for pair in proxy_cookie_rotator.proxy_cookie_pairs:
-            if pair['cookie'] == cycle_cookie:
-                proxy = pair['proxy']
-                break
+    # Используем только новую динамическую систему куки с anubis_handler
+    if session:
+        proxy, current_cookie = await get_next_proxy_cookie_async(session)
     else:
-        proxy, current_cookie = proxy_cookie_rotator.get_next_proxy_cookie()
+        # Если нет сессии, создаем временную для получения куки
+        async with aiohttp.ClientSession() as temp_session:
+            proxy, current_cookie = await get_next_proxy_cookie_async(temp_session)
     
     # Обновляем заголовки с cookie
     headers_with_cookie = headers.copy()
     headers_with_cookie['Cookie'] = current_cookie
     
+    current_session = None
+    session_created_locally = False
+    
     try:
-        # Используем asyncio совместимую библиотеку
-        import aiohttp
-        
         # Настройка прокси если требуется
         connector = None
         request_kwargs = {}
@@ -227,40 +237,105 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=False, c
                 # Пробуем новый API (aiohttp 3.8+)
                 connector = aiohttp.ProxyConnector.from_url(proxy)
                 proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
-                logger.debug(f"🌐 Используем прокси через ProxyConnector: {proxy_info}")
+                logger.debug(f"🌐 [DYNAMIC] Используем прокси через ProxyConnector: {proxy_info}")
             except AttributeError:
                 # Для aiohttp 3.9.1 - прокси передается напрямую в get()
                 connector = aiohttp.TCPConnector()
                 request_kwargs['proxy'] = proxy
                 proxy_info = proxy.split('@')[1] if '@' in proxy else proxy
-                logger.debug(f"🌐 Используем прокси напрямую: {proxy_info}")
+                logger.debug(f"🌐 [DYNAMIC] Используем прокси напрямую: {proxy_info}")
         
-        async with aiohttp.ClientSession(connector=connector) as session:
-            async with session.get(url, headers=headers_with_cookie, timeout=20, **request_kwargs) as response:
+        # Используем переданную сессию или создаем новую
+        if session:
+            current_session = session
+        else:
+            current_session = aiohttp.ClientSession(connector=connector)
+            session_created_locally = True
+        
+        try:
+            async with current_session.get(url, headers=headers_with_cookie, timeout=20, **request_kwargs) as response:
                 if response.status == 200:
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
                     
-                    # Проверяем на блокировку Nitter
+                    # Проверяем на блокировку Nitter (современный Anubis challenge)
                     title = soup.find('title')
-                    if title and 'Making sure you\'re not a bot!' in title.get_text():
-                        logger.error(f"🚫 NITTER ЗАБЛОКИРОВАН! Нужно обновить куки для '{query}' куки '{current_cookie}'")
-                        logger.error("🔧 Обновите куки в переменной NITTER_COOKIE")
+                    has_challenge_text = title and 'Making sure you\'re not a bot!' in title.get_text()
+                    has_anubis_script = 'id="anubis_challenge"' in html
+                    
+                    if has_challenge_text or has_anubis_script:
+                        logger.warning(f"🤖 Обнаружен Anubis challenge для '{query}', пытаемся решить автоматически...")
                         
-                        # Отправляем критическое уведомление
-                        alert_message = (
-                            f"🚫 <b>КРИТИЧЕСКАЯ ОШИБКА!</b>\n\n"
-                            f"🤖 <b>Nitter заблокирован</b>\n"
-                            f"🔧 <b>Требуется обновление кук</b>\n\n"
-                            f"📍 <b>Запрос:</b> {query}\n"
-                            f"⚠️ <b>Статус:</b> 'Making sure you're not a bot!'\n\n"
-                            f"🛠️ <b>Действия:</b>\n"
-                            f"1. Обновите NITTER_COOKIE\n"
-                            f"2. Перезапустите бота\n\n"
-                            f"❌ <b>Twitter анализ недоступен!</b>"
-                        )
-                        send_telegram(alert_message)
-                        return []
+                        # Попытка автоматического решения challenge
+                        try:
+                            from anubis_handler import handle_anubis_challenge_for_session
+                            
+                            new_cookies = await handle_anubis_challenge_for_session(
+                                current_session, 
+                                str(response.url), 
+                                html
+                            )
+                            
+                            if new_cookies:
+                                # Обновляем куки в заголовках
+                                updated_cookie = "; ".join([f"{name}={value}" for name, value in new_cookies.items()])
+                                headers_with_cookie['Cookie'] = updated_cookie
+                                
+                                logger.info(f"✅ Challenge решен для '{query}', повторяем запрос с новыми куки")
+                                
+                                # Повторяем запрос с новыми куки
+                                async with current_session.get(url, headers=headers_with_cookie, timeout=20, **request_kwargs) as retry_response:
+                                    if retry_response.status == 200:
+                                        retry_html = await retry_response.text()
+                                        retry_soup = BeautifulSoup(retry_html, 'html.parser')
+                                        
+                                        # Проверяем что challenge больше нет
+                                        retry_title = retry_soup.find('title')
+                                        retry_has_challenge_text = retry_title and 'Making sure you\'re not a bot!' in retry_title.get_text()
+                                        retry_has_anubis_script = 'id="anubis_challenge"' in retry_html
+                                        
+                                        if retry_has_challenge_text or retry_has_anubis_script:
+                                            logger.error(f"❌ Challenge не решен для '{query}' - требует дополнительной настройки")
+                                            return []
+                                        
+                                        logger.info(f"🎉 Поисковая страница доступна для '{query}' после решения challenge")
+                                        # Продолжаем с retry_soup вместо soup
+                                        soup = retry_soup
+                                        html = retry_html
+                                    else:
+                                        logger.error(f"❌ Ошибка повторного запроса для '{query}': {retry_response.status}")
+                                        return []
+                            else:
+                                logger.error(f"❌ Не удалось решить challenge для '{query}'")
+                                
+                                # Отправляем уведомление только если автоматическое решение не помогло
+                                alert_message = (
+                                    f"🚫 <b>ОШИБКА ANUBIS CHALLENGE!</b>\n\n"
+                                    f"🤖 <b>Не удалось решить challenge автоматически</b>\n"
+                                    f"📍 <b>Запрос:</b> {query}\n"
+                                    f"⚠️ <b>Статус:</b> 'Making sure you're not a bot!'\n\n"
+                                    f"🛠️ <b>Возможные причины:</b>\n"
+                                    f"1. Изменился алгоритм challenge\n"
+                                    f"2. Нужны дополнительные куки\n"
+                                    f"3. Блокировка IP адреса\n\n"
+                                    f"❌ <b>Twitter анализ недоступен!</b>"
+                                )
+                                send_telegram(alert_message)
+                                return []
+                                
+                        except Exception as challenge_error:
+                            logger.error(f"❌ Ошибка решения challenge для '{query}': {challenge_error}")
+                            
+                            # Отправляем уведомление об ошибке
+                            alert_message = (
+                                f"🚫 <b>ОШИБКА РЕШЕНИЯ CHALLENGE!</b>\n\n"
+                                f"📍 <b>Запрос:</b> {query}\n"
+                                f"❌ <b>Ошибка:</b> {str(challenge_error)}\n\n"
+                                f"🛠️ <b>Требуется проверка системы</b>\n"
+                                f"❌ <b>Twitter анализ недоступен!</b>"
+                            )
+                            send_telegram(alert_message)
+                            return []
                     
                     # Находим все твиты
                     tweets = soup.find_all('div', class_='timeline-item')
@@ -336,17 +411,20 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=False, c
                         pause_time = 0.1  # МИНИМАЛЬНАЯ пауза при 429
                         logger.warning(f"⚠️ Nitter 429 (Too Many Requests) для '{query}', ждём {pause_time}с (попытка {retry_count + 1}/2)")
                         await asyncio.sleep(pause_time)
-                        return await search_single_query(query, headers, retry_count + 1, use_quotes, cycle_cookie)
+                        return await search_single_query(query, headers, retry_count + 1, use_quotes, cycle_cookie, session)
                     else:
-                        # Только после 2 попыток помечаем связку как временно недоступную
-                        if not cycle_cookie:  # Помечаем только если НЕ используется cycle_cookie
-                            proxy_cookie_rotator.mark_pair_failed(proxy, current_cookie)
-                            logger.warning(f"❌ [PUMP_BOT] Связка прокси+cookie помечена как неработающая после 429 ошибок")
-                        logger.error(f"❌ Nitter 429 (Too Many Requests) для '{query}' - превышено количество попыток")
+                        # После 2 попыток помещаем прокси в спячку на минуту вместо полной блокировки
+                        from dynamic_cookie_rotation import mark_proxy_temp_blocked
+                        mark_proxy_temp_blocked(proxy, current_cookie, 1)
+                        logger.warning(f"😴 Прокси помещен в спячку на 1 минуту после 429 ошибок для '{query}'")
                         return []
                 else:
                     logger.warning(f"❌ Nitter ответил {response.status} для '{query}'")
                     return []
+        except Exception as e:
+            # Обрабатываем ошибки HTTP запроса
+            logger.error(f"❌ Ошибка HTTP запроса для '{query}': {e}")
+            raise  # Поднимаем исключение для обработки во внешнем блоке
                     
     except Exception as e:
         # ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ОШИБОК
@@ -373,11 +451,15 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=False, c
         # Повторная попытка при любых ошибках (не только 429)
         if retry_count < 3:
             logger.warning(f"⚠️ Повторная попытка для '{query}' после {error_category} (попытка {retry_count + 1}/3)")
-            return await search_single_query(query, headers, retry_count + 1, use_quotes, cycle_cookie)
+            return await search_single_query(query, headers, retry_count + 1, use_quotes, cycle_cookie, session)
         else:
             logger.error(f"❌ Превышено количество попыток для '{query}' после {error_category} - возвращаем пустой результат")
             # Возвращаем информацию об ошибке для анализа
             return {"error": error_category, "message": error_msg, "type": error_type}
+    finally:
+        # Закрываем сессию если она была создана локально
+        if session_created_locally and current_session:
+            await current_session.close()
 
 def extract_next_page_url(soup):
     """Извлекает URL следующей страницы из кнопки 'Load more'"""
@@ -417,25 +499,21 @@ def ensure_nitter_params(url):
         logger.debug(f"Ошибка обработки URL параметров: {e}")
         return url
 
-async def search_with_pagination(query, headers, max_pages=3, cycle_cookie=None):
-    """Выполняет поиск с пагинацией, проходя по всем доступным страницам"""
+async def search_with_pagination(query, headers, max_pages=3, cycle_cookie=None, session=None):
+    """Выполняет поиск с пагинацией, проходя по всем доступным страницам с динамическими куки"""
     try:
         all_tweets = []
         all_authors = []
         page_count = 0
         current_url = f"https://nitter.tiekoetter.com/search?f=tweets&q={quote(query)}&since=&until=&near="
         
-        # Используем переданные прокси+cookie для цикла или получаем новые
-        if cycle_cookie:
-            # Если передан cycle_cookie, ищем соответствующую связку прокси
-            proxy = None
-            current_cookie = cycle_cookie
-            for pair in proxy_cookie_rotator.proxy_cookie_pairs:
-                if pair['cookie'] == cycle_cookie:
-                    proxy = pair['proxy']
-                    break
+        # Используем только новую динамическую систему куки с anubis_handler
+        if session:
+            proxy, current_cookie = await get_next_proxy_cookie_async(session)
         else:
-            proxy, current_cookie = proxy_cookie_rotator.get_next_proxy_cookie()
+            # Если нет сессии, создаем временную для получения куки
+            async with aiohttp.ClientSession() as temp_session:
+                proxy, current_cookie = await get_next_proxy_cookie_async(temp_session)
 
         # Обновляем заголовки с cookie
         headers_with_cookie = headers.copy()
@@ -449,21 +527,82 @@ async def search_with_pagination(query, headers, max_pages=3, cycle_cookie=None)
             
         logger.info(f"🔄 Начинаем поиск с пагинацией для '{query}' (до {max_pages} страниц)")
         
-        async with aiohttp.ClientSession(connector=connector) as session:
+        # Используем переданную сессию или создаем новую
+        if session:
+            current_session = session
+        else:
+            current_session = aiohttp.ClientSession(connector=connector)
+        
+        try:
             while page_count < max_pages and current_url:
                 page_count += 1
                 logger.info(f"📄 Загружаем страницу {page_count}/{max_pages} для '{query}'")
                 
                 try:
-                    async with session.get(current_url, headers=headers_with_cookie, timeout=20, **request_kwargs) as response:
+                    async with current_session.get(current_url, headers=headers_with_cookie, timeout=20, **request_kwargs) as response:
                         if response.status == 200:
                             html = await response.text()
                             soup = BeautifulSoup(html, 'html.parser')
                             
-                            # Проверяем на блокировку Nitter
+                            # Проверяем на блокировку Nitter (современный Anubis challenge)
                             title = soup.find('title')
-                            if title and 'Making sure you\'re not a bot!' in title.get_text():
-                                logger.error(f"🚫 NITTER ЗАБЛОКИРОВАН на странице {page_count} для '{query}'")
+                            has_challenge_text = title and 'Making sure you\'re not a bot!' in title.get_text()
+                            has_anubis_script = 'id="anubis_challenge"' in html
+                            
+                            if has_challenge_text or has_anubis_script:
+                                logger.warning(f"🤖 Обнаружен Anubis challenge на странице {page_count} для '{query}', пытаемся решить автоматически...")
+                                
+                                # Попытка автоматического решения challenge
+                                try:
+                                    from anubis_handler import handle_anubis_challenge_for_session
+                                    
+                                    new_cookies = await handle_anubis_challenge_for_session(
+                                        current_session, 
+                                        str(response.url), 
+                                        html
+                                    )
+                                    
+                                    if new_cookies:
+                                        # Обновляем куки в заголовках
+                                        updated_cookie = "; ".join([f"{name}={value}" for name, value in new_cookies.items()])
+                                        headers_with_cookie['Cookie'] = updated_cookie
+                                        
+                                        logger.info(f"✅ Challenge решен на странице {page_count} для '{query}', повторяем запрос с новыми куки")
+                                        
+                                        # Повторяем запрос с новыми куки
+                                        async with current_session.get(current_url, headers=headers_with_cookie, timeout=20, **request_kwargs) as retry_response:
+                                            if retry_response.status == 200:
+                                                retry_html = await retry_response.text()
+                                                retry_soup = BeautifulSoup(retry_html, 'html.parser')
+                                                
+                                                # Проверяем что challenge больше нет
+                                                retry_title = retry_soup.find('title')
+                                                retry_has_challenge_text = retry_title and 'Making sure you\'re not a bot!' in retry_title.get_text()
+                                                retry_has_anubis_script = 'id="anubis_challenge"' in retry_html
+                                                
+                                                if retry_has_challenge_text or retry_has_anubis_script:
+                                                    logger.error(f"❌ Challenge не решен на странице {page_count} для '{query}' - прерываем пагинацию")
+                                                    break
+                                                
+                                                logger.info(f"🎉 Страница {page_count} доступна для '{query}' после решения challenge")
+                                                # Продолжаем с retry_soup вместо soup
+                                                soup = retry_soup
+                                                html = retry_html
+                                            else:
+                                                if retry_response.status == 429:
+                                                    # При 429 ошибке помещаем прокси в спячку на минуту
+                                                    from dynamic_cookie_rotation import mark_proxy_temp_blocked
+                                                    mark_proxy_temp_blocked(proxy, current_cookie, 1)
+                                                    logger.warning(f"😴 Прокси помещен в спячку на 1 минуту из-за 429 ошибки при повторном запросе страницы {page_count} для '{query}'")
+                                                else:
+                                                    logger.error(f"❌ Ошибка повторного запроса страницы {page_count} для '{query}': {retry_response.status}")
+                                                break
+                                    else:
+                                        logger.error(f"❌ Не удалось решить challenge на странице {page_count} для '{query}' - прерываем пагинацию")
+                                        break
+                                        
+                                except Exception as challenge_error:
+                                    logger.error(f"❌ Ошибка решения challenge на странице {page_count} для '{query}': {challenge_error}")
                                 break
                             
                             # Находим все твиты на текущей странице
@@ -541,7 +680,10 @@ async def search_with_pagination(query, headers, max_pages=3, cycle_cookie=None)
                                 break
                                 
                         elif response.status == 429:
-                            logger.warning(f"⚠️ Nitter 429 на странице {page_count} для '{query}' - останавливаем пагинацию")
+                            # При 429 ошибке помещаем прокси в спячку на минуту
+                            from dynamic_cookie_rotation import mark_proxy_temp_blocked
+                            mark_proxy_temp_blocked(proxy, current_cookie, 1)
+                            logger.warning(f"😴 Прокси помещен в спячку на 1 минуту из-за 429 ошибки на странице {page_count} для '{query}' - останавливаем пагинацию")
                             break
                         else:
                             logger.warning(f"❌ Nitter ответил {response.status} на странице {page_count} для '{query}'")
@@ -550,6 +692,10 @@ async def search_with_pagination(query, headers, max_pages=3, cycle_cookie=None)
                 except Exception as e:
                     logger.error(f"❌ Ошибка загрузки страницы {page_count} для '{query}': {e}")
                     break
+        except Exception as e:
+            # Обрабатываем ошибки внутреннего try блока  
+            logger.error(f"❌ Ошибка сессии для '{query}': {e}")
+            return [], []
         
         # Дедупликация твитов
         unique_tweets = {}
@@ -568,18 +714,32 @@ async def search_with_pagination(query, headers, max_pages=3, cycle_cookie=None)
         logger.info(f"🎯 Пагинация завершена для '{query}': {len(final_tweets)} уникальных твитов с {page_count} страниц")
         
         return final_tweets, all_authors
-        
+                
     except Exception as e:
         logger.error(f"❌ Ошибка поиска с пагинацией для '{query}': {e}")
         return [], []
 
-async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
-    """Анализ упоминаний токена в Twitter через Nitter (2 запроса без кавычек с дедупликацией)"""
+async def analyze_token_sentiment(mint, symbol, cycle_cookie=None, session=None):
+    """Анализ упоминаний токена в Twitter через Nitter с динамическими куки (2 запроса без кавычек с дедупликацией)"""
+    # Создаем сессию если она не передана
+    if not session:
+        session = aiohttp.ClientSession()
+        session_created_locally = True
+    else:
+        session_created_locally = False
+    
     try:
-        # Получаем один cookie для всего анализа токена (2 запроса)
+        # Получаем один cookie для всего анализа токена (2 запроса) - только новая динамическая система
         if not cycle_cookie:
-            _, cycle_cookie = proxy_cookie_rotator.get_cycle_proxy_cookie()
-            logger.debug(f"🍪 Используем одну связку для анализа токена {symbol}")
+            if session:
+                # Используем новую динамическую систему
+                _, cycle_cookie = await get_next_proxy_cookie_async(session)
+                logger.debug(f"🍪 [DYNAMIC] Получили динамическую связку для анализа токена {symbol}")
+            else:
+                # Если нет сессии, создаем временную для получения куки
+                async with aiohttp.ClientSession() as temp_session:
+                    _, cycle_cookie = await get_next_proxy_cookie_async(temp_session)
+                    logger.debug(f"🍪 [DYNAMIC] Получили динамическую связку через временную сессию для анализа токена {symbol}")
             
         # Базовые заголовки без cookie (cookie будет добавлен в search_single_query)
         headers = {
@@ -594,8 +754,17 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
         # 2 запроса: символ (обычный поиск) и контракт (с кавычками и пагинацией)
         search_queries = [
             (f'${symbol}', False, False),  # Символ без кавычек, без пагинации
-            (f'"{mint}"', False, True)     # Контракт В КАВЫЧКАХ, с пагинацией для точного поиска
         ]
+        
+        # В режиме шилинга (CONTRACT_SEARCH_DISABLED=true) поиск контрактов отключен
+        import os
+        contract_search_disabled = os.getenv('CONTRACT_SEARCH_DISABLED', 'false').lower() == 'true'
+        
+        if not contract_search_disabled:
+            search_queries.append((f'"{mint}"', False, True))  # Контракт В КАВЫЧКАХ, с пагинацией для точного поиска
+            logger.debug(f"🔍 {symbol}: поиск символа + контракта (полный режим)")
+        else:
+            logger.info(f"🎯 {symbol}: поиск только символа - режим шилинга активен (CONTRACT_SEARCH_DISABLED=true)")
         
         # Выполняем запросы последовательно с паузами для избежания блокировки
         results = []
@@ -605,12 +774,12 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
             try:
                 if use_pagination:
                     # Для контрактов используем пагинацию (до 3 страниц)
-                    result, authors = await search_with_pagination(query, headers, max_pages=3, cycle_cookie=cycle_cookie)
+                    result, authors = await search_with_pagination(query, headers, max_pages=3, cycle_cookie=cycle_cookie, session=session)
                     all_contract_authors.extend(authors)
                     logger.info(f"📄 Пагинация для '{query}': {len(result)} твитов, {len(authors)} авторов")
                 else:
                     # Для символов используем обычный поиск
-                    result = await search_single_query(query, headers, use_quotes=use_quotes, cycle_cookie=cycle_cookie)
+                    result = await search_single_query(query, headers, use_quotes=use_quotes, cycle_cookie=cycle_cookie, session=session)
                 
                 # Проверяем если результат содержит информацию об ошибке
                 if isinstance(result, dict) and "error" in result:
@@ -656,7 +825,7 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
                     # Подсчитываем уникальные твиты по категориям
                     if i == 0:  # Первый запрос - символ
                         symbol_tweets_count += 1
-                    else:  # Второй запрос - контракт
+                    elif len(search_queries) > 1 and i == 1:  # Второй запрос - контракт (только если не отключен)
                         contract_tweets_count += 1
         
         # Итоговые подсчеты
@@ -720,6 +889,10 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None):
             'contract_authors': [],
             'error_details': [{"query": symbol, "error_category": "SYSTEM_ERROR", "error_message": str(e), "error_type": type(e).__name__}]
         }
+    finally:
+        # Закрываем сессию если она была создана локально
+        if session_created_locally and session:
+            await session.close()
 
 async def format_new_token(data):
     """Форматирование сообщения о новом токене с быстрым сохранением и фоновым анализом Twitter"""
@@ -728,6 +901,13 @@ async def format_new_token(data):
     symbol = data.get('symbol', 'UNK')
     description = data.get('description', 'Нет описания')
     creator = data.get('traderPublicKey', 'Unknown')
+    
+    # === ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ НАЧАЛА АНАЛИЗА ТОКЕНА ===
+    log_token_decision("🚀 НОВЫЙ_ТОКЕН_ОБНАРУЖЕН", symbol, mint, 
+                      f"Название: '{name}' | DEX: {data.get('dex', 'Unknown')} | "
+                      f"MC: ${data.get('marketCap', 0):,.0f} | "
+                      f"Создатель: {creator[:8]}... | "
+                      f"Twitter: {data.get('twitter', 'Отсутствует')}")
     
     # Создаем базовый анализ Twitter для немедленного сохранения
     twitter_analysis = {
@@ -778,8 +958,25 @@ async def format_new_token(data):
     # Получаем bondingCurveKey для кнопок
     bonding_curve_key = data.get('bondingCurveKey', 'Not available')
     
-    # Получаем дату создания токена (для новых токенов используем текущее время)
-    token_created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    # Получаем реальную дату создания токена из Jupiter API
+    token_created_at = "N/A"
+    first_pool = data.get('firstPool', {})
+    if first_pool and first_pool.get('createdAt'):
+        try:
+            # Парсим дату из Jupiter API (формат: '2025-06-30T01:47:45Z')
+            created_at_str = first_pool.get('createdAt')
+            if created_at_str.endswith('Z'):
+                created_at_str = created_at_str[:-1]
+            
+            # Используем datetime класс из импорта
+            created_datetime = datetime.fromisoformat(created_at_str)
+            token_created_at = created_datetime.strftime('%d.%m.%Y %H:%M:%S')
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка парсинга даты создания токена: {e}")
+            token_created_at = datetime.now().strftime('%d.%m.%Y %H:%M:%S')  # Fallback
+    else:
+        # Если нет данных о дате создания - используем текущее время
+        token_created_at = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
     
     # Определяем источник и заголовок
     dex_source = data.get('dex_source', 'pump.fun')
@@ -931,14 +1128,27 @@ async def format_new_token(data):
         ]
     ]
     
+    # === ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ФИЛЬТРАЦИИ ===
+    log_token_decision("📊 НАЧАЛО_ФИЛЬТРАЦИИ", symbol, mint, 
+                      f"MC: ${data.get('marketCap', 0):,.0f} | "
+                      f"Pool: {data.get('pool_type', 'Unknown')} | "
+                      f"Initial Buy: {data.get('initialBuy', 0)} SOL")
+    
     # НОВАЯ ЛОГИКА: быстрое сохранение, анализ Twitter в фоне
     # Немедленного уведомления нет - Twitter анализ идет в фоне
     immediate_notify = False  # ОТКЛЮЧАЕМ немедленные уведомления - только с анализом Twitter
+    
+    log_token_decision("⏳ ОЖИДАНИЕ_TWITTER_АНАЛИЗА", symbol, mint, 
+                      "Токен сохранен в БД, Twitter анализ запущен в фоновом режиме. "
+                      "Уведомление будет отправлено только после завершения анализа Twitter.")
     
     # Все токены сохраняются в БД и добавляются в фоновый мониторинг
     logger.info(f"⚡ Токен {symbol} - быстро сохранен, Twitter анализ запущен в фоне")
     
     should_notify = immediate_notify
+    
+    log_token_decision("🚫 РЕШЕНИЕ_НЕМЕДЛЕННОЕ_УВЕДОМЛЕНИЕ", symbol, mint, 
+                      f"should_notify = {should_notify} (ВСЕГДА FALSE до анализа Twitter)")
     
     # Логируем анализ токена
     log_token_analysis(data, twitter_analysis, should_notify)
@@ -1123,6 +1333,8 @@ async def handle_new_jupiter_token(pool_data):
         symbol = base_asset.get('symbol', 'Unknown')
         name = base_asset.get('name', symbol)
         dev_address = base_asset.get('dev', 'Unknown')
+
+        logger.info(base_asset)
         
         # Дополнительная информация
         market_cap = base_asset.get('marketCap', 0)
@@ -1131,11 +1343,13 @@ async def handle_new_jupiter_token(pool_data):
         logger.info(f"🚀 НОВЫЙ ТОКЕН через {dex}: {name} ({symbol}) - {mint[:8]}...")
         logger.info(f"   📊 Тип: {pool_type}, Market Cap: ${market_cap:,.2f}")
         
-        # Фильтруем по типу DEX - фокусируемся на новых токенах
-        interesting_types = ['pumpfun', 'bags.fun', 'met-dbc']
-        if pool_type not in interesting_types:
-            logger.debug(f"   ⏭️ Пропускаем {pool_type} - не новый тип токена")
-            return
+        # DEBUG: Проверяем наличие Twitter у токена перед фильтрацией
+        twitter_url = base_asset.get('twitter', '')
+        if twitter_url:
+            logger.info(f"   🐦 TWITTER НАЙДЕН: {twitter_url[:50]}... (тип пула: {pool_type})")
+        
+        # Обрабатываем ВСЕ токены независимо от типа пула
+        logger.debug(f"   ✅ Обрабатываем токен из {pool_type}")
         
         # Преобразуем данные Jupiter в формат pump.fun для совместимости
         pumpfun_format = {
@@ -1155,6 +1369,31 @@ async def handle_new_jupiter_token(pool_data):
         
         # Анализируем токен и получаем сообщение
         msg, keyboard, should_notify, token_image_url = await format_new_token(pumpfun_format)
+        
+        # Подготавливаем данные для системы обнаружения дубликатов
+        duplicate_detection_data = {
+            'id': mint,
+            'name': name,
+            'symbol': symbol,
+            'twitter': base_asset.get('twitter', ''),
+            'website': base_asset.get('website', ''),
+            'telegram': base_asset.get('telegram', ''),
+            'social': base_asset.get('social', ''),
+            'links': base_asset.get('links', ''),
+            'firstPool': {
+                'createdAt': created_timestamp
+            },
+            'dev': dev_address,
+            'dex': dex,
+            'pool_type': pool_type
+        }
+        
+        # Запускаем обнаружение дубликатов (асинхронно)
+        try:
+            logger.debug(f"🔍 ДУБЛИКАТ DEBUG {symbol}: Twitter = '{duplicate_detection_data.get('twitter', '')}', Pool Type = '{pool_type}'")
+            await process_duplicate_detection(duplicate_detection_data)
+        except Exception as e:
+            logger.error(f"❌ Ошибка обнаружения дубликатов для {symbol}: {e}")
         
         # Отправляем уведомление
         if should_notify:
@@ -1208,6 +1447,31 @@ async def handle_legacy_pumpfun_token(data):
         # Анализируем токен и получаем сообщение
         msg, keyboard, should_notify, token_image_url = await format_new_token(data)
         
+        # Подготавливаем данные для системы обнаружения дубликатов
+        duplicate_detection_data = {
+            'id': mint,
+            'name': token_name,
+            'symbol': symbol,
+            'twitter': data.get('twitter', ''),
+            'website': data.get('website', ''),
+            'telegram': data.get('telegram', ''),
+            'social': data.get('social', ''),
+            'links': data.get('links', ''),
+            'firstPool': {
+                'createdAt': data.get('created_timestamp', data.get('timestamp'))
+            },
+            'dev': data.get('dev', ''),
+            'dex': 'pump.fun',
+            'pool_type': 'legacy'
+        }
+        
+        # Запускаем обнаружение дубликатов (асинхронно)
+        try:
+            logger.debug(f"🔍 LEGACY ДУБЛИКАТ DEBUG {symbol}: Twitter = '{duplicate_detection_data.get('twitter', '')}'")
+            await process_duplicate_detection(duplicate_detection_data)
+        except Exception as e:
+            logger.error(f"❌ Ошибка обнаружения дубликатов для legacy {symbol}: {e}")
+        
         # Отправляем уведомление
         if should_notify:
             logger.info(f"✅ Legacy токен {symbol} прошел фильтрацию - отправляем уведомление")
@@ -1260,11 +1524,11 @@ async def send_daily_stats():
         logger.error(f"❌ Ошибка отправки ежедневной статистики: {e}")
 
 async def check_connection_health(websocket):
-    """Проверка здоровья соединения"""
+    """Проверка здоровья соединения без ping - просто проверяем что WebSocket не закрыт"""
     try:
-        # Отправляем простой ping
-        pong_waiter = await websocket.ping()
-        await asyncio.wait_for(pong_waiter, timeout=5)
+        # Проверяем только состояние соединения без отправки ping
+        if websocket.closed:
+            return False
         return True
     except Exception as e:
         logger.warning(f"⚠️ Проблема с соединением: {e}")
@@ -1699,10 +1963,18 @@ async def twitter_analysis_worker():
             mint = token_data['mint']
             symbol = token_data['symbol']
             
+            # === ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ФОНОВОГО АНАЛИЗА ===
+            log_token_decision("🔍 СТАРТ_TWITTER_АНАЛИЗА", symbol, mint, 
+                              f"Токен извлечен из очереди. Размер очереди: {queue_size}. "
+                              f"Режим: {'ПАКЕТНЫЙ' if batch_mode else 'ОБЫЧНЫЙ'}")
+            
             logger.info(f"🔍 Начинаем фоновый анализ токена {symbol} в Twitter...")
             
             # Выполняем анализ Twitter с быстрым фолбэком при ошибках
             try:
+                log_token_decision("📊 ЗАПУСК_АНАЛИЗА_NITTER", symbol, mint, 
+                                  "Начинаем поиск в Twitter через Nitter серверы...")
+                
                 twitter_analysis = await analyze_token_sentiment(mint, symbol)
                 
                 # Проверяем если анализ провалился из-за Nitter проблем
@@ -1785,6 +2057,16 @@ async def twitter_analysis_worker():
                     'contract_authors': []
                 }
             
+            # === ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ РЕЗУЛЬТАТОВ АНАЛИЗА ===
+            log_token_decision("✅ АНАЛИЗ_ЗАВЕРШЕН", symbol, mint, 
+                              f"Твиты: {twitter_analysis['tweets']} | "
+                              f"Символ: {twitter_analysis['symbol_tweets']} | "
+                              f"Контракт: {twitter_analysis['contract_tweets']} | "
+                              f"Активность: {twitter_analysis['engagement']} | "
+                              f"Скор: {twitter_analysis['score']} | "
+                              f"Рейтинг: {twitter_analysis['rating']} | "
+                              f"Контракт найден: {'ДА' if twitter_analysis['contract_found'] else 'НЕТ'}")
+            
             # Сохраняем результат
             twitter_analysis_results[mint] = twitter_analysis
             
@@ -1815,8 +2097,34 @@ async def twitter_analysis_worker():
                 session.close()
                 
                 # Проверяем нужно ли отправить отложенное уведомление
-                if should_send_delayed_notification(twitter_analysis, symbol, mint):
-                    await send_delayed_twitter_notification(token_data, twitter_analysis)
+                # В режиме шилинга (CONTRACT_SEARCH_DISABLED=true) уведомления о контрактах отключены
+                contract_search_disabled = os.getenv('CONTRACT_SEARCH_DISABLED', 'false').lower() == 'true'
+                
+                log_token_decision("⚖️ ПРОВЕРКА_ФИЛЬТРА", symbol, mint, 
+                                  f"CONTRACT_SEARCH_DISABLED: {contract_search_disabled}")
+                
+                notification_decision = should_send_delayed_notification(twitter_analysis, symbol, mint)
+                
+                log_token_decision("🎯 РЕШЕНИЕ_ФИЛЬТРА", symbol, mint, 
+                                  f"should_send_delayed_notification() = {notification_decision} | "
+                                  f"Причина: {'Найден контракт в Twitter' if notification_decision else 'Контракт НЕ найден или низкая активность'}")
+                
+                if notification_decision:
+                    if contract_search_disabled:
+                        log_token_decision("🚫 БЛОКИРОВКА_РЕЖИМОМ_ШИЛИНГА", symbol, mint, 
+                                          "Уведомление заблокировано - включен режим шилинга (CONTRACT_SEARCH_DISABLED=true)")
+                        logger.info(f"🎯 {symbol}: уведомление о контракте пропущено - включен режим шилинга (CONTRACT_SEARCH_DISABLED=true)")
+                    else:
+                        log_token_decision("🚀 ОТПРАВКА_УВЕДОМЛЕНИЯ", symbol, mint, 
+                                          f"ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ! Отправляем уведомление пользователям. "
+                                          f"Контракт найден: {'ДА' if twitter_analysis['contract_found'] else 'НЕТ'} | "
+                                          f"Скор: {twitter_analysis['score']}")
+                        await send_delayed_twitter_notification(token_data, twitter_analysis)
+                else:
+                    log_token_decision("❌ ТОКЕН_ОТФИЛЬТРОВАН", symbol, mint, 
+                                      f"Токен НЕ прошел фильтрацию. Уведомление НЕ отправляется. "
+                                      f"Контракт: {'НЕ найден' if not twitter_analysis['contract_found'] else 'найден'} | "
+                                      f"Скор: {twitter_analysis['score']} (возможно недостаточно)")
                     
                     # ПОМЕЧАЕМ ЧТО УВЕДОМЛЕНИЕ ОТПРАВЛЕНО - избегаем дублирования
                     try:
@@ -2025,6 +2333,28 @@ def should_notify_based_on_authors_unified(authors):
     ВАЖНО: Также проверяем черный список авторов
     НОВОЕ: Также блокируем спам-ботов
     """
+    # === ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ АНАЛИЗА АВТОРОВ ===
+    if authors:
+        authors_info = []
+        for author in authors[:3]:  # Показываем первых 3 авторов
+            username = author.get('username', 'Unknown')
+            followers = author.get('followers_count', 0)
+            diversity = author.get('contract_diversity', 0)
+            spam_percent = author.get('max_contract_spam', 0)
+            authors_info.append(f"@{username} ({followers:,} подп., {diversity:.1f}% разнообр.)")
+        
+        # Извлекаем первый mint из авторов если есть
+        first_author = authors[0] if authors else {}
+        sample_mint = "Unknown"
+        if 'tweet_text' in first_author:
+            import re
+            contracts = re.findall(r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b', first_author['tweet_text'])
+            if contracts:
+                sample_mint = contracts[0]
+        
+        log_token_decision("👥 АНАЛИЗ_АВТОРОВ_СТАРТ", "MULTIPLE", sample_mint, 
+                          f"Найдено {len(authors)} авторов: {', '.join(authors_info[:3])}{'...' if len(authors) > 3 else ''}")
+    
     if not authors:
         logger.info(f"🚫 Нет информации об авторах твитов - пропускаем уведомление")
         return False  # Нет авторов - НЕ отправляем
@@ -2107,9 +2437,20 @@ def should_notify_based_on_authors_unified(authors):
     logger.info(f"   ✅ Нормальных авторов: {valid_authors - pure_spammers}")
     logger.info(f"   🎯 РЕШЕНИЕ: {'ОТПРАВИТЬ' if should_notify else 'ЗАБЛОКИРОВАТЬ'}")
     
+    # === ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ФИНАЛЬНОГО РЕШЕНИЯ ===
+    decision_details = (
+        f"Всего: {total_authors} | Валидных: {valid_authors} | "
+        f"Спам-ботов: {spam_bots} | Чистых спамеров: {pure_spammers - spam_bots} | "
+        f"В черном списке: {blacklisted_authors}"
+    )
+    
     if not should_notify:
+        log_token_decision("🚫 АВТОРЫ_ОТФИЛЬТРОВАНЫ", "MULTIPLE", sample_mint, 
+                          f"ВСЕ авторы являются спамерами/спам-ботами. {decision_details}")
         logger.info(f"🚫 Уведомление заблокировано - ВСЕ авторы являются спамерами/спам-ботами")
     else:
+        log_token_decision("✅ АВТОРЫ_ПРОШЛИ_ФИЛЬТР", "MULTIPLE", sample_mint, 
+                          f"Есть подходящие авторы для уведомления. {decision_details}")
         logger.info(f"✅ Уведомление разрешено - есть нормальные авторы или нет данных об авторах")
     
     return should_notify
@@ -2918,13 +3259,41 @@ async def main():
             await check_and_retry_failed_analysis()
             reset_analyzing_tokens_timeout()
     
+    # Запускаем мониторинг официальных контрактов каждую минуту
+    async def official_contracts_monitor():
+        while True:
+            await asyncio.sleep(60)  # 1 минута
+            
+            # Мониторим официальные контракты для групп дубликатов
+            await monitor_official_contracts_for_groups()
+    
     # Запускаем VIP мониторинг Twitter аккаунтов
     # VIP мониторинг Twitter аккаунтов перенесен в отдельную систему vip_twitter_monitor.py
     
     retry_task = asyncio.create_task(retry_analysis_scheduler())
+    contracts_monitor_task = asyncio.create_task(official_contracts_monitor())
     
     logger.info("🔄 Запущен планировщик повторного анализа")
     logger.info("🔄 Запущен фоновый обработчик анализа Twitter")
+    logger.info("🔍 Запущен мониторинг официальных контрактов (каждую минуту)")
+    
+    # Инициализируем новую систему групп дубликатов
+    initialize_duplicate_groups_manager(TELEGRAM_TOKEN)
+    logger.info("✅ Система групп дубликатов с Google Sheets инициализирована")
+    
+    # Логируем статус системы обнаружения дубликатов
+    if duplicate_detection_enabled:
+        logger.info("🔍 Система обнаружения дубликатов АКТИВНА")
+        logger.info("📍 Уведомления о дубликатах будут отправляться в тему 14")
+        logger.info("📊 Google Sheets таблицы будут создаваться автоматически")
+        if contract_search_disabled:
+            logger.info("🎯 РЕЖИМ: Фокус на шилинге - поиск контрактов ОТКЛЮЧЕН")
+            logger.info("⚡ Уведомления при любых упоминаниях токена")
+        else:
+            logger.info("🔍 РЕЖИМ: Полный анализ - поиск контрактов ВКЛЮЧЕН")
+            logger.info("📊 Уведомления только при анонсах БЕЗ контракта")
+    else:
+        logger.info("🚫 Система обнаружения дубликатов ОТКЛЮЧЕНА")
     
     # Счетчики для оптимизации
     consecutive_errors = 0
@@ -2952,8 +3321,6 @@ async def main():
             # Универсальные параметры подключения
             connect_params = {
                 "ssl": ssl_context,
-                "ping_interval": WEBSOCKET_CONFIG['ping_interval'],
-                "ping_timeout": WEBSOCKET_CONFIG['ping_timeout'],
                 "close_timeout": WEBSOCKET_CONFIG['close_timeout'],
                 "max_size": WEBSOCKET_CONFIG['max_size'],
                 "max_queue": WEBSOCKET_CONFIG['max_queue']
@@ -3046,13 +3413,32 @@ async def main():
                         "🌐 Источники: pump.fun, Raydium, Meteora, bags.fun\n"
                         "📊 В 3-5 раз БОЛЬШЕ токенов чем раньше\n"
                         "✅ Кнопки для быстрой покупки\n\n"
-                        "💎 Революция в мониторинге токенов!"
                     )
-                    send_telegram(start_message)
+                    
+                    # Добавляем информацию о системе дубликатов только если она включена
+                    if duplicate_detection_enabled:
+                        start_message += (
+                            "🔍 <b>СИСТЕМА ОБНАРУЖЕНИЯ ДУБЛИКАТОВ!</b>\n"
+                            "🎯 Поиск токенов с одинаковыми данными\n"
+                        )
+                        if contract_search_disabled:
+                            start_message += (
+                                "⚡ <b>РЕЖИМ ШИЛИНГА:</b> Любые упоминания токена\n"
+                                "🚀 Максимальная скорость обнаружения\n"
+                            )
+                        else:
+                            start_message += (
+                                "🐦 Проверка контрактов в Twitter\n"
+                                "📊 Уведомления только при анонсах БЕЗ контракта\n"
+                            )
+                        start_message += "📍 Уведомления в тему 14\n\n"
+                    
+                    start_message += "💎 Революция в мониторинге токенов!"
+                    send_telegram_general(start_message)
                     first_connection = False
                 else:
                     # Уведомление о переподключении
-                    send_telegram("🔄 <b>Jupiter переподключение успешно!</b>\n✅ Продолжаем мониторинг всех DEX'ов")
+                    send_telegram_general("🔄 <b>Jupiter переподключение успешно!</b>\n✅ Продолжаем мониторинг всех DEX'ов")
                 
                 # Сброс счетчика ретраев при успешном подключении
                 retry_count = 0
@@ -3087,18 +3473,79 @@ async def main():
                         current_time = datetime.now()
                         time_since_heartbeat = (current_time - last_heartbeat).total_seconds()
                         
-                        # Если долго нет сообщений, проверяем соединение
+                        # Если долго нет сообщений, просто переподписываемся на пулы
                         if time_since_heartbeat > WEBSOCKET_CONFIG['heartbeat_check']:
-                            logger.info(f"🔍 Проверяем соединение (нет сообщений {time_since_heartbeat:.0f}с)")
+                            logger.info(f"🔍 Переподписываемся на пулы (нет сообщений {time_since_heartbeat:.0f}с)")
                             
-                            # Выполняем ping тест через монитор
-                            ping_time = await connection_monitor.ping_test(websocket)
-                            if ping_time == -1:
-                                logger.warning("❌ Соединение нездорово, переподключаемся...")
-                                break
-                            else:
-                                logger.info(f"✅ Ping: {ping_time:.0f}ms - соединение в порядке")
+                            try:
+                                # Переподписываемся на recent
+                                recent_msg = {"type": "subscribe:recent"}
+                                await websocket.send(json.dumps(recent_msg))
+                                logger.info("✅ Переподписались на recent")
+                                
+                                await asyncio.sleep(0.5)
+                                
+                                # Переподписываемся на первую группу пулов
+                                pools_msg_1 = {
+                                    "type": "subscribe:pool",
+                                    "pools": [
+                                        "7ydCvqmPj42msz3mm2W28a4hXKaukF7XNpRjNXNhbonk",
+                                        "29F4jaxGYGCP9oqJxWn7BRrXDCXMQYFEirSHQjhhpump",
+                                        "B5BQaCLi74zGhftMgJ4sMvB6mLmrX57HxhcUKgGBpump",
+                                        "9mjmty3G22deMtg1Nm3jTc5CRYTmK6wPPpbLG43Xpump",
+                                        "2d1STwNUEprrGuTz7DLSYb27K3iRcuSUKGkk2KpKpump",
+                                        "qy4gzfT8AyEC8YHRDhF8STMhJBi12dQkLFmabRVFSvA",
+                                        "31Edt1xnFvoRxL1cuaHB4wUGCL3P3xWrVEqpr2Jppump",
+                                        "AMxueJUmbczaFwB33opka4Noiy9xjkuHtk9wbu8Apump"
+                                    ]
+                                }
+                                await websocket.send(json.dumps(pools_msg_1))
+                                logger.info("✅ Переподписались на первую группу пулов")
+                                
+                                await asyncio.sleep(0.5)
+                                
+                                # Переподписываемся на вторую группу пулов
+                                pools_msg_2 = {
+                                    "type": "subscribe:pool", 
+                                    "pools": [
+                                        "Gvn6RiUgXe5mhdsfxG99WPaE4tA5B34cSfuKz1bDpump",
+                                        "XMF7a2yneYzRJYNmrCAyuY5Q4FhHFaq1rVrZyBoGVb6",
+                                        "9a65Ydi2b7oHq2WQwJtQdnUzaqLb9BVMR4mvm1LSpump",
+                                        "5YpHeidohua6JU16sM2mfK6xjomvrSzBVvuducY3pump",
+                                        "CuDeFkJpbpdyyAzyEK61j3rn5GWYxvdbJpi3gKpxpump",
+                                        "AtfLADJjSqpfaogbnGvYBpmCz3EWX25p671Z5dc3pump",
+                                        "EvKGsBoF86SundThCauxByMdx1gUgPzCtd3wgYeLpump",
+                                        "36kHY89q592VNKATeHCdDcV3tJLvQYASu4oe1Zfhpump"
+                                    ]
+                                }
+                                await websocket.send(json.dumps(pools_msg_2))
+                                logger.info("✅ Переподписались на вторую группу пулов")
+                                
+                                await asyncio.sleep(0.5)
+                                
+                                # Переподписываемся на третью группу пулов
+                                pools_msg_3 = {
+                                    "type": "subscribe:pool",
+                                    "pools": [
+                                        "fZXyTmDrjtjkXLBsVx2YWw2RU9TjUcnV3T3V4fhrGuv",
+                                        "8pR8hQRRLYMyxh6mLszMbyQPFNpNFNMTUjx9D7nxnxQh",
+                                        "DXazegZa2KcHH8ukAnweT8hj1Sa9t2KyDmvUfbXkjxZk",
+                                        "JECb6Zsw5FwuU6Kf28wTHwfGTaWTu9rAdHGcrcbb7TJD",
+                                        "7AH7kZiK2sByFUGpy1zgndtDiAaiAMQr66C8Mu8at9yz",
+                                        "9adfJNSd3sjfvV2kBX7z6erjbD2J3ANqPKpvTaLPnrku",
+                                        "DC9e6vbsnrooUTKVPbVVwNpxYvd4dcirk3jbTe7T6Hch",
+                                        "Cp2Yb6vj948VToEVddo6LNm7cDGAQCrDnjwbMYG3LkL5"
+                                    ]
+                                }
+                                await websocket.send(json.dumps(pools_msg_3))
+                                logger.info("✅ Переподписались на третью группу пулов")
+                                
                                 last_heartbeat = current_time
+                                logger.info("✅ Переподписка на все пулы завершена")
+                                
+                            except Exception as e:
+                                logger.warning(f"❌ Ошибка переподписки, переподключаемся: {e}")
+                                break
                     
         except websockets.exceptions.ConnectionClosed as e:
             # Обновляем статистику мониторинга
@@ -3154,8 +3601,6 @@ async def main():
 async def get_creator_token_history(creator_address):
     """Получает историю токенов создателя через Axiom API"""
     try:
-        import aiohttp
-        
         url = f"https://api8.axiom.trade/dev-tokens-v2?devAddress={creator_address}"
         
         # Заголовки для имитации браузера iPhone Safari
@@ -3264,6 +3709,1300 @@ async def get_creator_token_history(creator_address):
 # *** ФУНКЦИЯ ПЕРЕНЕСЕНА В vip_twitter_monitor.py ***
 
 # *** ФУНКЦИЯ ПЕРЕНЕСЕНА В vip_twitter_monitor.py ***
+
+def format_token_creation_time(created_time):
+    """Форматирует время создания токена в читаемый вид"""
+    try:
+        if not created_time or created_time == 'N/A':
+            return "❓ Неизвестно"
+        
+        # Пробуем разные форматы времени
+        formats_to_try = [
+            '%Y-%m-%dT%H:%M:%S.%fZ',  # 2025-06-29T04:23:36.123Z
+            '%Y-%m-%dT%H:%M:%SZ',     # 2025-06-29T04:23:36Z
+            '%Y-%m-%dT%H:%M:%S',      # 2025-06-29T04:23:36
+            '%Y-%m-%d %H:%M:%S',      # 2025-06-29 04:23:36
+        ]
+        
+        parsed_time = None
+        for format_str in formats_to_try:
+            try:
+                parsed_time = datetime.strptime(created_time, format_str)
+                break
+            except ValueError:
+                continue
+        
+        if parsed_time:
+            # Форматируем в читаемый вид
+            now = datetime.now()
+            time_diff = now - parsed_time
+            
+            # Добавляем относительное время
+            if time_diff.days > 0:
+                relative_time = f"({time_diff.days} дн. назад)"
+            elif time_diff.seconds > 3600:
+                hours = time_diff.seconds // 3600
+                relative_time = f"({hours} ч. назад)"
+            elif time_diff.seconds > 60:
+                minutes = time_diff.seconds // 60
+                relative_time = f"({minutes} мин. назад)"
+            else:
+                relative_time = "(только что)"
+            
+            return f"📅 {parsed_time.strftime('%d.%m.%Y %H:%M:%S')} {relative_time}"
+        else:
+            return f"📅 {created_time}"
+            
+    except Exception as e:
+        logger.debug(f"❌ Ошибка форматирования времени {created_time}: {e}")
+        return f"📅 {created_time}"
+
+def calculate_time_difference(original_time, duplicate_time):
+    """Вычисляет и форматирует разницу во времени между созданием токенов"""
+    try:
+        if not original_time or not duplicate_time or original_time == 'N/A' or duplicate_time == 'N/A':
+            return ""
+        
+        # Пробуем разные форматы времени
+        formats_to_try = [
+            '%Y-%m-%dT%H:%M:%S.%fZ',
+            '%Y-%m-%dT%H:%M:%SZ',
+            '%Y-%m-%dT%H:%M:%S',
+            '%Y-%m-%d %H:%M:%S',
+        ]
+        
+        original_parsed = None
+        duplicate_parsed = None
+        
+        for format_str in formats_to_try:
+            try:
+                if not original_parsed:
+                    original_parsed = datetime.strptime(original_time, format_str)
+                if not duplicate_parsed:
+                    duplicate_parsed = datetime.strptime(duplicate_time, format_str)
+                if original_parsed and duplicate_parsed:
+                    break
+            except ValueError:
+                continue
+        
+        if original_parsed and duplicate_parsed:
+            time_diff = abs((duplicate_parsed - original_parsed).total_seconds())
+            
+            if time_diff < 60:
+                diff_str = f"{int(time_diff)} сек."
+            elif time_diff < 3600:
+                minutes = int(time_diff // 60)
+                seconds = int(time_diff % 60)
+                diff_str = f"{minutes} мин. {seconds} сек."
+            elif time_diff < 86400:
+                hours = int(time_diff // 3600)
+                minutes = int((time_diff % 3600) // 60)
+                diff_str = f"{hours} ч. {minutes} мин."
+            else:
+                days = int(time_diff // 86400)
+                hours = int((time_diff % 86400) // 3600)
+                diff_str = f"{days} дн. {hours} ч."
+            
+            return f"⏰ <b>Разница во времени:</b> {diff_str}\n\n"
+        
+        return ""
+        
+    except Exception as e:
+        logger.debug(f"❌ Ошибка вычисления разницы времени: {e}")
+        return ""
+
+# Устаревшие функции удалены - логика перенесена в database.py
+
+def send_duplicate_alert(original_token, duplicate_token, reason, twitter_info=None):
+    """Отправляет уведомление о найденном дубликате в тему 14 с улучшенным форматированием"""
+    try:
+        target_chat_id = -1002680160752  # ID группы
+        message_thread_id = 14  # ID темы для дубликатов
+        
+        token1_id = original_token.get('id')
+        token2_id = duplicate_token.get('id')
+        
+        # Извлекаем Twitter аккаунты для отображения
+        token1_twitter = extract_twitter_accounts_from_token(original_token)
+        token2_twitter = extract_twitter_accounts_from_token(duplicate_token)
+        
+        token1_twitter_display = f"@{', @'.join(token1_twitter)}" if token1_twitter else "N/A"
+        token2_twitter_display = f"@{', @'.join(token2_twitter)}" if token2_twitter else "N/A"
+        
+        # Получаем правильно отформатированные даты
+        token1_created = original_token.get('firstPool', {}).get('createdAt')
+        token2_created = duplicate_token.get('firstPool', {}).get('createdAt')
+        
+        # Исправляем форматирование дат - убираем лишний префикс
+        def format_creation_date(created_time):
+            if not created_time or created_time == 'N/A':
+                return "❓ Неизвестно"
+            
+            try:
+                # Пробуем стандартный Jupiter формат
+                if created_time.endswith('Z'):
+                    parsed_time = datetime.fromisoformat(created_time[:-1])
+                else:
+                    parsed_time = datetime.fromisoformat(created_time)
+                
+                now = datetime.now()
+                time_diff = now - parsed_time
+                
+                if time_diff.days > 0:
+                    relative = f"({time_diff.days} дн. назад)"
+                elif time_diff.seconds > 3600:
+                    hours = time_diff.seconds // 3600
+                    relative = f"({hours} ч. назад)"
+                elif time_diff.seconds > 60:
+                    minutes = time_diff.seconds // 60
+                    relative = f"({minutes} мин. назад)"
+                else:
+                    relative = "(только что)"
+                
+                return f"{parsed_time.strftime('%d.%m.%Y %H:%M:%S')} {relative}"
+            except Exception as e:
+                logger.debug(f"❌ Ошибка парсинга даты {created_time}: {e}")
+                return str(created_time)
+        
+        token1_created_formatted = format_creation_date(token1_created)
+        token2_created_formatted = format_creation_date(token2_created)
+        
+        # Вычисляем разницу во времени
+        time_diff_info = calculate_time_difference(token1_created, token2_created)
+        
+        # Анализируем Twitter информацию
+        twitter_analysis = ""
+        tweet_quote = ""
+        
+        if twitter_info:
+            token1_announced = twitter_info.get('original_query') is not None
+            token2_announced = twitter_info.get('duplicate_query') is not None
+            
+            token1_has_contract = twitter_info.get('original_has_contract', False)
+            token2_has_contract = twitter_info.get('duplicate_has_contract', False)
+            
+            # Проверяем одинаковые ли твиты
+            tweet1 = twitter_info.get('original_tweet', '')
+            tweet2 = twitter_info.get('duplicate_tweet', '')
+            
+            if tweet1 and tweet2 and tweet1.strip() == tweet2.strip():
+                # Твиты одинаковые - показываем как одну цитату
+                tweet_quote = f"\n\n💬 <b>Найденный твит:</b>\n<blockquote>{tweet1}</blockquote>\n"
+            else:
+                # Твиты разные - показываем отдельно если есть
+                if tweet1:
+                    tweet_quote += f"\n💬 <b>Твит токена #1:</b>\n<blockquote>{tweet1}</blockquote>\n"
+                if tweet2:
+                    tweet_quote += f"\n💬 <b>Твит токена #2:</b>\n<blockquote>{tweet2}</blockquote>\n"
+            
+            # Формируем анализ статуса
+            twitter_analysis = "\n🔍 <b>АНАЛИЗ TWITTER:</b>\n"
+            
+            # Статус токена #1
+            if token1_announced:
+                contract_status1 = "📍 КОНТРАКТ ЕСТЬ" if token1_has_contract else "❌ КОНТРАКТ НЕТ"
+                twitter_analysis += f"1️⃣ <b>Токен #1:</b> ✅ анонсирован, {contract_status1}\n"
+            else:
+                twitter_analysis += f"1️⃣ <b>Токен #1:</b> ❌ не анонсирован\n"
+            
+            # Статус токена #2  
+            if token2_announced:
+                contract_status2 = "📍 КОНТРАКТ ЕСТЬ" if token2_has_contract else "❌ КОНТРАКТ НЕТ"
+                twitter_analysis += f"2️⃣ <b>Токен #2:</b> ✅ анонсирован, {contract_status2}\n"
+            else:
+                twitter_analysis += f"2️⃣ <b>Токен #2:</b> ❌ не анонсирован\n"
+        
+        # Формируем основное сообщение
+        message = (
+            f"🔍 <b>НАЙДЕНЫ ПОХОЖИЕ ТОКЕНЫ!</b>\n\n"
+            f"📋 <b>Причина схожести:</b> {reason}\n\n"
+            f"1️⃣ <b>ТОКЕН #1:</b>\n"
+            f"💎 <b>Название:</b> {original_token.get('name', 'N/A')}\n"
+            f"🏷️ <b>Символ:</b> {original_token.get('symbol', 'N/A')}\n"
+            f"📍 <b>Адрес:</b> <code>{token1_id}</code>\n"
+            f"🐦 <b>Twitter:</b> {token1_twitter_display}\n"
+            f"📅 <b>Создан:</b> {token1_created_formatted}\n\n"
+            f"2️⃣ <b>ТОКЕН #2:</b>\n"
+            f"💎 <b>Название:</b> {duplicate_token.get('name', 'N/A')}\n"
+            f"🏷️ <b>Символ:</b> {duplicate_token.get('symbol', 'N/A')}\n"
+            f"📍 <b>Адрес:</b> <code>{token2_id}</code>\n"
+            f"🐦 <b>Twitter:</b> {token2_twitter_display}\n"
+            f"📅 <b>Создан:</b> {token2_created_formatted}\n\n"
+            f"{time_diff_info}"
+            f"{twitter_analysis}"
+            f"{tweet_quote}"
+            f"⚠️ <b>Возможный шилинг похожих токенов!</b>\n"
+            f"🕐 <b>Время обнаружения:</b> {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+        )
+        
+
+        
+        # Отправляем текстовое сообщение
+        text_payload = {
+            "chat_id": target_chat_id,
+            "message_thread_id": message_thread_id,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False
+        }
+        
+        text_response = requests.post(TELEGRAM_URL, json=text_payload)
+        
+        if text_response.status_code == 200:
+            # Помечаем пару как отправленную через БД
+            if token1_id and token2_id:
+                db_manager = get_db_manager()
+                db_manager.mark_duplicate_pair_as_sent(token1_id, token2_id)
+            
+            logger.info(f"✅ Уведомление о похожих токенах отправлено в тему {message_thread_id}")
+            return True
+        else:
+            logger.error(f"❌ Ошибка отправки текстового сообщения: {text_response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки уведомления о дубликате: {e}")
+        return False
+
+async def search_twitter_mentions(twitter_url, token_name, token_symbol, contract_address=None):
+    """Ищет упоминания токена в Twitter используя ту же систему что и основной анализ"""
+    try:
+        if not twitter_url or not token_name:
+            return None, None, None
+            
+        # Извлекаем username из Twitter URL
+        import re
+        username_match = re.search(r'(?:twitter\.com|x\.com)/([^/]+)', twitter_url)
+        if not username_match:
+            return None, None, None
+            
+        username = username_match.group(1)
+        
+        # Создаем поисковые запросы - хештег и символ доллара
+        search_queries = []
+        
+        # 1. Приоритет 1 - хештег символа (основной поиск)
+        if token_symbol:
+            search_queries.append({
+                'query': f'"#{token_symbol}"',
+                'priority': 1,
+                'type': 'hashtag_symbol'
+            })
+        
+        # 2. Приоритет 2 - символ с долларом
+        if token_symbol:
+            search_queries.append({
+                'query': f'"${token_symbol}"',
+                'priority': 2,
+                'type': 'dollar_symbol'
+            })
+        
+        # 3. Приоритет 3 - контракт в кавычках (если есть)
+        if contract_address:
+            search_queries.append({
+                'query': f'"{contract_address}"',
+                'priority': 3,
+                'type': 'quoted_contract'
+            })
+        
+        # Используем новую динамическую систему куки с anubis_handler
+        async with aiohttp.ClientSession() as temp_session:
+            proxy, cookie = await get_next_proxy_cookie_async(temp_session)
+        
+        # Заголовки как в основной системе
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64; rv:45.0) Gecko/20100101 Firefox/45.0',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Cookie': cookie
+        }
+        
+        from bs4 import BeautifulSoup
+        from urllib.parse import quote
+        
+        # Ищем по приоритету запросов
+        for query_info in search_queries:
+            query = query_info['query']
+            query_type = query_info['type']
+            priority = query_info['priority']
+            
+            # Формируем URL поиска как в основной системе
+            search_url = f"https://nitter.tiekoetter.com/{username}/search?f=tweets&q={quote(query)}&since=&until=&near="
+            
+            # Retry механизм для каждого запроса (как в основной системе)
+            for retry_attempt in range(3):  # до 3 попыток
+                # Создаем НОВЫЙ connector для каждой попытки (исправляет Session is closed)
+                connector = None
+                request_kwargs = {}
+                if proxy:
+                    try:
+                        connector = aiohttp.ProxyConnector.from_url(proxy)
+                    except AttributeError:
+                        connector = aiohttp.TCPConnector()
+                        request_kwargs['proxy'] = proxy
+                
+                try:
+                    async with aiohttp.ClientSession(connector=connector) as session:
+                        async with session.get(search_url, headers=headers, timeout=20, **request_kwargs) as response:
+                            if response.status == 200:
+                                html = await response.text()
+                                soup = BeautifulSoup(html, 'html.parser')
+                                
+                                # Проверяем на блокировку Nitter как в основной системе
+                                title = soup.find('title')
+                                if title and 'Making sure you\'re not a bot!' in title.get_text():
+                                    logger.warning(f"🚫 Nitter заблокирован для поиска '{query}' в @{username}")
+                                    break  # Прерываем retry для этого запроса
+                                
+                                tweets = soup.find_all('div', class_='timeline-item')
+                                
+                                if tweets and len(tweets) > 0:
+                                    # Извлекаем текст первого найденного твита
+                                    tweet_text = extract_first_tweet_text(tweets[0])
+                                    logger.info(f"✅ Найдено упоминание '{query}' в Twitter @{username} (тип: {query_type}, приоритет: {priority})")
+                                    return query, tweet_text, query_type
+                                else:
+                                    logger.debug(f"🚫 Упоминание '{query}' НЕ найдено в Twitter @{username}")
+                                    break  # Нет смысла retry если твиты не найдены
+                            elif response.status == 429:
+                                if retry_attempt < 2:
+                                    logger.warning(f"⚠️ Rate limit для поиска '{query}' в @{username} (попытка {retry_attempt + 1}/3)")
+                                    await asyncio.sleep(0.1)  # Мини пауза
+                                    continue  # Повторяем попытку
+                                else:
+                                    logger.warning(f"❌ Rate limit для поиска '{query}' в @{username} - превышены попытки")
+                                    break
+                            else:
+                                logger.warning(f"⚠️ Не удалось проверить '{query}' в Twitter @{username}: {response.status}")
+                                break  # Прерываем retry для HTTP ошибок
+                                
+                except Exception as e:
+                    error_type = type(e).__name__
+                    if retry_attempt < 2:
+                        logger.warning(f"⚠️ Ошибка поиска '{query}' в @{username}: {error_type} (попытка {retry_attempt + 1}/3)")
+                        await asyncio.sleep(0.1)  # Мини пауза перед retry
+                        continue  # Повторяем попытку
+                    else:
+                        logger.error(f"❌ Превышены попытки поиска '{query}' в @{username}: {error_type} - {e}")
+                        break  # Прерываем retry
+                
+                # Если дошли сюда - успешный результат или окончательная ошибка
+                break
+        
+        # Ничего не найдено
+        logger.debug(f"🚫 Никаких упоминаний токена не найдено в Twitter @{username}")
+        return None, None, None
+                    
+    except Exception as e:
+        logger.error(f"❌ Ошибка поиска упоминаний в Twitter: {e}")
+        return None, None, None
+
+def extract_first_tweet_text(tweet_element):
+    """Извлекает текст из элемента твита"""
+    try:
+        # Ищем текст твита в различных элементах
+        tweet_content = tweet_element.find('div', class_='tweet-content')
+        if tweet_content:
+            text = tweet_content.get_text().strip()
+            # Ограничиваем длину текста
+            if len(text) > 280:
+                text = text[:280] + "..."
+            return text
+        
+        # Если не нашли tweet-content, пробуем другие варианты
+        text_elements = tweet_element.find_all(['p', 'div'], class_=lambda x: x and ('tweet' in x or 'content' in x))
+        for element in text_elements:
+            text = element.get_text().strip()
+            if text and len(text) > 10:  # Минимальная длина для осмысленного текста
+                if len(text) > 280:
+                    text = text[:280] + "..."
+                return text
+        
+        # Последняя попытка - просто весь текст элемента
+        text = tweet_element.get_text().strip()
+        if text:
+            # Очищаем от лишних пробелов и переносов
+            import re
+            text = re.sub(r'\s+', ' ', text)
+            if len(text) > 280:
+                text = text[:280] + "..."
+            return text
+            
+        return "Текст твита не удалось извлечь"
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка извлечения текста твита: {e}")
+        return "Ошибка извлечения текста"
+
+async def check_twitter_contract_exists(twitter_url, contract_address):
+    """Проверяет наличие контракта в Twitter через Nitter (для обратной совместимости)"""
+    found_query, tweet_text, query_type = await search_twitter_mentions(twitter_url, "", "", contract_address)
+    return found_query is not None
+
+def extract_twitter_accounts_from_token(token_data):
+    """Извлекает и нормализует Twitter аккаунты из всех полей токена"""
+    twitter_accounts = set()
+    
+    # Поля где могут быть Twitter ссылки
+    twitter_fields = ['twitter', 'website', 'telegram', 'social', 'links']
+    
+    for field in twitter_fields:
+        url = token_data.get(field, '')
+        if url and isinstance(url, str):
+            account = normalize_twitter_url(url)
+            if account:
+                twitter_accounts.add(account)
+    
+    return list(twitter_accounts)
+
+def normalize_twitter_url(url):
+    """Нормализует Twitter URL, извлекая чистый аккаунт с сохранением оригинального регистра username"""
+    try:
+        if not url or not isinstance(url, str):
+            return None
+            
+        original_url = url.strip()
+        
+        # Приводим к нижнему регистру только для проверки доменов
+        url_lower = original_url.lower()
+        
+        # Проверяем что это Twitter/X ссылка (проверяем в нижнем регистре)
+        if not any(domain in url_lower for domain in ['twitter.com', 'x.com']):
+            return None
+            
+        # Пропускаем ссылки на комьюнити (проверяем в нижнем регистре)
+        if '/communities/' in url_lower:
+            logger.debug(f"🚫 Пропускаем комьюнити ссылку: {original_url}")
+            return None
+            
+        # Пропускаем ссылки на твиты - только аккаунты без ссылок на конкретные посты
+        if '/status/' in url_lower:
+            logger.debug(f"🚫 Пропускаем ссылку на твит: {original_url}")
+            return None
+            
+        # Извлекаем username из ОРИГИНАЛЬНОГО URL (с сохранением регистра)
+        import re
+        
+        # Паттерн для извлечения username (case-insensitive для доменов)
+        # Поддерживает: twitter.com/username, x.com/username, twitter.com/username/status/...
+        username_pattern = r'(?i)(?:twitter\.com|x\.com)/([^/\?]+)'
+        match = re.search(username_pattern, original_url)
+        
+        if match:
+            username = match.group(1).strip()
+            
+            # Пропускаем служебные пути (проверяем в нижнем регистре)
+            service_paths = ['i', 'home', 'search', 'notifications', 'messages', 'settings', 'intent']
+            if username.lower() in service_paths:
+                logger.debug(f"🚫 Пропускаем служебную ссылку: {original_url}")
+                return None
+                
+            # Возвращаем username в ОРИГИНАЛЬНОМ регистре
+            return username
+            
+    except Exception as e:
+        logger.debug(f"❌ Ошибка нормализации Twitter URL {original_url}: {e}")
+        
+    return None
+
+def tokens_are_similar(token1, token2, similarity_threshold=0.8):
+    """Проверяет похожесть двух токенов по названию, символу и Twitter аккаунтам"""
+    try:
+        # Сравниваем основные поля
+        name1 = token1.get('name', '').lower().strip()
+        name2 = token2.get('name', '').lower().strip()
+        
+        symbol1 = token1.get('symbol', '').lower().strip()
+        symbol2 = token2.get('symbol', '').lower().strip()
+        
+        # Извлекаем Twitter аккаунты из всех полей
+        twitter_accounts1 = set(extract_twitter_accounts_from_token(token1))
+        twitter_accounts2 = set(extract_twitter_accounts_from_token(token2))
+        
+        # Проверяем пересечения Twitter аккаунтов
+        twitter_intersection = twitter_accounts1.intersection(twitter_accounts2)
+        has_common_twitter = len(twitter_intersection) > 0
+        
+        # Проверяем точные совпадения
+        exact_matches = 0
+        total_checks = 0
+        reasons = []
+        
+        # Название
+        if name1 and name2:
+            total_checks += 1
+            if name1 == name2:
+                exact_matches += 1
+                reasons.append("одинаковое название")
+        
+        # Символ
+        if symbol1 and symbol2:
+            total_checks += 1
+            if symbol1 == symbol2:
+                exact_matches += 1
+                reasons.append("одинаковый символ")
+        
+        # Twitter аккаунты
+        if twitter_accounts1 and twitter_accounts2:
+            total_checks += 1
+            if has_common_twitter:
+                exact_matches += 1
+                common_accounts = ', '.join(twitter_intersection)
+                reasons.append(f"общие Twitter аккаунты: @{common_accounts}")
+        
+        # Вычисляем схожесть
+        if total_checks == 0:
+            return False, "Недостаточно данных для сравнения"
+        
+        similarity = exact_matches / total_checks
+        
+        if similarity >= similarity_threshold:
+            return True, f"Схожесть {similarity:.0%}: {', '.join(reasons)}"
+        
+        return False, f"Схожесть {similarity:.0%} - недостаточно для дубликата"
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка сравнения токенов: {e}")
+        return False, f"Ошибка сравнения: {e}"
+
+async def process_duplicate_detection(new_token):
+    """Обрабатывает новый токен для поиска дубликатов через базу данных"""
+    try:
+        if not duplicate_detection_enabled:
+            return
+            
+        token_id = new_token.get('id')
+        if not token_id:
+            logger.debug("🚫 Токен пропущен - нет ID")
+            return
+        
+        # Получаем менеджер БД
+        db_manager = get_db_manager()
+        
+        # Проверяем, не обрабатывали ли мы уже этот токен
+        if db_manager.is_token_already_processed(token_id):
+            logger.debug(f"🚫 Токен {new_token.get('symbol', 'Unknown')} ({token_id[:8]}...) уже в БД - пропускаем")
+            return
+            
+        # НОВАЯ СТРАТЕГИЯ: ищем ТОЛЬКО токены БЕЗ ссылок (потенциальные оригиналы)
+        if has_any_links(new_token):
+            logger.debug(f"🚫 Токен {new_token.get('symbol', 'Unknown')} ({token_id[:8]}...) пропущен - есть ссылки (скам)")
+            # Сохраняем скам токен в БД но не ищем дубликаты
+            db_manager.save_duplicate_token(new_token)
+            return
+        
+        logger.info(f"🎯 ЧИСТЫЙ ТОКЕН БЕЗ ССЫЛОК: {new_token.get('symbol', 'Unknown')} ({token_id[:8]}...) - ищем дубликаты")
+        
+        # Ищем похожие токены в БД
+        similar_tokens = db_manager.find_similar_tokens(new_token, similarity_threshold=0.8)
+        duplicates_found = 0
+        
+        # Обрабатываем каждый похожий токен
+        for similar_data in similar_tokens:
+            stored_token_db = similar_data['token']
+            similarity_score = similar_data['similarity'] 
+            similarity_reasons = similar_data['reasons']
+            
+            stored_token_id = stored_token_db.mint
+            
+            # Проверяем, не отправляли ли мы уже эту пару
+            if db_manager.is_duplicate_pair_already_sent(stored_token_id, token_id):
+                logger.debug(f"🚫 Пара {stored_token_db.symbol} vs {new_token.get('symbol')} уже отправлена - пропускаем")
+                continue
+            
+            logger.info(f"🔍 Найден возможный дубликат: {new_token.get('symbol')} ({token_id[:8]}...) похож на {stored_token_db.symbol} ({stored_token_id[:8]}...)")
+            logger.info(f"🔍 Схожесть {similarity_score:.0%}: {', '.join(similarity_reasons)}")
+            
+            # Преобразуем объект БД в словарь для совместимости с существующим кодом
+            stored_token = {
+                'id': stored_token_db.mint,
+                'name': stored_token_db.name,
+                'symbol': stored_token_db.symbol,
+                'icon': stored_token_db.icon,
+                'twitter': stored_token_db.twitter,
+                'telegram': stored_token_db.telegram,
+                'website': stored_token_db.website
+            }
+            
+            # ПРОВЕРКА: у нового токена НЕТ ссылок, но проверяем есть ли ссылки у найденного дубликата
+            stored_has_links = has_any_links(stored_token)
+            new_has_links = has_any_links(new_token)  # Должно быть False, но проверим
+            
+            logger.info(f"📋 Сравнение: найденный дубликат {'🔗 ЕСТЬ ссылки' if stored_has_links else '🚫 БЕЗ ссылок'}, новый токен {'🔗 ЕСТЬ ссылки' if new_has_links else '🚫 БЕЗ ссылок'}")
+            
+            # Получаем Twitter аккаунты для проверки упоминаний (только у тех токенов где есть ссылки)
+            stored_twitter_accounts = extract_twitter_accounts_from_token(stored_token) if stored_has_links else []
+            new_twitter_accounts = extract_twitter_accounts_from_token(new_token) if new_has_links else []
+            
+            # Ищем упоминания токенов в Twitter
+            original_found_query = None
+            original_tweet_text = None
+            original_query_type = None
+            
+            duplicate_found_query = None
+            duplicate_tweet_text = None
+            duplicate_query_type = None
+            
+            # Проверяем оригинальный токен
+            for account in stored_twitter_accounts:
+                twitter_url = f"https://x.com/{account}"
+                query, tweet, query_type = await search_twitter_mentions(
+                    twitter_url, 
+                    stored_token.get('name', ''), 
+                    stored_token.get('symbol', ''),
+                    stored_token.get('id')
+                )
+                if query:
+                    original_found_query = query
+                    original_tweet_text = tweet
+                    original_query_type = query_type
+                    break
+            
+            # Проверяем дубликат
+            for account in new_twitter_accounts:
+                twitter_url = f"https://x.com/{account}"
+                query, tweet, query_type = await search_twitter_mentions(
+                    twitter_url, 
+                    new_token.get('name', ''), 
+                    new_token.get('symbol', ''),
+                    new_token.get('id')
+                )
+                if query:
+                    duplicate_found_query = query
+                    duplicate_tweet_text = tweet
+                    duplicate_query_type = query_type
+                    break
+            
+            # НОВАЯ ЛОГИКА: анализ токенов БЕЗ ссылок vs С ссылками
+            send_notification = False
+            skip_reasons = []
+            
+            if not stored_has_links and not new_has_links:
+                # Оба токена БЕЗ ссылок - возможно несколько команд делают один токен
+                send_notification = True
+                logger.info(f"🔥 НАЙДЕНЫ ДВА ЧИСТЫХ ТОКЕНА: {new_token.get('symbol')} - оба без ссылок, возможна конкуренция разработчиков!")
+                
+            elif stored_has_links and not new_has_links:
+                # Старый токен СО ссылками, новый БЕЗ ссылок - новый может быть оригинал!
+                send_notification = True
+                logger.info(f"🎯 ПОТЕНЦИАЛЬНЫЙ ОРИГИНАЛ: {new_token.get('symbol')} БЕЗ ссылок появился после скам-токена СО ссылками!")
+                
+            elif not stored_has_links and new_has_links:
+                # Этого быть не должно, т.к. мы фильтруем токены с ссылками в начале
+                skip_reasons.append("новый токен с ссылками (ошибка фильтрации)")
+                
+            else:
+                # Оба со ссылками - не должно происходить
+                skip_reasons.append("оба токена со ссылками (ошибка фильтрации)")
+            
+            # Дополнительно анализируем Twitter если есть аккаунты
+            if send_notification and (stored_twitter_accounts or new_twitter_accounts):
+                # Анализируем упоминания токенов
+                original_has_priority_mention = (original_query_type in ['hashtag_symbol', 'dollar_symbol', 'quoted_contract'] if original_query_type else False)
+                duplicate_has_priority_mention = (duplicate_query_type in ['hashtag_symbol', 'dollar_symbol', 'quoted_contract'] if duplicate_query_type else False)
+                
+                # Если у токена СО ссылками нет упоминаний - это подозрительно
+                if stored_has_links and stored_twitter_accounts and not original_has_priority_mention:
+                    logger.info(f"🚨 ПОДОЗРИТЕЛЬНО: у токена со ссылками @{', @'.join(stored_twitter_accounts)} нет упоминаний токена!")
+                
+            if skip_reasons:
+                logger.info(f"🚫 Дубликат {new_token.get('symbol')} пропущен: {', '.join(skip_reasons)}")
+                db_manager.mark_duplicate_pair_as_sent(stored_token_id, token_id, similarity_score, similarity_reasons)
+            elif send_notification:
+                # Уведомление уже одобрено - отправляем
+                if True:
+                    # Создаем данные для уведомления (упрощенные, фокус на ссылках)
+                    twitter_info = {
+                        'stored_token_name': stored_token.get('name', ''),
+                        'stored_token_symbol': stored_token.get('symbol', ''),
+                        'stored_has_links': stored_has_links,
+                        'new_token_name': new_token.get('name', ''),
+                        'new_token_symbol': new_token.get('symbol', ''),
+                        'new_has_links': new_has_links,
+                        'stored_twitter_accounts': stored_twitter_accounts,
+                        'analysis_type': 'clean_token_vs_scam' if stored_has_links else 'clean_vs_clean'
+                    }
+                    
+                    # Формируем детальное описание ситуации
+                    if stored_has_links and not new_has_links:
+                        reason_text = f"🎯 ПОТЕНЦИАЛЬНЫЙ ОРИГИНАЛ БЕЗ ссылок! Схожесть {similarity_score:.0%}: {', '.join(similarity_reasons)}"
+                    elif not stored_has_links and not new_has_links:
+                        reason_text = f"🔥 КОНКУРЕНЦИЯ РАЗРАБОТЧИКОВ! Оба БЕЗ ссылок. Схожесть {similarity_score:.0%}: {', '.join(similarity_reasons)}"
+                    else:
+                        reason_text = f"Схожесть {similarity_score:.0%}: {', '.join(similarity_reasons)}"
+                    
+                    # НОВАЯ СИСТЕМА: используем улучшенную систему групп дубликатов с Google Sheets
+                    manager = get_duplicate_groups_manager()
+                    if manager:
+                        await manager.add_token_to_group(new_token, reason_text)
+                    
+                    # Отмечаем пару как отправленную
+                    db_manager.mark_duplicate_pair_as_sent(stored_token_id, token_id, similarity_score, similarity_reasons)
+                    duplicates_found += 1
+                else:
+                    logger.info(f"🚫 Дубликат {new_token.get('symbol')} пропущен: неопределенное состояние")
+                    db_manager.mark_duplicate_pair_as_sent(stored_token_id, token_id, similarity_score, similarity_reasons)
+        
+        # Сохраняем новый токен в БД для будущих сравнений
+        db_manager.save_duplicate_token(new_token)
+        
+        if duplicates_found > 0:
+            logger.info(f"📊 Для токена {new_token.get('symbol')} найдено {duplicates_found} дубликатов")
+        
+        # Статистика общего количества токенов в БД
+        total_tokens = db_manager.get_duplicate_tokens_count()
+        logger.debug(f"📊 Общее количество токенов в БД дубликатов: {total_tokens}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки дубликатов: {e}")
+
+async def check_twitter_account_has_any_contracts(twitter_username):
+    """Проверяет наличие любых Solana контрактов в Twitter аккаунте"""
+    try:
+        # Используем новую динамическую систему куки с anubis_handler
+        async with aiohttp.ClientSession() as temp_session:
+            proxy, cookie = await get_next_proxy_cookie_async(temp_session)
+        
+        # Заголовки как в основной системе
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64; rv:45.0) Gecko/20100101 Firefox/45.0',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Cookie': cookie
+        }
+        
+        from bs4 import BeautifulSoup
+        import re
+        
+        # Настройка прокси как в основной системе
+        connector = None
+        request_kwargs = {}
+        if proxy:
+            try:
+                connector = aiohttp.ProxyConnector.from_url(proxy)
+            except AttributeError:
+                connector = aiohttp.TCPConnector()
+                request_kwargs['proxy'] = proxy
+        
+        # Загружаем страницу пользователя
+        profile_url = f"https://nitter.tiekoetter.com/{twitter_username}"
+        
+        async with aiohttp.ClientSession(connector=connector) as session:
+            async with session.get(profile_url, headers=headers, timeout=20, **request_kwargs) as response:
+                if response.status == 200:
+                    html = await response.text()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    
+                    # Проверяем на блокировку Nitter
+                    title = soup.find('title')
+                    if title and 'Making sure you\'re not a bot!' in title.get_text():
+                        logger.warning(f"🚫 Nitter заблокирован для @{twitter_username}")
+                        return False
+                    
+                    # Извлекаем весь текст со страницы
+                    page_text = soup.get_text()
+                    
+                    # Ищем паттерны Solana контрактов (base58, 32-44 символа)
+                    # Solana адреса обычно 44 символа, но могут быть короче
+                    solana_pattern = r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b'
+                    
+                    # Находим все потенциальные адреса
+                    potential_addresses = re.findall(solana_pattern, page_text)
+                    
+                    if potential_addresses:
+                        # Фильтруем адреса - исключаем слишком короткие и явно не контракты
+                        valid_addresses = []
+                        for addr in potential_addresses:
+                            # Solana адреса обычно начинаются с определенных символов и имеют определенную длину
+                            if len(addr) >= 40 and not addr.isdigit():
+                                valid_addresses.append(addr)
+                        
+                        if valid_addresses:
+                            logger.info(f"📍 Аккаунт @{twitter_username} содержит {len(valid_addresses)} контрактов: {valid_addresses[:3]}{'...' if len(valid_addresses) > 3 else ''}")
+                            return True
+                    
+                    logger.debug(f"🔍 Аккаунт @{twitter_username} не содержит контрактов")
+                    return False
+                elif response.status == 429:
+                    logger.warning(f"⚠️ Rate limit для проверки @{twitter_username}")
+                    return False
+                else:
+                    logger.warning(f"⚠️ Не удалось проверить @{twitter_username}: {response.status}")
+                    return False
+                    
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки контрактов в @{twitter_username}: {e}")
+        return False
+
+# СИСТЕМА ГРУППИРОВКИ ДУБЛЕЙ - собирает все дубли в одном сообщении
+duplicate_groups = {}  # Хранит группы дублей: {group_key: {tokens: [], message_id: int, chat_id: int}}
+
+def create_duplicate_group_key(token_data):
+    """Создает ключ группы для токена (название + символ)"""
+    name = token_data.get('name', '').strip().lower()
+    symbol = token_data.get('symbol', '').strip().upper()
+    return f"{name}_{symbol}"
+
+def edit_telegram_message(chat_id, message_id, new_text, inline_keyboard=None):
+    """Редактирует существующее сообщение в Telegram"""
+    try:
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": new_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False
+        }
+        
+        if inline_keyboard:
+            payload["reply_markup"] = inline_keyboard
+        
+        edit_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageText"
+        response = requests.post(edit_url, json=payload)
+        
+        if response.status_code == 200:
+            return True
+        else:
+            logger.error(f"❌ Ошибка редактирования сообщения: {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка редактирования сообщения: {e}")
+        return False
+
+def format_grouped_duplicate_message(group_data):
+    """Форматирует сообщение для группы дублей с inline кнопками для контрактов"""
+    tokens = group_data['tokens']
+    
+    if not tokens:
+        return "❌ Нет токенов в группе", None
+    
+    # Берем первый токен как основу для названия группы
+    first_token_info = tokens[0]
+    first_token = first_token_info['token'] 
+    token_name = first_token.get('name', 'Unknown')
+    token_symbol = first_token.get('symbol', 'Unknown')
+    
+    # Разделяем токены на группы: с Twitter и без Twitter
+    tokens_with_twitter = []
+    tokens_without_twitter = []
+    
+    for token_info in tokens:
+        token_data = token_info['token']
+        twitter_accounts = extract_twitter_accounts_from_token(token_data)
+        
+        if twitter_accounts:
+            tokens_with_twitter.append(token_info)
+        else:
+            tokens_without_twitter.append(token_info)
+    
+    # Сортируем по времени создания (новые сверху), обрабатываем None значения
+    tokens_with_twitter.sort(key=lambda x: x.get('created_at') or '', reverse=True)
+    tokens_without_twitter.sort(key=lambda x: x.get('created_at') or '', reverse=True)
+    
+    total_count = len(tokens)
+    twitter_count = len(tokens_with_twitter)
+    no_twitter_count = len(tokens_without_twitter)
+    
+    # Основное сообщение (КОРОТКОЕ, без контрактов)
+    message = (
+        f"🔍 <b>ГРУППА ДУБЛЕЙ: {token_name} ({token_symbol})</b>\n\n"
+        f"📊 <b>Всего токенов:</b> {total_count}\n"
+        f"🐦 <b>С официальным Twitter:</b> {twitter_count}\n"
+        f"❌ <b>Без Twitter:</b> {no_twitter_count}\n\n"
+    )
+    
+    # Анализ ситуации
+    if twitter_count > 0 and no_twitter_count > 0:
+        message += "⚠️ <b>ВНИМАНИЕ:</b> Есть токены с официальным Twitter и без него!\n"
+        message += "🎯 <b>Возможный сценарий:</b> официальный токен запущен без Twitter, дубли добавили фейковые ссылки\n\n"
+    elif twitter_count > 1:
+        message += "🚨 <b>ПОДОЗРИТЕЛЬНО:</b> Несколько токенов с одинаковым Twitter!\n\n"
+    elif no_twitter_count > 1:
+        message += "🔍 <b>АНАЛИЗ:</b> Несколько токенов без социальных сетей\n\n"
+    
+    # Время последнего обновления
+    message += f"🕐 <b>Последнее обновление:</b> {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+    
+    # Создаем inline клавиатуру с контрактами
+    inline_keyboard = {"inline_keyboard": []}
+    
+    # Добавляем кнопки для токенов с Twitter
+    if tokens_with_twitter:
+        # Заголовок секции
+        inline_keyboard["inline_keyboard"].append([{
+            "text": f"✅ С TWITTER ({twitter_count})",
+            "callback_data": "section_twitter"
+        }])
+        
+        # Кнопки с контрактами (по 1 в ряду)
+        for i, token_info in enumerate(tokens_with_twitter, 1):
+            token_data = token_info['token']
+            contract_full = token_data.get('id', 'Unknown')
+            twitter_accounts = extract_twitter_accounts_from_token(token_data)
+            created_time = token_info.get('created_at', 'Unknown')
+            
+            # Сокращаем контракт для отображения в кнопке
+            contract_display = f"{contract_full[:8]}...{contract_full[-8:]}" if len(contract_full) > 20 else contract_full
+            twitter_display = f"@{twitter_accounts[0]}" if twitter_accounts else ""
+            time_display = format_creation_date_short(created_time)
+            
+            button_text = f"{i}. {contract_display} {twitter_display} ({time_display})"
+            
+            inline_keyboard["inline_keyboard"].append([{
+                "text": button_text,
+                "url": f"https://pump.fun/{contract_full}"
+            }])
+    
+    # Добавляем кнопки для токенов без Twitter
+    if tokens_without_twitter:
+        # Заголовок секции
+        inline_keyboard["inline_keyboard"].append([{
+            "text": f"❌ БЕЗ TWITTER ({no_twitter_count})",
+            "callback_data": "section_no_twitter"
+        }])
+        
+        # Кнопки с контрактами (по 1 в ряду)  
+        for i, token_info in enumerate(tokens_without_twitter, 1):
+            token_data = token_info['token']
+            contract_full = token_data.get('id', 'Unknown')
+            created_time = token_info.get('created_at', 'Unknown')
+            
+            # Сокращаем контракт для отображения в кнопке
+            contract_display = f"{contract_full[:8]}...{contract_full[-8:]}" if len(contract_full) > 20 else contract_full
+            time_display = format_creation_date_short(created_time)
+            
+            button_text = f"{i}. {contract_display} ({time_display})"
+            
+            inline_keyboard["inline_keyboard"].append([{
+                "text": button_text,
+                "url": f"https://pump.fun/{contract_full}"
+            }])
+    
+    return message, inline_keyboard
+
+def format_creation_date_short(created_time):
+    """Краткое форматирование даты создания"""
+    if not created_time or created_time == 'Unknown':
+        return "❓ Неизвестно"
+    
+    try:
+        # Пробуем стандартный Jupiter формат
+        if isinstance(created_time, str):
+            if created_time.endswith('Z'):
+                parsed_time = datetime.fromisoformat(created_time[:-1])
+            else:
+                parsed_time = datetime.fromisoformat(created_time)
+        else:
+            parsed_time = created_time
+        
+        now = datetime.now()
+        time_diff = now - parsed_time
+        
+        if time_diff.days > 0:
+            return f"{time_diff.days}д назад"
+        elif time_diff.seconds > 3600:
+            hours = time_diff.seconds // 3600
+            return f"{hours}ч назад"
+        elif time_diff.seconds > 60:
+            minutes = time_diff.seconds // 60
+            return f"{minutes}м назад"
+        else:
+            return "только что"
+    except Exception as e:
+        logger.debug(f"❌ Ошибка парсинга даты {created_time}: {e}")
+        return str(created_time)[:10]
+
+async def send_or_update_grouped_duplicate_alert(token_data, reason="Обнаружен дубликат"):
+    """Отправляет новое или обновляет существующее сообщение о группе дублей"""
+    try:
+        target_chat_id = -1002680160752  # ID группы
+        message_thread_id = 14  # ID темы для дубликатов
+        
+        # Создаем ключ группы
+        group_key = create_duplicate_group_key(token_data)
+        
+        # Подготавливаем данные токена с временной меткой
+        token_info = {
+            'token': token_data,
+            'created_at': token_data.get('firstPool', {}).get('createdAt'),
+            'reason': reason,
+            'discovered_at': datetime.now().isoformat()
+        }
+        
+        # Если группа не существует - создаем новую и отправляем ПОЛНУЮ группу из БД
+        if group_key not in duplicate_groups:
+            symbol = token_data.get('symbol', 'Unknown')
+            
+            # СНАЧАЛА отправляем полную группу из БД
+            logger.info(f"🆕 Обнаружен ПЕРВЫЙ дубль символа {symbol} - отправляем ПОЛНУЮ группу из БД")
+            auto_message_id = await send_full_duplicate_group_from_db(symbol)
+            
+            if auto_message_id:
+                logger.info(f"✅ Автоматическая полная группа {symbol} отправлена, message_id: {auto_message_id}")
+            else:
+                logger.warning(f"⚠️ Не удалось отправить автоматическую полную группу {symbol}")
+            
+            # Создаем группу для дальнейших real-time обновлений
+            duplicate_groups[group_key] = {
+                'tokens': [token_info],
+                'message_id': None,
+                'chat_id': target_chat_id,
+                'thread_id': message_thread_id,
+                'first_seen': datetime.now().isoformat(),
+                'auto_full_sent': True  # Флаг что полная группа уже отправлена
+            }
+            
+            # НЕ отправляем обычное групповое сообщение, т.к. уже отправили полную группу
+            logger.info(f"🔄 Группа {group_key} создана для дальнейших real-time обновлений (полная группа уже отправлена)")
+            return True
+        else:
+            # Группа уже существует - добавляем токен и обновляем сообщение
+            group = duplicate_groups[group_key]
+            
+            # Проверяем что токен еще не добавлен
+            token_id = token_data.get('id')
+            existing_ids = [t['token'].get('id') for t in group['tokens']]
+            
+            if token_id not in existing_ids:
+                group['tokens'].append(token_info)
+                
+                # Обновляем сообщение с inline клавиатурой
+                message_text, inline_keyboard = format_grouped_duplicate_message(group)
+                
+                if group['message_id']:
+                    success = edit_telegram_message(
+                        group['chat_id'], 
+                        group['message_id'], 
+                        message_text,
+                        inline_keyboard
+                    )
+                    
+                    if success:
+                        logger.info(f"✅ Обновлена группа дублей: {token_data.get('symbol')} (токенов: {len(group['tokens'])})")
+                        return True
+                    else:
+                        logger.error(f"❌ Не удалось обновить группу дублей: {token_data.get('symbol')}")
+                        return False
+                else:
+                    logger.warning(f"⚠️ Группа {group_key} не имеет message_id для редактирования")
+                    return False
+            else:
+                logger.debug(f"🔄 Токен {token_id[:8]}... уже в группе {group_key}")
+                return True
+    
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки групповых дублей: {e}")
+        return False
+
+async def send_full_duplicate_group_from_db(symbol):
+    """🚀 НОВАЯ СИСТЕМА: Создает группу дубликатов через DuplicateGroupsManager с Google Sheets"""
+    try:
+        logger.info(f"🔍 Создаем НОВУЮ группу дубликатов для символа {symbol} с Google Sheets...")
+        
+        db_manager = get_db_manager()
+        session = db_manager.Session()
+        
+        # Получаем все токены этого символа из БД
+        tokens = session.query(DuplicateToken).filter(
+            DuplicateToken.normalized_symbol == symbol.lower()
+        ).order_by(DuplicateToken.first_seen.desc()).all()
+        
+        session.close()
+        
+        if len(tokens) < 2:  # Нужно минимум 2 токена для группы
+            logger.info(f"📊 Недостаточно токенов {symbol} для группы: {len(tokens)}")
+            return None
+            
+        logger.info(f"📊 Найдено {len(tokens)} токенов {symbol} в БД")
+        
+        # Проверяем есть ли хотя бы у одного токена ВАЛИДНЫЙ Twitter аккаунт
+        twitter_count = 0
+        for token in tokens:
+            token_data = {
+                'twitter': token.twitter,
+                'website': token.website,
+                'telegram': token.telegram
+            }
+            
+            twitter_accounts = extract_twitter_accounts_from_token(token_data)
+            if twitter_accounts:
+                twitter_count += 1
+        
+        logger.info(f"📊 Группа {symbol}: всего токенов {len(tokens)}, с валидными Twitter аккаунтами: {twitter_count}")
+        
+        if twitter_count == 0:
+            logger.info(f"🚫 Группа {symbol} пропущена - нет валидных Twitter аккаунтов")
+            return None
+            
+        # Выбираем первый токен (самый новый) для создания группы
+        first_token = tokens[0]
+        test_token_data = {
+            'id': first_token.mint,
+            'name': first_token.name,
+            'symbol': first_token.symbol,
+            'icon': first_token.icon,
+            'twitter': first_token.twitter,
+            'telegram': first_token.telegram,
+            'website': first_token.website,
+            'firstPool': {
+                'createdAt': first_token.created_at.isoformat() if first_token.created_at else None
+            }
+        }
+        
+        # 🚀 ИСПОЛЬЗУЕМ НОВУЮ СИСТЕМУ ГРУПП ДУБЛИКАТОВ
+        manager = get_duplicate_groups_manager()
+        if not manager:
+            logger.error("❌ DuplicateGroupsManager не инициализирован")
+            return None
+            
+        success = await manager.add_token_to_group(
+            test_token_data, 
+            f"🧪 ТЕСТОВАЯ ПОЛНАЯ ГРУППА {symbol.upper()} из БД"
+        )
+        
+        if success:
+            # Получаем group_key и сообщение ID
+            group_key = manager.create_group_key(test_token_data)
+            group = manager.groups.get(group_key)
+            
+            if group:
+                logger.info(f"✅ НОВАЯ система: группа {symbol} создана с Google Sheets!")
+                logger.info(f"📊 Google Sheets URL: {group.sheet_url}")
+                logger.info(f"📩 Telegram message ID: {group.message_id}")
+                return group.message_id
+            else:
+                logger.error(f"❌ Группа {group_key} не найдена после создания")
+                return None
+        else:
+            logger.error(f"❌ Не удалось создать группу через НОВУЮ систему")
+            return None
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания НОВОЙ группы для {symbol}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def has_any_links(token_data):
+    """Проверяет есть ли у токена какие-либо ссылки (twitter, website, telegram и т.д.)"""
+    link_fields = ['twitter', 'website', 'telegram', 'discord', 'social', 'links']
+    
+    for field in link_fields:
+        value = token_data.get(field)
+        if value and isinstance(value, str) and value.strip():
+            return True
+    
+    return False
+
+async def check_official_contract_in_main_twitter(group_key: str, main_twitter: str, contracts_to_check: list) -> bool:
+    """Проверяет наличие официального контракта в главном Twitter аккаунте группы дубликатов"""
+    try:
+        if not main_twitter or not contracts_to_check:
+            return False
+        
+        logger.info(f"🔍 Проверяем официальный контракт в @{main_twitter} для группы {group_key}")
+        
+        # Используем существующую систему поиска контрактов в Twitter
+        twitter_url = f"https://x.com/{main_twitter}"
+        
+        for contract in contracts_to_check:
+            # Проверяем есть ли контракт в Twitter
+            found = await check_twitter_contract_exists(twitter_url, contract)
+            
+            if found:
+                # Официальный контракт найден!
+                logger.info(f"✅ Официальный контракт {contract[:8]}... найден в @{main_twitter}")
+                
+                # Отмечаем в системе групп дубликатов
+                manager = get_duplicate_groups_manager()
+                if manager:
+                    await manager.mark_official_contract_found(
+                        group_key, 
+                        contract,
+                        datetime.now().strftime('%d.%m.%Y %H:%M')
+                    )
+                
+                return True
+        
+        logger.debug(f"❌ Официальные контракты не найдены в @{main_twitter}")
+        return False
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки официального контракта в @{main_twitter}: {e}")
+        return False
+
+async def monitor_official_contracts_for_groups():
+    """Периодический мониторинг официальных контрактов для всех активных групп"""
+    try:
+        manager = get_duplicate_groups_manager()
+        if not manager or not manager.groups:
+            logger.debug("🔍 Нет активных групп для мониторинга")
+            return
+        
+        active_groups = [g for g in manager.groups.values() 
+                        if not g.official_contract and g.main_twitter]
+        
+        if not active_groups:
+            logger.debug("🔍 Нет групп требующих мониторинга контрактов")
+            return
+        
+        logger.info(f"🔍 Мониторинг контрактов для {len(active_groups)} групп дубликатов")
+        
+        for group in active_groups:
+            # Собираем все контракты из группы
+            contracts_to_check = [token.get('id') for token in group.tokens if token.get('id')]
+            
+            if contracts_to_check:
+                await check_official_contract_in_main_twitter(
+                    group.group_key, 
+                    group.main_twitter, 
+                    contracts_to_check
+                )
+                
+                # Пауза между проверками чтобы не перегружать Twitter
+                await asyncio.sleep(3)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка мониторинга официальных контрактов: {e}")
+
+def handle_telegram_callback(callback_query):
+    """Обработчик callback'ов от Telegram кнопок"""
+    try:
+        callback_data = callback_query.get('data', '')
+        
+        if callback_data.startswith('delete_group:'):
+            # Извлекаем group_key
+            group_key = callback_data.replace('delete_group:', '')
+            
+            # Удаляем группу асинхронно
+            manager = get_duplicate_groups_manager()
+            if manager:
+                asyncio.create_task(manager.delete_group(group_key))
+            
+            # Отвечаем на callback
+            callback_id = callback_query.get('id')
+            answer_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery"
+            answer_payload = {
+                "callback_query_id": callback_id,
+                "text": "✅ Группа дубликатов удалена"
+            }
+            requests.post(answer_url, json=answer_payload)
+            
+            logger.info(f"✅ Группа дубликатов {group_key} удалена по запросу пользователя")
+            return True
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки callback: {e}")
+        return False
+    
+    return False
 
 if __name__ == "__main__":
     asyncio.run(main()) 

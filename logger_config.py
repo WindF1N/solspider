@@ -43,12 +43,12 @@ def setup_logging():
     console_handler.setFormatter(console_formatter)
     root_logger.addHandler(console_handler)
     
-    # 2. Общий лог файл (все сообщения)
+    # 2. Общий лог файл (все сообщения) - УВЕЛИЧИВАЕМ ХРАНЕНИЕ
     general_log_file = os.path.join(log_dir, 'solspider.log')
     general_handler = logging.handlers.RotatingFileHandler(
         general_log_file,
-        maxBytes=10 * 1024 * 1024,  # 10 MB
-        backupCount=5,
+        maxBytes=50 * 1024 * 1024,  # 50 MB
+        backupCount=50,  # УВЕЛИЧЕНО: храним 50 файлов = ~2.5GB логов
         encoding='utf-8'
     )
     general_handler.setLevel(logging.DEBUG)
@@ -56,12 +56,12 @@ def setup_logging():
     general_handler.setFormatter(general_formatter)
     root_logger.addHandler(general_handler)
     
-    # 3. Лог файл для ошибок
+    # 3. Лог файл для ошибок - УВЕЛИЧИВАЕМ ХРАНЕНИЕ
     error_log_file = os.path.join(log_dir, 'errors.log')
     error_handler = logging.handlers.RotatingFileHandler(
         error_log_file,
-        maxBytes=10 * 1024 * 1024,  # 10 MB
-        backupCount=3,
+        maxBytes=20 * 1024 * 1024,  # 20 MB
+        backupCount=20,  # УВЕЛИЧЕНО: храним 20 файлов
         encoding='utf-8'
     )
     error_handler.setLevel(logging.ERROR)
@@ -69,12 +69,12 @@ def setup_logging():
     error_handler.setFormatter(error_formatter)
     root_logger.addHandler(error_handler)
     
-    # 4. Лог файл для токенов (новые токены и их анализ)
+    # 4. Лог файл для токенов - МАКСИМАЛЬНОЕ ХРАНЕНИЕ
     tokens_log_file = os.path.join(log_dir, 'tokens.log')
     tokens_handler = logging.handlers.RotatingFileHandler(
         tokens_log_file,
-        maxBytes=50 * 1024 * 1024,  # 50 MB
-        backupCount=10,
+        maxBytes=100 * 1024 * 1024,  # 100 MB
+        backupCount=100,  # УВЕЛИЧЕНО: храним 100 файлов = ~10GB логов токенов
         encoding='utf-8'
     )
     tokens_handler.setLevel(logging.INFO)
@@ -87,12 +87,33 @@ def setup_logging():
     tokens_logger.setLevel(logging.INFO)
     tokens_logger.propagate = False  # Не передавать в родительский логгер
     
-    # 5. Лог файл для торговых операций
+    # 4.1. НОВЫЙ! Детальный лог решений по токенам - БЕЗ ОГРАНИЧЕНИЙ
+    token_decisions_log_file = os.path.join(log_dir, 'token_decisions.log')
+    token_decisions_handler = logging.handlers.RotatingFileHandler(
+        token_decisions_log_file,
+        maxBytes=200 * 1024 * 1024,  # 200 MB
+        backupCount=200,  # 200 файлов = ~40GB детальных решений
+        encoding='utf-8'
+    )
+    token_decisions_handler.setLevel(logging.DEBUG)
+    token_decisions_formatter = logging.Formatter(
+        '[%(asctime)s] DECISION: %(message)s', 
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    token_decisions_handler.setFormatter(token_decisions_formatter)
+    
+    # Создаем отдельный логгер для детальных решений
+    token_decisions_logger = logging.getLogger('token_decisions')
+    token_decisions_logger.addHandler(token_decisions_handler)
+    token_decisions_logger.setLevel(logging.DEBUG)
+    token_decisions_logger.propagate = False
+    
+    # 5. Лог файл для торговых операций - УВЕЛИЧИВАЕМ ХРАНЕНИЕ
     trades_log_file = os.path.join(log_dir, 'trades.log')
     trades_handler = logging.handlers.RotatingFileHandler(
         trades_log_file,
-        maxBytes=20 * 1024 * 1024,  # 20 MB
-        backupCount=5,
+        maxBytes=50 * 1024 * 1024,  # 50 MB
+        backupCount=30,  # УВЕЛИЧЕНО: храним 30 файлов
         encoding='utf-8'
     )
     trades_handler.setLevel(logging.INFO)
@@ -105,12 +126,12 @@ def setup_logging():
     trades_logger.setLevel(logging.INFO)
     trades_logger.propagate = False
     
-    # 6. Лог файл для базы данных
+    # 6. Лог файл для базы данных - УВЕЛИЧИВАЕМ ХРАНЕНИЕ
     database_log_file = os.path.join(log_dir, 'database.log')
     database_handler = logging.handlers.RotatingFileHandler(
         database_log_file,
-        maxBytes=10 * 1024 * 1024,  # 10 MB
-        backupCount=3,
+        maxBytes=30 * 1024 * 1024,  # 30 MB
+        backupCount=20,  # УВЕЛИЧЕНО: храним 20 файлов
         encoding='utf-8'
     )
     database_handler.setLevel(logging.DEBUG)
@@ -141,15 +162,18 @@ def setup_logging():
     logging.info("✅ Система логирования настроена успешно")
     logging.info(f"📁 Логи сохраняются в папку: {os.path.abspath(log_dir)}")
     logging.info("📊 Доступные лог-файлы:")
-    logging.info(f"  • solspider.log - общий лог")
-    logging.info(f"  • errors.log - только ошибки")
-    logging.info(f"  • tokens.log - информация о токенах")
-    logging.info(f"  • trades.log - торговые операции")
-    logging.info(f"  • database.log - операции с БД")
+    logging.info(f"  • solspider.log - общий лог (50 файлов, ~2.5GB)")
+    logging.info(f"  • errors.log - только ошибки (20 файлов)")
+    logging.info(f"  • tokens.log - информация о токенах (100 файлов, ~10GB)")
+    logging.info(f"  • token_decisions.log - ДЕТАЛЬНЫЕ РЕШЕНИЯ по токенам (200 файлов, ~40GB)")
+    logging.info(f"  • trades.log - торговые операции (30 файлов)")
+    logging.info(f"  • database.log - операции с БД (20 файлов)")
     logging.info(f"  • stats_{today}.log - статистика за день")
+    logging.info("🔥 ЛОГИ НЕ ОЧИЩАЮТСЯ! Все решения сохраняются навсегда!")
     
     return {
         'tokens_logger': tokens_logger,
+        'token_decisions_logger': token_decisions_logger,
         'trades_logger': trades_logger,
         'database_logger': database_logger,
         'stats_logger': stats_logger
@@ -158,6 +182,10 @@ def setup_logging():
 def get_token_logger():
     """Получение логгера для токенов"""
     return logging.getLogger('tokens')
+
+def get_token_decisions_logger():
+    """Получение логгера для детальных решений по токенам"""
+    return logging.getLogger('token_decisions')
 
 def get_trades_logger():
     """Получение логгера для торговых операций"""
@@ -171,9 +199,17 @@ def get_stats_logger():
     """Получение логгера для статистики"""
     return logging.getLogger('stats')
 
+def log_token_decision(step, token_symbol, mint, details):
+    """Детальное логирование каждого шага принятия решения по токену"""
+    decisions_logger = get_token_decisions_logger()
+    
+    log_message = f"{step} | Token: {token_symbol} | Mint: {mint[:12]}... | {details}"
+    decisions_logger.info(log_message)
+
 def log_token_analysis(token_data, twitter_analysis, should_notify):
-    """Специальное логирование анализа токена"""
+    """Специальное логирование анализа токена с ДЕТАЛЬНЫМИ решениями"""
     tokens_logger = get_token_logger()
+    decisions_logger = get_token_decisions_logger()
     
     symbol = token_data.get('symbol', 'UNK')
     mint = token_data.get('mint', 'Unknown')
@@ -181,6 +217,9 @@ def log_token_analysis(token_data, twitter_analysis, should_notify):
     rating = twitter_analysis.get('rating', 'Unknown')
     contract_found = twitter_analysis.get('contract_found', False)
     contract_tweets = twitter_analysis.get('contract_tweets', 0)
+    symbol_tweets = twitter_analysis.get('symbol_tweets', 0)
+    total_tweets = twitter_analysis.get('total_tweets', 0)
+    engagement = twitter_analysis.get('engagement', 0)
     
     # Определяем причину фильтрации
     filter_reason = "PASSED"
@@ -189,6 +228,7 @@ def log_token_analysis(token_data, twitter_analysis, should_notify):
     elif not should_notify:
         filter_reason = "FILTERED_LOW_ACTIVITY"
     
+    # КРАТКИЙ лог в основной файл токенов
     log_message = (
         f"TOKEN_ANALYSIS | "
         f"Symbol: {symbol} | "
@@ -201,8 +241,42 @@ def log_token_analysis(token_data, twitter_analysis, should_notify):
         f"Notified: {'YES' if should_notify else 'NO'} | "
         f"Market_Cap: ${token_data.get('marketCap', 0):,.0f}"
     )
-    
     tokens_logger.info(log_message)
+    
+    # ДЕТАЛЬНЫЙ лог в файл решений с ПОЛНОЙ информацией
+    decision_message = (
+        f"═══════════════════════════════════════════════════════════════\n"
+        f"🔍 ПОЛНЫЙ АНАЛИЗ ТОКЕНА: {symbol} ({mint})\n"
+        f"📊 Market Cap: ${token_data.get('marketCap', 0):,.2f}\n"
+        f"🏷️ Pool Type: {token_data.get('pool_type', 'Unknown')}\n"
+        f"📅 Created: {token_data.get('created_timestamp', 'Unknown')}\n"
+        f"🌐 DEX: {token_data.get('dex', 'Unknown')}\n"
+        f"🔗 Twitter: {token_data.get('twitter', 'None')}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🐦 TWITTER АНАЛИЗ:\n"
+        f"   • Общий счет: {score} ({rating})\n"
+        f"   • Всего твитов найдено: {total_tweets}\n"
+        f"   • Твиты с символом: {symbol_tweets}\n"
+        f"   • Твиты с контрактом: {contract_tweets}\n"
+        f"   • Общая активность: {engagement}\n"
+        f"   • Контракт найден в Twitter: {'ДА' if contract_found else 'НЕТ'}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚖️ РЕШЕНИЕ ФИЛЬТРА:\n"
+        f"   • Результат: {filter_reason}\n"
+        f"   • Уведомление отправлено: {'ДА' if should_notify else 'НЕТ'}\n"
+        f"   • Причина: "
+    )
+    
+    if filter_reason == "FILTERED_NO_CONTRACT":
+        decision_message += "Адрес контракта не найден в Twitter постах"
+    elif filter_reason == "FILTERED_LOW_ACTIVITY":
+        decision_message += f"Низкая активность (score: {score}, нужно больше)"
+    else:
+        decision_message += "Все проверки пройдены успешно"
+        
+    decision_message += f"\n═══════════════════════════════════════════════════════════════"
+    
+    decisions_logger.info(decision_message)
 
 def log_trade_activity(trade_data, notification_sent=False):
     """Специальное логирование торговой активности"""

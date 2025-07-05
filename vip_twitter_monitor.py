@@ -19,8 +19,13 @@ import logging
 import time
 from datetime import datetime
 from bs4 import BeautifulSoup
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 import re
+import json
+
+# Добавляем динамическую систему куки с Anubis handler
+from dynamic_cookie_rotation import get_background_proxy_cookie_async
+from anubis_handler import handle_anubis_challenge_for_session
 
 # Загружаем переменные окружения из .env файла
 def load_env_file():
@@ -84,26 +89,22 @@ class VipTwitterMonitor:
         self.check_interval = self.monitor_settings['default_check_interval']
         self.max_retries = self.monitor_settings['max_retries']
         
-        # Cookies и прокси для ротации
-        self.cookies = VIP_NITTER_COOKIES
+        # Используем динамическую систему куки вместо статичных VIP_NITTER_COOKIES
         self.proxies = VIP_PROXIES
-        self.current_cookie_index = 0
         self.current_proxy_index = 0
         
         active_count = sum(1 for config in self.VIP_ACCOUNTS.values() if config.get('enabled', False))
         proxy_count = len([p for p in self.proxies if p is not None])
         
         logger.info(f"🌟 VIP Twitter Monitor инициализирован с {active_count} активными аккаунтами")
-        logger.info(f"🔄 Ротация: {len(self.cookies)} cookies + {proxy_count} прокси ({len(self.proxies)} всего)")
+        logger.info(f"🔄 Используем динамическую систему куки + {proxy_count} прокси ({len(self.proxies)} всего)")
         
         if not self.VIP_CHAT_ID:
             logger.error(f"❌ {self.telegram_config['chat_id_env_var']} не задан в переменных окружения!")
     
-    def get_next_cookie(self) -> str:
-        """Получает следующий cookie для ротации"""
-        cookie = self.cookies[self.current_cookie_index]
-        self.current_cookie_index = (self.current_cookie_index + 1) % len(self.cookies)
-        return cookie
+    async def get_next_cookie_async(self, session: aiohttp.ClientSession) -> Tuple[Optional[str], str]:
+        """Получает динамические cookies через новую систему с автоматическим решением Anubis challenge"""
+        return await get_background_proxy_cookie_async(session)
     
     def get_next_proxy(self) -> Optional[str]:
         """Получает следующий прокси для ротации"""
@@ -474,29 +475,16 @@ class VipTwitterMonitor:
                 }
     
     async def check_twitter_account(self, username: str, account_config: Dict) -> List[Dict]:
-        """Проверяет один Twitter аккаунт на наличие контрактов"""
+        """Проверяет один Twitter аккаунт на наличие контрактов с динамической системой куки и Anubis handler"""
         contracts_found = []
         
         try:
-            # Получаем следующую связку cookie + proxy
-            cookie = self.get_next_cookie()
             proxy_url = self.get_next_proxy()
             
             logger.info(f"🌟 Проверяем VIP аккаунт @{username}... (прокси: {'✅' if proxy_url else '❌'})")
             
             # URL профиля на Nitter
             url = f"https://nitter.tiekoetter.com/{username}"
-            
-            # Заголовки с cookie
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64; rv:45.0) Gecko/20100101 Firefox/45.0',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
-                'Connection': 'keep-alive',
-                'Cookie': cookie
-            }
-            
             timeout = self.monitor_settings['request_timeout']
             
             # Создаем коннектор с прокси (если нужен)
@@ -508,9 +496,39 @@ class VipTwitterMonitor:
                 session_kwargs['connector'] = connector
             
             async with aiohttp.ClientSession(**session_kwargs) as session:
+                # Получаем динамические cookies через новую систему
+                dynamic_proxy, cookies_string = await self.get_next_cookie_async(session)
+                
+                if not cookies_string:
+                    logger.error(f"❌ Не удалось получить cookies для @{username}")
+                    return contracts_found
+                
+                # Парсим строку cookies в словарь для aiohttp
+                cookies = {}
+                try:
+                    for cookie_part in cookies_string.split(';'):
+                        if '=' in cookie_part:
+                            key, value = cookie_part.strip().split('=', 1)
+                            cookies[key] = value
+                except Exception as e:
+                    logger.error(f"❌ Ошибка парсинга cookies для @{username}: {e}")
+                    return contracts_found
+                
+                # Заголовки
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1'
+                }
+                
                 # Параметры для запроса
                 request_kwargs = {
                     'headers': headers,
+                    'cookies': cookies,
                     'timeout': timeout
                 }
                 
@@ -519,52 +537,81 @@ class VipTwitterMonitor:
                     request_kwargs['proxy'] = proxy_url
                 
                 async with session.get(url, **request_kwargs) as response:
-                    if response.status == 200:
-                        html = await response.text()
-                        soup = BeautifulSoup(html, 'html.parser')
+                    html = await response.text()
+                    
+                    # 🔍 ПРОВЕРЯЕМ НА ANUBIS CHALLENGE
+                    if ('id="anubis_challenge"' in html or "Making sure you're not a bot!" in html):
+                        logger.warning(f"🚫 Обнаружен Anubis challenge для @{username} - автоматически решаем...")
                         
-                        # Проверяем на блокировку
-                        title = soup.find('title')
-                        if title and 'Making sure you\'re not a bot!' in title.get_text():
-                            logger.error(f"🚫 VIP мониторинг заблокирован для @{username}")
-                            return contracts_found
-                        
-                        # Находим твиты
-                        tweets = soup.find_all('div', class_='timeline-item')
-                        logger.info(f"📱 Найдено {len(tweets)} твитов у @{username}")
-                        
-                        for tweet in tweets:
-                            # Пропускаем ретвиты
-                            if tweet.find('div', class_='retweet-header'):
-                                continue
+                        try:
+                            # Автоматически решаем challenge
+                            new_cookies = await handle_anubis_challenge_for_session(
+                                session, url, html, force_fresh_challenge=True
+                            )
                             
-                            # Получаем содержимое твита
-                            tweet_content = tweet.find('div', class_='tweet-content')
-                            if not tweet_content:
-                                continue
-                            
-                            # Извлекаем текст
-                            tweet_text = self.extract_clean_text(tweet_content)
-                            
-                            # Ищем контракты
-                            contracts = self.extract_contracts_from_text(tweet_text)
-                            
-                            for contract in contracts:
-                                # Проверяем дедупликацию
-                                signal_key = f"{username}:{contract}"
+                            if new_cookies:
+                                logger.info(f"✅ Challenge решен для @{username}, повторяем запрос...")
                                 
-                                if signal_key not in self.signals_cache:
-                                    self.signals_cache.add(signal_key)
-                                    contracts_found.append({
-                                        'contract': contract,
-                                        'tweet_text': tweet_text,
-                                        'username': username,
-                                        'account_config': account_config
-                                    })
-                                    logger.info(f"🔥 VIP КОНТРАКТ НАЙДЕН! @{username}: {contract}")
-                        
-                    else:
+                                # Обновляем cookies и повторяем запрос
+                                for key, value in new_cookies.items():
+                                    cookies[key] = value
+                                request_kwargs['cookies'] = cookies
+                                    
+                                async with session.get(url, **request_kwargs) as retry_response:
+                                    if retry_response.status == 200:
+                                        html = await retry_response.text()
+                                        logger.info(f"✅ VIP аккаунт @{username} успешно загружен после решения challenge")
+                                    else:
+                                        logger.warning(f"⚠️ Ошибка после challenge @{username}: {retry_response.status}")
+                                        return contracts_found
+                            else:
+                                logger.error(f"❌ Не удалось решить challenge для @{username}")
+                                return contracts_found
+                                
+                        except Exception as challenge_error:
+                            logger.error(f"❌ Ошибка решения challenge для @{username}: {challenge_error}")
+                            return contracts_found
+                    
+                    elif response.status != 200:
                         logger.warning(f"⚠️ Ошибка доступа к @{username}: HTTP {response.status}")
+                        return contracts_found
+                    
+                    # Парсим HTML и ищем контракты
+                    soup = BeautifulSoup(html, 'html.parser')
+                    
+                    # Находим твиты
+                    tweets = soup.find_all('div', class_='timeline-item')
+                    logger.info(f"📱 Найдено {len(tweets)} твитов у @{username}")
+                    
+                    for tweet in tweets:
+                        # Пропускаем ретвиты
+                        if tweet.find('div', class_='retweet-header'):
+                            continue
+                        
+                        # Получаем содержимое твита
+                        tweet_content = tweet.find('div', class_='tweet-content')
+                        if not tweet_content:
+                            continue
+                        
+                        # Извлекаем текст
+                        tweet_text = self.extract_clean_text(tweet_content)
+                        
+                        # Ищем контракты
+                        contracts = self.extract_contracts_from_text(tweet_text)
+                        
+                        for contract in contracts:
+                            # Проверяем дедупликацию
+                            signal_key = f"{username}:{contract}"
+                            
+                            if signal_key not in self.signals_cache:
+                                self.signals_cache.add(signal_key)
+                                contracts_found.append({
+                                    'contract': contract,
+                                    'tweet_text': tweet_text,
+                                    'username': username,
+                                    'account_config': account_config
+                                })
+                                logger.info(f"🔥 VIP КОНТРАКТ НАЙДЕН! @{username}: {contract}")
                         
         except Exception as e:
             logger.error(f"❌ Ошибка проверки @{username}: {e}")
