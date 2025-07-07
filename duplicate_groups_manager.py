@@ -1400,16 +1400,14 @@ class DuplicateGroupsManager:
             return str(date_string)  # Возвращаем оригинальную строку
 
     async def _format_group_message(self, group: 'GroupData') -> str:
-        """Форматирует текст сообщения для группы дубликатов"""
+        """Форматирует простое сообщение как обычный анонс токена"""
         try:
-            # 🐛 АГРЕССИВНЫЙ ЗАГОЛОВОК WORMSTER'А
-            message = f"🐛💰 <b>WORMSTER НАШЁЛ СТАЮ ДУБЛИКАТОВ: ${group.symbol.upper()}!</b>\n"
-            message += f"🎯 <b>Цель для ИКСОВ:</b> {group.name}\n"
-            message += f"⚡ <b>ВНИМАНИЕ!</b> Обнаружены множественные листинги! Время для хантинга! 🔥\n\n"
+            # ПРОСТОЙ ЗАГОЛОВОК
+            message = f"🐛💰 <b>НОВЫЙ ЗАПУСК МОНЕТЫ: ${group.symbol.upper()}!</b>\n\n"
             
             # Информация о главном Twitter аккаунте
             if group.main_twitter:
-                message += f"🐦 <b>ГЛАВНЫЙ TWITTER:</b> @{group.main_twitter}\n"
+                message += f"🐦 <b>TWITTER ОСНОВАТЕЛЯ:</b> @{group.main_twitter}\n"
                 
                 # Официальный анонс токена (самый старый твит)
                 if group.official_announcement:
@@ -1417,79 +1415,32 @@ class DuplicateGroupsManager:
                     message += f"📅 <b>Дата:</b> {group.official_announcement['date']}\n"
                     # Обрезаем текст если слишком длинный
                     announcement_text = group.official_announcement['text']
-                    if len(announcement_text) > 200:
-                        announcement_text = announcement_text[:200] + "..."
+                    if len(announcement_text) > 150:
+                        announcement_text = announcement_text[:150] + "..."
                     message += f"<blockquote>{announcement_text}</blockquote>\n"
                     
                     # Добавляем список дополнительных Twitter аккаунтов
                     additional_accounts = await self._get_additional_twitter_accounts(group)
                     if additional_accounts:
-                        message += f"🐦 <b>Дополнительные Twitter аккаунты:</b>\n"
-                        for account in additional_accounts:
-                            message += f"• @{account}\n"
+                        accounts_str = ", ".join([f"@{account}" for account in additional_accounts])
+                        message += f"{accounts_str}\n\n"
+                    else:
+                        message += "\n"
+                else:
                     message += "\n"
-                else:
-                    message += f"📢 <b>АНОНС:</b> Не найден\n\n"
-                
-                # 🐛 СТАТУС ОХОТЫ WORMSTER'А
-                if group.official_contract:
-                    message += f"🎉 <b>БИНГО! WORMSTER ПОЙМАЛ ОФИЦИАЛКУ!</b>\n"
-                    message += f"💎 <b>Золотой адрес:</b> <code>{group.official_contract['address']}</code>\n"
-                    message += f"📅 <b>Момент победы:</b> {group.official_contract['date']}\n"
-                    message += f"🚀 <b>ЭТО ОНО! ГОТОВЬ КОШЕЛЁК К ИКСАМ!</b>\n\n"
-                else:
-                    message += f"🔍 <b>WORMSTER ПРОДОЛЖАЕТ ОХОТУ...</b>\n"
-                    message += f"👀 Официальный контракт всё ещё скрывается в Twitter-джунглях!\n"
-                    message += f"⚡ Но охота не прекращается! Поиск продолжается! 🐛\n\n"
             else:
-                message += f"❓ <b>ГЛАВНЫЙ TWITTER:</b> Не определен\n\n"
+                message += f"🐦 <b>TWITTER ОСНОВАТЕЛЯ:</b> Поиск...\n\n"
             
-            # 🐛 БОЕВАЯ СТАТИСТИКА WORMSTER'А
-            total_tokens = len(group.tokens)
-            tokens_with_links = sum(1 for token in group.tokens if self._has_links(token))
-            tokens_without_links = total_tokens - tokens_with_links
+            # СТАТУС ОХОТЫ
+            if group.official_contract:
+                message += f"✅ <b>ОФИЦИАЛЬНЫЙ КОНТРАКТ НАЙДЕН!</b>\n"
+                message += f"💎 <b>Адрес:</b> <code>{group.official_contract['address']}</code>\n"
+                message += f"📅 <b>Дата:</b> {group.official_contract['date']}\n\n"
+            else:
+                message += f"🔍 <b>WORMSTER ПРОДОЛЖАЕТ ОХОТУ...</b>\n"
+                message += f"👀 Официальный контракт всё ещё не вышел. Время охоты!\n\n"
             
-            message += f"⚔️ <b>БОЕВАЯ СВОДКА WORMSTER'А:</b>\n"
-            message += f"🎯 Всего целей в засаде: <b>{total_tokens}</b>\n"
-            message += f"🔗 Готовых к памп-атаке: <b>{tokens_with_links}</b>\n"
-            message += f"👻 Призрачных (без соцсетей): <b>{tokens_without_links}</b>\n"
-            if tokens_with_links > 0:
-                success_rate = round((tokens_with_links / total_tokens) * 100)
-                if success_rate >= 70:
-                    message += f"🚀 <b>ШАНС НА ИКССЫ: {success_rate}% - АГРЕССИВНО ЗАХОДИМ!</b>\n"
-                elif success_rate >= 40:
-                    message += f"⚠️ <b>ШАНС НА ИКССЫ: {success_rate}% - ОСТОРОЖНО, НО ЗАХОДИМ!</b>\n"
-                else:
-                    message += f"🐛 <b>ШАНС НА ИКССЫ: {success_rate}% - WORMSTER В РЕЖИМЕ ОХОТЫ!</b>\n"
-            message += "\n"
-            
-            # Последний добавленный токен
-            if group.latest_added_token:
-                # 🎯 Показываем именно тот токен, который только что пришел из Jupiter
-                latest_token = group.latest_added_token
-                latest_contract = latest_token.get('id', 'Unknown')
-                latest_created = latest_token.get('firstPool', {}).get('createdAt', '')
-                
-                # 🔧 FALLBACK: Если нет даты создания, используем время обновления группы
-                if not latest_created or latest_created == '' or latest_created is None:
-                    logger.warning(f"⚠️ Дата создания токена {latest_contract[:8]}... пустая, используем fallback")
-                    created_display = f"{group.last_updated.strftime('%d.%m.%Y %H:%M')} (недавно)"
-                else:
-                    created_display = self._parse_jupiter_date(latest_created)
-                
-                message += f"🎯 <b>СВЕЖАЯ ДОБЫЧА WORMSTER'А:</b>\n"
-                message += f"<code>{latest_contract}</code>\n"
-                message += f"⏰ Время рождения: {created_display} UTC\n"
-                message += f"🐛 <b>ЧУВСТВУЮ ЗАПАХ ИКСОВ!</b> Это может быть ТОТ САМЫЙ токен! 💎\n\n"
-            elif group.tokens:
-                # Fallback: если нет latest_added_token, используем первый токен
-                fallback_token = group.tokens[0]
-                fallback_contract = fallback_token.get('id', 'Unknown')
-                message += f"🆕 <b>КОНТРАКТ:</b>\n"
-                message += f"<code>{fallback_contract}</code>\n"
-                message += f"📅 Создан: Недавно\n\n"
-            
-            # 🐛 МЕТКА ВРЕМЕНИ WORMSTER'А
+            # МЕТКА ВРЕМЕНИ
             utc_time = datetime.utcnow()
             message += f"🕐 <b>Wormster обновил данные:</b> {utc_time.strftime('%d.%m.%Y %H:%M:%S')} UTC\n"
             message += f"🎯 <b>ПОМНИ:</b> Ранние птицы ловят лучшие иксы! Не проспи альфу! 💰🐛"
@@ -1501,19 +1452,9 @@ class DuplicateGroupsManager:
             return f"❌ Ошибка форматирования группы {group.symbol}"
     
     def _create_group_keyboard(self, group: 'GroupData') -> Dict:
-        """Создает inline клавиатуру для группы дубликатов"""
+        """Создает inline клавиатуру для группы без кнопки Google Sheets"""
         try:
             buttons = []
-            
-            # Кнопка Google Sheets - проверяем что URL не пустой
-            if group.sheet_url and group.sheet_url.strip():
-                buttons.append([{
-                    "text": "📊 Смотреть в Google Sheets",
-                    "url": group.sheet_url
-                }])
-                logger.debug(f"✅ Кнопка Google Sheets добавлена для группы {group.symbol}")
-            else:
-                logger.debug(f"📊 Кнопка Google Sheets пока не готова для группы {group.symbol} (таблица создается)")
             
             # Кнопка "Окей" появляется только когда найден официальный контракт
             if group.official_contract:
@@ -1566,6 +1507,26 @@ class DuplicateGroupsManager:
             
         except Exception as e:
             logger.error(f"❌ Ошибка получения дополнительных Twitter аккаунтов: {e}")
+            return []
+    
+    def _get_additional_twitter_accounts_sync(self, group: 'GroupData') -> List[str]:
+        """Получает список дополнительных Twitter аккаунтов (синхронная версия - без проверки упоминаний)"""
+        try:
+            additional_accounts = set()
+            
+            # Собираем все Twitter аккаунты из токенов в группе
+            for token in group.tokens:
+                accounts = self.extract_twitter_accounts(token)
+                for account in accounts:
+                    # Исключаем главный Twitter аккаунт
+                    if account and account != group.main_twitter:
+                        additional_accounts.add(account)
+            
+            # Возвращаем отсортированный список без проверки упоминаний
+            return sorted(list(additional_accounts))
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения дополнительных Twitter аккаунтов (синхронно): {e}")
             return []
     
     def _create_sheet_and_update_message_async(self, group_key: str, tokens: List[Dict], main_twitter: str):
@@ -1637,16 +1598,14 @@ class DuplicateGroupsManager:
         sheets_manager._queue_task(create_sheet_task, priority=priority)
     
     def _format_group_message_sync(self, group: 'GroupData') -> str:
-        """Синхронно форматирует текст сообщения для группы дубликатов (для фонового потока)"""
+        """Синхронно форматирует простое сообщение как обычный анонс токена (для фонового потока)"""
         try:
-            # 🐛 АГРЕССИВНЫЙ ЗАГОЛОВОК WORMSTER'А
-            message = f"🐛💰 <b>WORMSTER НАШЁЛ СТАЮ ДУБЛИКАТОВ: ${group.symbol.upper()}!</b>\n"
-            message += f"🎯 <b>Цель для ИКСОВ:</b> {group.name}\n"
-            message += f"⚡ <b>ВНИМАНИЕ!</b> Обнаружены множественные листинги! Время для хантинга! 🔥\n\n"
+            # ПРОСТОЙ ЗАГОЛОВОК
+            message = f"🐛💰 <b>НОВЫЙ ЗАПУСК МОНЕТЫ: ${group.symbol.upper()}!</b>\n\n"
             
             # Информация о главном Twitter аккаунте
             if group.main_twitter:
-                message += f"🐦 <b>ГЛАВНЫЙ TWITTER:</b> @{group.main_twitter}\n"
+                message += f"🐦 <b>TWITTER ОСНОВАТЕЛЯ:</b> @{group.main_twitter}\n"
                 
                 # Официальный анонс токена (самый старый твит)
                 if group.official_announcement:
@@ -1654,74 +1613,32 @@ class DuplicateGroupsManager:
                     message += f"📅 <b>Дата:</b> {group.official_announcement['date']}\n"
                     # Обрезаем текст если слишком длинный
                     announcement_text = group.official_announcement['text']
-                    if len(announcement_text) > 200:
-                        announcement_text = announcement_text[:200] + "..."
+                    if len(announcement_text) > 150:
+                        announcement_text = announcement_text[:150] + "..."
                     message += f"<blockquote>{announcement_text}</blockquote>\n"
                     
-                    # Пропускаем дополнительные аккаунты в синхронной версии
+                    # Добавляем список дополнительных Twitter аккаунтов (синхронно)
+                    additional_accounts = self._get_additional_twitter_accounts_sync(group)
+                    if additional_accounts:
+                        accounts_str = ", ".join([f"@{account}" for account in additional_accounts])
+                        message += f"{accounts_str}\n\n"
+                    else:
+                        message += "\n"
+                else:
                     message += "\n"
-                else:
-                    message += f"📢 <b>АНОНС:</b> Не найден\n\n"
-                
-                # 🐛 СТАТУС ОХОТЫ WORMSTER'А
-                if group.official_contract:
-                    message += f"🎉 <b>БИНГО! WORMSTER ПОЙМАЛ ОФИЦИАЛКУ!</b>\n"
-                    message += f"💎 <b>Золотой адрес:</b> <code>{group.official_contract['address']}</code>\n"
-                    message += f"📅 <b>Момент победы:</b> {group.official_contract['date']}\n"
-                    message += f"🚀 <b>ЭТО ОНО! ГОТОВЬ КОШЕЛЁК К ИКСАМ!</b>\n\n"
-                else:
-                    message += f"🔍 <b>WORMSTER ПРОДОЛЖАЕТ ОХОТУ...</b>\n"
-                    message += f"👀 Официальный контракт всё ещё скрывается в Twitter-джунглях!\n"
-                    message += f"⚡ Но охота не прекращается! Поиск продолжается! 🐛\n\n"
             else:
-                message += f"❓ <b>ГЛАВНЫЙ TWITTER:</b> Не определен\n\n"
+                message += f"🐦 <b>TWITTER ОСНОВАТЕЛЯ:</b> Поиск...\n\n"
             
-            # 🐛 БОЕВАЯ СТАТИСТИКА WORMSTER'А
-            total_tokens = len(group.tokens)
-            tokens_with_links = sum(1 for token in group.tokens if self._has_links(token))
-            tokens_without_links = total_tokens - tokens_with_links
+            # СТАТУС ОХОТЫ
+            if group.official_contract:
+                message += f"✅ <b>ОФИЦИАЛЬНЫЙ КОНТРАКТ НАЙДЕН!</b>\n"
+                message += f"💎 <b>Адрес:</b> <code>{group.official_contract['address']}</code>\n"
+                message += f"📅 <b>Дата:</b> {group.official_contract['date']}\n\n"
+            else:
+                message += f"🔍 <b>WORMSTER ПРОДОЛЖАЕТ ОХОТУ...</b>\n"
+                message += f"👀 Официальный контракт всё ещё не вышел. Время охоты!\n\n"
             
-            message += f"⚔️ <b>БОЕВАЯ СВОДКА WORMSTER'А:</b>\n"
-            message += f"🎯 Всего целей в засаде: <b>{total_tokens}</b>\n"
-            message += f"🔗 Готовых к памп-атаке: <b>{tokens_with_links}</b>\n"
-            message += f"👻 Призрачных (без соцсетей): <b>{tokens_without_links}</b>\n"
-            if tokens_with_links > 0:
-                success_rate = round((tokens_with_links / total_tokens) * 100)
-                if success_rate >= 70:
-                    message += f"🚀 <b>ШАНС НА ИКССЫ: {success_rate}% - АГРЕССИВНО ЗАХОДИМ!</b>\n"
-                elif success_rate >= 40:
-                    message += f"⚠️ <b>ШАНС НА ИКССЫ: {success_rate}% - ОСТОРОЖНО, НО ЗАХОДИМ!</b>\n"
-                else:
-                    message += f"🐛 <b>ШАНС НА ИКССЫ: {success_rate}% - WORMSTER В РЕЖИМЕ ОХОТЫ!</b>\n"
-            message += "\n"
-            
-            # Последний добавленный токен
-            if group.latest_added_token:
-                # 🎯 Показываем именно тот токен, который только что пришел из Jupiter
-                latest_token = group.latest_added_token
-                latest_contract = latest_token.get('id', 'Unknown')
-                latest_created = latest_token.get('firstPool', {}).get('createdAt', '')
-                
-                # 🔧 FALLBACK: Если нет даты создания, используем время обновления группы
-                if not latest_created or latest_created == '' or latest_created is None:
-                    logger.warning(f"⚠️ Дата создания токена {latest_contract[:8]}... пустая, используем fallback")
-                    created_display = f"{group.last_updated.strftime('%d.%m.%Y %H:%M')} (недавно)"
-                else:
-                    created_display = self._parse_jupiter_date(latest_created)
-                
-                message += f"🎯 <b>СВЕЖАЯ ДОБЫЧА WORMSTER'А:</b>\n"
-                message += f"<code>{latest_contract}</code>\n"
-                message += f"⏰ Время рождения: {created_display} UTC\n"
-                message += f"🐛 <b>ЧУВСТВУЮ ЗАПАХ ИКСОВ!</b> Это может быть ТОТ САМЫЙ токен! 💎\n\n"
-            elif group.tokens:
-                # Fallback: если нет latest_added_token, используем первый токен
-                fallback_token = group.tokens[0]
-                fallback_contract = fallback_token.get('id', 'Unknown')
-                message += f"🆕 <b>КОНТРАКТ:</b>\n"
-                message += f"<code>{fallback_contract}</code>\n"
-                message += f"📅 Создан: Недавно\n\n"
-            
-            # 🐛 МЕТКА ВРЕМЕНИ WORMSTER'А
+            # МЕТКА ВРЕМЕНИ
             utc_time = datetime.utcnow()
             message += f"🕐 <b>Wormster обновил данные:</b> {utc_time.strftime('%d.%m.%Y %H:%M:%S')} UTC\n"
             message += f"🎯 <b>ПОМНИ:</b> Ранние птицы ловят лучшие иксы! Не проспи альфу! 💰🐛"

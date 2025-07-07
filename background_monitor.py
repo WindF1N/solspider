@@ -293,9 +293,9 @@ class BackgroundTokenMonitor:
             )
             
             # Информация о твитах (только первое обнаружение)
-            action_text = f"📱 <b>Твитов с контрактом:</b> {tweets_count}"
+            action_text = f"📱 <b>Твитов с контрактом:</b> {tweets_count}\n"
             
-            message += f"\n📊 <b>Активность:</b> {engagement}\n"
+            # message += f"\n📊 <b>Активность:</b> {engagement}\n"
             
             # Добавляем Market Cap только если он больше 0
             if token.market_cap and token.market_cap > 0:

@@ -15,6 +15,7 @@ import colorlog
 import threading
 import aiohttp
 from urllib.parse import quote
+from typing import Dict
 from database import get_db_manager, TwitterAuthor, Token, Trade, Migration, TweetMention, DuplicateToken, DuplicatePair
 from logger_config import setup_logging, log_token_analysis, log_token_decision, log_trade_activity, log_database_operation, log_daily_stats
 from connection_monitor import connection_monitor
@@ -2192,33 +2193,86 @@ async def twitter_analysis_worker():
                 await asyncio.sleep(0.5)  # Короткая пауза при единичных ошибках
 
 
+# Глобальные переменные для системы обработки дубликатов
+duplicate_groups_active = {}  # Отслеживает активные группы для предотвращения дублирования
+duplicate_worker_semaphore = None  # Семафор для ограничения количества одновременных обработок
+
 async def duplicate_detection_worker():
-    """Фоновый обработчик обнаружения дубликатов"""
-    logger.info("🔄 Фоновый обработчик обнаружения дубликатов запущен")
+    """Быстрый диспетчер для обработки дубликатов в параллельных тасках"""
+    global duplicate_groups_active, duplicate_worker_semaphore
+    
+    logger.info("🔄 Параллельный диспетчер обнаружения дубликатов запущен")
+    
+    # Создаем семафор для ограничения количества одновременных обработок
+    duplicate_worker_semaphore = asyncio.Semaphore(5)  # Максимум 5 групп одновременно
     
     while True:
         try:
             # Получаем токен из очереди
             data = await duplicate_detection_queue.get()
             
-            # Обработка токена
+            # Определяем группу по символу
             symbol = data.get('symbol', 'Unknown')
             mint = data.get('id', 'Unknown')
             
-            logger.debug(f"🔍 Начинаем фоновое обнаружение дубликатов для токена {symbol}...")
+            # Создаем ключ группы
+            group_key = f"{symbol.lower()}_{symbol.upper()}"
             
-            # Обработка дубликатов (БЕЗ блокировки основного потока)
-            await process_duplicate_detection(data)
+            logger.debug(f"🔍 Диспетчер получил токен {symbol} для группы {group_key}")
+            
+            # Если группа уже обрабатывается, пропускаем
+            if group_key in duplicate_groups_active:
+                logger.debug(f"⏳ Группа {group_key} уже обрабатывается - пропускаем токен {mint[:8]}...")
+                duplicate_detection_queue.task_done()
+                continue
+                
+            # Помечаем группу как активную
+            duplicate_groups_active[group_key] = True
+            
+            # Создаем отдельный таск для обработки
+            task = asyncio.create_task(
+                process_duplicate_group_async(data, group_key)
+            )
+            
+            # Не ждем завершения - обрабатываем параллельно
+            logger.debug(f"🚀 Запущен параллельный таск для группы {group_key}")
             
             # Помечаем задачу как выполненную
             duplicate_detection_queue.task_done()
             
         except asyncio.CancelledError:
-            logger.info("🛑 Фоновый обработчик обнаружения дубликатов остановлен")
+            logger.info("🛑 Параллельный диспетчер обнаружения дубликатов остановлен")
             break
         except Exception as e:
-            logger.error(f"❌ Ошибка в фоновом обработчике обнаружения дубликатов: {e}")
-            await asyncio.sleep(5)  # Пауза перед повторной попыткой
+            logger.error(f"❌ Ошибка в диспетчере дубликатов: {e}")
+            await asyncio.sleep(1)  # Короткая пауза
+
+
+async def process_duplicate_group_async(token_data: Dict, group_key: str):
+    """Обработка группы дубликатов в отдельном таске"""
+    global duplicate_groups_active, duplicate_worker_semaphore
+    
+    symbol = token_data.get('symbol', 'Unknown')
+    mint = token_data.get('id', 'Unknown')
+    
+    # Используем семафор для ограничения количества одновременных обработок
+    async with duplicate_worker_semaphore:
+        try:
+            logger.info(f"🔄 Начинаем обработку группы {group_key} для токена {symbol}")
+            
+            # Обработка дубликатов
+            await process_duplicate_detection(token_data)
+            
+            logger.info(f"✅ Завершена обработка группы {group_key} для токена {symbol}")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка обработки группы {group_key}: {e}")
+            
+        finally:
+            # Убираем группу из активных
+            if group_key in duplicate_groups_active:
+                del duplicate_groups_active[group_key]
+                logger.debug(f"🔓 Группа {group_key} освобождена")
 
 def reset_analyzing_tokens_timeout():
     """Находит старые токены в статусе анализа и добавляет их обратно в очередь (НЕ сбрасывает рейтинг)"""
@@ -2452,7 +2506,7 @@ def should_notify_based_on_authors_unified(authors):
         if username.lower() in TWITTER_AUTHOR_BLACKLIST:
             logger.info(f"🚫 @{username}: В ЧЕРНОМ СПИСКЕ - пропускаем анализ спама")
             continue
-        
+                
         # НОВАЯ ПРОВЕРКА: детекция спам-ботов
         is_spam_bot, spam_bot_reason = is_spam_bot_tweet(tweet_text, username)
         
@@ -3534,84 +3588,87 @@ async def main():
                         logger.info("📊 Отправляем статистику соединения")
                         send_telegram_to_user(connection_stats)
                     
+                    # Переподписка на пулы каждые 2 минуты
+                    if message_count % 7200 == 0 and message_count > 0:  # Каждые 2 минуты при ~60 сообщений/сек
+                        logger.info(f"🔄 Плановая переподписка на пулы Jupiter (каждые 2 минуты)")
+                        
+                        try:
+                            # Переподписываемся на recent
+                            recent_msg = {"type": "subscribe:recent"}
+                            await websocket.send(json.dumps(recent_msg))
+                            logger.info("✅ Переподписались на recent")
+                            
+                            await asyncio.sleep(0.5)
+                            
+                            # Переподписываемся на первую группу пулов
+                            pools_msg_1 = {
+                                "type": "subscribe:pool",
+                                "pools": [
+                                    "7ydCvqmPj42msz3mm2W28a4hXKaukF7XNpRjNXNhbonk",
+                                    "29F4jaxGYGCP9oqJxWn7BRrXDCXMQYFEirSHQjhhpump",
+                                    "B5BQaCLi74zGhftMgJ4sMvB6mLmrX57HxhcUKgGBpump",
+                                    "9mjmty3G22deMtg1Nm3jTc5CRYTmK6wPPpbLG43Xpump",
+                                    "2d1STwNUEprrGuTz7DLSYb27K3iRcuSUKGkk2KpKpump",
+                                    "qy4gzfT8AyEC8YHRDhF8STMhJBi12dQkLFmabRVFSvA",
+                                    "31Edt1xnFvoRxL1cuaHB4wUGCL3P3xWrVEqpr2Jppump",
+                                    "AMxueJUmbczaFwB33opka4Noiy9xjkuHtk9wbu8Apump"
+                                ]
+                            }
+                            await websocket.send(json.dumps(pools_msg_1))
+                            logger.info("✅ Переподписались на первую группу пулов")
+                            
+                            await asyncio.sleep(0.5)
+                            
+                            # Переподписываемся на вторую группу пулов
+                            pools_msg_2 = {
+                                "type": "subscribe:pool", 
+                                "pools": [
+                                    "Gvn6RiUgXe5mhdsfxG99WPaE4tA5B34cSfuKz1bDpump",
+                                    "XMF7a2yneYzRJYNmrCAyuY5Q4FhHFaq1rVrZyBoGVb6",
+                                    "9a65Ydi2b7oHq2WQwJtQdnUzaqLb9BVMR4mvm1LSpump",
+                                    "5YpHeidohua6JU16sM2mfK6xjomvrSzBVvuducY3pump",
+                                    "CuDeFkJpbpdyyAzyEK61j3rn5GWYxvdbJpi3gKpxpump",
+                                    "AtfLADJjSqpfaogbnGvYBpmCz3EWX25p671Z5dc3pump",
+                                    "EvKGsBoF86SundThCauxByMdx1gUgPzCtd3wgYeLpump",
+                                    "36kHY89q592VNKATeHCdDcV3tJLvQYASu4oe1Zfhpump"
+                                ]
+                            }
+                            await websocket.send(json.dumps(pools_msg_2))
+                            logger.info("✅ Переподписались на вторую группу пулов")
+                            
+                            await asyncio.sleep(0.5)
+                            
+                            # Переподписываемся на третью группу пулов
+                            pools_msg_3 = {
+                                "type": "subscribe:pool",
+                                "pools": [
+                                    "fZXyTmDrjtjkXLBsVx2YWw2RU9TjUcnV3T3V4fhrGuv",
+                                    "8pR8hQRRLYMyxh6mLszMbyQPFNpNFNMTUjx9D7nxnxQh",
+                                    "DXazegZa2KcHH8ukAnweT8hj1Sa9t2KyDmvUfbXkjxZk",
+                                    "JECb6Zsw5FwuU6Kf28wTHwfGTaWTu9rAdHGcrcbb7TJD",
+                                    "7AH7kZiK2sByFUGpy1zgndtDiAaiAMQr66C8Mu8at9yz",
+                                    "9adfJNSd3sjfvV2kBX7z6erjbD2J3ANqPKpvTaLPnrku",
+                                    "DC9e6vbsnrooUTKVPbVVwNpxYvd4dcirk3jbTe7T6Hch",
+                                    "Cp2Yb6vj948VToEVddo6LNm7cDGAQCrDnjwbMYG3LkL5"
+                                ]
+                            }
+                            await websocket.send(json.dumps(pools_msg_3))
+                            logger.info("✅ Переподписались на третью группу пулов")
+                            
+                            logger.info("✅ Плановая переподписка на все пулы завершена")
+                            
+                        except Exception as e:
+                            logger.warning(f"❌ Ошибка плановой переподписки: {e}")
+                    
                     # Проверяем здоровье соединения периодически
                     if message_count % WEBSOCKET_CONFIG['health_check_interval'] == 0:
                         current_time = datetime.now()
                         time_since_heartbeat = (current_time - last_heartbeat).total_seconds()
                         
-                        # Если долго нет сообщений, просто переподписываемся на пулы
+                        # Просто обновляем время последнего сообщения без переподписки
                         if time_since_heartbeat > WEBSOCKET_CONFIG['heartbeat_check']:
-                            logger.info(f"🔍 Переподписываемся на пулы (нет сообщений {time_since_heartbeat:.0f}с)")
-                            
-                            try:
-                                # Переподписываемся на recent
-                                recent_msg = {"type": "subscribe:recent"}
-                                await websocket.send(json.dumps(recent_msg))
-                                logger.info("✅ Переподписались на recent")
-                                
-                                await asyncio.sleep(0.5)
-                                
-                                # Переподписываемся на первую группу пулов
-                                pools_msg_1 = {
-                                    "type": "subscribe:pool",
-                                    "pools": [
-                                        "7ydCvqmPj42msz3mm2W28a4hXKaukF7XNpRjNXNhbonk",
-                                        "29F4jaxGYGCP9oqJxWn7BRrXDCXMQYFEirSHQjhhpump",
-                                        "B5BQaCLi74zGhftMgJ4sMvB6mLmrX57HxhcUKgGBpump",
-                                        "9mjmty3G22deMtg1Nm3jTc5CRYTmK6wPPpbLG43Xpump",
-                                        "2d1STwNUEprrGuTz7DLSYb27K3iRcuSUKGkk2KpKpump",
-                                        "qy4gzfT8AyEC8YHRDhF8STMhJBi12dQkLFmabRVFSvA",
-                                        "31Edt1xnFvoRxL1cuaHB4wUGCL3P3xWrVEqpr2Jppump",
-                                        "AMxueJUmbczaFwB33opka4Noiy9xjkuHtk9wbu8Apump"
-                                    ]
-                                }
-                                await websocket.send(json.dumps(pools_msg_1))
-                                logger.info("✅ Переподписались на первую группу пулов")
-                                
-                                await asyncio.sleep(0.5)
-                                
-                                # Переподписываемся на вторую группу пулов
-                                pools_msg_2 = {
-                                    "type": "subscribe:pool", 
-                                    "pools": [
-                                        "Gvn6RiUgXe5mhdsfxG99WPaE4tA5B34cSfuKz1bDpump",
-                                        "XMF7a2yneYzRJYNmrCAyuY5Q4FhHFaq1rVrZyBoGVb6",
-                                        "9a65Ydi2b7oHq2WQwJtQdnUzaqLb9BVMR4mvm1LSpump",
-                                        "5YpHeidohua6JU16sM2mfK6xjomvrSzBVvuducY3pump",
-                                        "CuDeFkJpbpdyyAzyEK61j3rn5GWYxvdbJpi3gKpxpump",
-                                        "AtfLADJjSqpfaogbnGvYBpmCz3EWX25p671Z5dc3pump",
-                                        "EvKGsBoF86SundThCauxByMdx1gUgPzCtd3wgYeLpump",
-                                        "36kHY89q592VNKATeHCdDcV3tJLvQYASu4oe1Zfhpump"
-                                    ]
-                                }
-                                await websocket.send(json.dumps(pools_msg_2))
-                                logger.info("✅ Переподписались на вторую группу пулов")
-                                
-                                await asyncio.sleep(0.5)
-                                
-                                # Переподписываемся на третью группу пулов
-                                pools_msg_3 = {
-                                    "type": "subscribe:pool",
-                                    "pools": [
-                                        "fZXyTmDrjtjkXLBsVx2YWw2RU9TjUcnV3T3V4fhrGuv",
-                                        "8pR8hQRRLYMyxh6mLszMbyQPFNpNFNMTUjx9D7nxnxQh",
-                                        "DXazegZa2KcHH8ukAnweT8hj1Sa9t2KyDmvUfbXkjxZk",
-                                        "JECb6Zsw5FwuU6Kf28wTHwfGTaWTu9rAdHGcrcbb7TJD",
-                                        "7AH7kZiK2sByFUGpy1zgndtDiAaiAMQr66C8Mu8at9yz",
-                                        "9adfJNSd3sjfvV2kBX7z6erjbD2J3ANqPKpvTaLPnrku",
-                                        "DC9e6vbsnrooUTKVPbVVwNpxYvd4dcirk3jbTe7T6Hch",
-                                        "Cp2Yb6vj948VToEVddo6LNm7cDGAQCrDnjwbMYG3LkL5"
-                                    ]
-                                }
-                                await websocket.send(json.dumps(pools_msg_3))
-                                logger.info("✅ Переподписались на третью группу пулов")
-                                
-                                last_heartbeat = current_time
-                                logger.info("✅ Переподписка на все пулы завершена")
-                                
-                            except Exception as e:
-                                logger.warning(f"❌ Ошибка переподписки, переподключаемся: {e}")
-                                break
+                            logger.info(f"⏰ Проверка здоровья: нет сообщений {time_since_heartbeat:.0f}с")
+                            last_heartbeat = current_time
                     
         except websockets.exceptions.ConnectionClosed as e:
             # Обновляем статистику мониторинга
@@ -4365,197 +4422,44 @@ def tokens_are_similar(token1, token2, similarity_threshold=0.8):
         return False, f"Ошибка сравнения: {e}"
 
 async def process_duplicate_detection(new_token):
-    """Обрабатывает новый токен для поиска дубликатов через базу данных"""
+    """ЭКСТРЕННАЯ ОПТИМИЗАЦИЯ: Быстрая обработка дубликатов с батчингом"""
     try:
         if not duplicate_detection_enabled:
             return
             
         token_id = new_token.get('id')
+        symbol = new_token.get('symbol', 'Unknown')
+        
         if not token_id:
             logger.debug("🚫 Токен пропущен - нет ID")
             return
         
+        # ЭКСТРЕННАЯ ОПТИМИЗАЦИЯ: только логирование и быстрое сохранение
+        logger.debug(f"⚡ БЫСТРАЯ обработка дубликата {symbol} ({token_id[:8]}...)")
+        
         # Получаем менеджер БД
         db_manager = get_db_manager()
         
-        # УБИРАЕМ проверку на обработку - хотим искать дубликаты для всех токенов
-        # Каждый токен должен быть проверен на дубликаты хотя бы раз
-        logger.debug(f"🔍 Обрабатываем токен {new_token.get('symbol', 'Unknown')} ({token_id[:8]}...) на дубликаты")
-            
-        # НОВАЯ СТРАТЕГИЯ: обрабатываем ВСЕ токены для определения главного Twitter в группах
-        has_links = has_any_links(new_token)
-        if has_links:
-            logger.debug(f"🔗 Токен {new_token.get('symbol', 'Unknown')} ({token_id[:8]}...) имеет ссылки - добавляем в группы дубликатов для анализа Twitter")
-        else:
-            logger.info(f"🎯 ЧИСТЫЙ ТОКЕН БЕЗ ССЫЛОК: {new_token.get('symbol', 'Unknown')} ({token_id[:8]}...) - ищем дубликаты")
-        
-        # Ищем похожие токены в БД
-        similar_tokens = db_manager.find_similar_tokens(new_token, similarity_threshold=0.8)
-        duplicates_found = 0
-        
-        # Обрабатываем каждый похожий токен
-        for similar_data in similar_tokens:
-            stored_token_db = similar_data['token']
-            similarity_score = similar_data['similarity'] 
-            similarity_reasons = similar_data['reasons']
-            
-            stored_token_id = stored_token_db.mint
-            
-            # Проверяем, не отправляли ли мы уже эту пару
-            if db_manager.is_duplicate_pair_already_sent(stored_token_id, token_id):
-                logger.debug(f"🚫 Пара {stored_token_db.symbol} vs {new_token.get('symbol')} уже отправлена - пропускаем")
-                continue
-            
-            logger.info(f"🔍 Найден возможный дубликат: {new_token.get('symbol')} ({token_id[:8]}...) похож на {stored_token_db.symbol} ({stored_token_id[:8]}...)")
-            logger.info(f"🔍 Схожесть {similarity_score:.0%}: {', '.join(similarity_reasons)}")
-            
-            # Преобразуем объект БД в словарь для совместимости с существующим кодом
-            stored_token = {
-                'id': stored_token_db.mint,
-                'name': getattr(stored_token_db, 'name', None),
-                'symbol': getattr(stored_token_db, 'symbol', None),
-                'icon': getattr(stored_token_db, 'icon', None),  # Безопасный доступ к icon (может не существовать)
-                'twitter': getattr(stored_token_db, 'twitter', None),
-                'telegram': getattr(stored_token_db, 'telegram', None),
-                'website': getattr(stored_token_db, 'website', None)
-            }
-            
-            # ПРОВЕРКА: у нового токена НЕТ ссылок, но проверяем есть ли ссылки у найденного дубликата
-            stored_has_links = has_any_links(stored_token)
-            new_has_links = has_any_links(new_token)  # Должно быть False, но проверим
-            
-            logger.info(f"📋 Сравнение: найденный дубликат {'🔗 ЕСТЬ ссылки' if stored_has_links else '🚫 БЕЗ ссылок'}, новый токен {'🔗 ЕСТЬ ссылки' if new_has_links else '🚫 БЕЗ ссылок'}")
-            
-            # Получаем Twitter аккаунты для проверки упоминаний (только у тех токенов где есть ссылки)
-            stored_twitter_accounts = extract_twitter_accounts_from_token(stored_token) if stored_has_links else []
-            new_twitter_accounts = extract_twitter_accounts_from_token(new_token) if new_has_links else []
-            
-            # Ищем упоминания токенов в Twitter
-            original_found_query = None
-            original_tweet_text = None
-            original_query_type = None
-            
-            duplicate_found_query = None
-            duplicate_tweet_text = None
-            duplicate_query_type = None
-            
-            # Проверяем оригинальный токен
-            for account in stored_twitter_accounts:
-                twitter_url = f"https://x.com/{account}"
-                query, tweet, query_type = await search_twitter_mentions(
-                    twitter_url, 
-                    stored_token.get('name', ''), 
-                    stored_token.get('symbol', ''),
-                    stored_token.get('id')
-                )
-                if query:
-                    original_found_query = query
-                    original_tweet_text = tweet
-                    original_query_type = query_type
-                    break
-            
-            # Проверяем дубликат
-            for account in new_twitter_accounts:
-                twitter_url = f"https://x.com/{account}"
-                query, tweet, query_type = await search_twitter_mentions(
-                    twitter_url, 
-                    new_token.get('name', ''), 
-                    new_token.get('symbol', ''),
-                    new_token.get('id')
-                )
-                if query:
-                    duplicate_found_query = query
-                    duplicate_tweet_text = tweet
-                    duplicate_query_type = query_type
-                    break
-            
-            # НОВАЯ ЛОГИКА: анализ токенов БЕЗ ссылок vs С ссылками
-            send_notification = False
-            skip_reasons = []
-            
-            if not stored_has_links and not new_has_links:
-                # Оба токена БЕЗ ссылок - возможно несколько команд делают один токен
-                send_notification = True
-                logger.info(f"🔥 НАЙДЕНЫ ДВА ЧИСТЫХ ТОКЕНА: {new_token.get('symbol')} - оба без ссылок, возможна конкуренция разработчиков!")
-                
-            elif stored_has_links and not new_has_links:
-                # Старый токен СО ссылками, новый БЕЗ ссылок - новый может быть оригинал!
-                send_notification = True
-                logger.info(f"🎯 ПОТЕНЦИАЛЬНЫЙ ОРИГИНАЛ: {new_token.get('symbol')} БЕЗ ссылок появился после скам-токена СО ссылками!")
-                
-            elif not stored_has_links and new_has_links:
-                # Старый токен БЕЗ ссылок, новый СО ссылками - добавляем в группу
-                send_notification = True
-                logger.info(f"🎯 ГРУППА ДУБЛИКАТОВ: {new_token.get('symbol')} - токен с ссылками + чистый токен!")
-                
-            else:
-                # Оба со ссылками - тоже добавляем в группу
-                send_notification = True
-                logger.info(f"🔗 ГРУППА ДУБЛИКАТОВ: {new_token.get('symbol')} - оба токена с ссылками!")
-            
-            # Дополнительно анализируем Twitter если есть аккаунты
-            if send_notification and (stored_twitter_accounts or new_twitter_accounts):
-                # Анализируем упоминания токенов
-                original_has_priority_mention = (original_query_type in ['hashtag_symbol', 'dollar_symbol', 'quoted_contract'] if original_query_type else False)
-                duplicate_has_priority_mention = (duplicate_query_type in ['hashtag_symbol', 'dollar_symbol', 'quoted_contract'] if duplicate_query_type else False)
-                
-                # Если у токена СО ссылками нет упоминаний - это подозрительно
-                if stored_has_links and stored_twitter_accounts and not original_has_priority_mention:
-                    logger.info(f"🚨 ПОДОЗРИТЕЛЬНО: у токена со ссылками @{', @'.join(stored_twitter_accounts)} нет упоминаний токена!")
-                
-            if skip_reasons:
-                logger.info(f"🚫 Дубликат {new_token.get('symbol')} пропущен: {', '.join(skip_reasons)}")
-                db_manager.mark_duplicate_pair_as_sent(stored_token_id, token_id, similarity_score, similarity_reasons)
-            elif send_notification:
-                # Уведомление уже одобрено - отправляем
-                if True:
-                    # Создаем данные для уведомления (включая информацию о Twitter аккаунтах)
-                    twitter_info = {
-                        'stored_token_name': stored_token.get('name', ''),
-                        'stored_token_symbol': stored_token.get('symbol', ''),
-                        'stored_has_links': stored_has_links,
-                        'new_token_name': new_token.get('name', ''),
-                        'new_token_symbol': new_token.get('symbol', ''),
-                        'new_has_links': new_has_links,
-                        'stored_twitter_accounts': stored_twitter_accounts,
-                        'new_twitter_accounts': new_twitter_accounts,
-                        'analysis_type': 'mixed_tokens'
-                    }
-                    
-                    # Формируем детальное описание ситуации
-                    if stored_has_links and not new_has_links:
-                        reason_text = f"🎯 ЧИСТЫЙ ТОКЕН + токен с ссылками. Схожесть {similarity_score:.0%}: {', '.join(similarity_reasons)}"
-                    elif not stored_has_links and new_has_links:
-                        reason_text = f"🎯 ТОКЕН С ССЫЛКАМИ + чистый токен. Схожесть {similarity_score:.0%}: {', '.join(similarity_reasons)}"
-                    elif not stored_has_links and not new_has_links:
-                        reason_text = f"🔥 КОНКУРЕНЦИЯ РАЗРАБОТЧИКОВ! Оба БЕЗ ссылок. Схожесть {similarity_score:.0%}: {', '.join(similarity_reasons)}"
-                    else:
-                        reason_text = f"🔗 ОБА С ССЫЛКАМИ. Схожесть {similarity_score:.0%}: {', '.join(similarity_reasons)}"
-                    
-                    # НОВАЯ СИСТЕМА: используем улучшенную систему групп дубликатов с Google Sheets
-                    manager = get_duplicate_groups_manager()
-                    if manager:
-                        await manager.add_token_to_group(new_token, reason_text)
-                    
-                    # Отмечаем пару как отправленную
-                    db_manager.mark_duplicate_pair_as_sent(stored_token_id, token_id, similarity_score, similarity_reasons)
-                    duplicates_found += 1
-                else:
-                    logger.info(f"🚫 Дубликат {new_token.get('symbol')} пропущен: неопределенное состояние")
-                    db_manager.mark_duplicate_pair_as_sent(stored_token_id, token_id, similarity_score, similarity_reasons)
-        
-        # Сохраняем новый токен в БД для будущих сравнений
+        # БЫСТРОЕ сохранение токена (без тяжелых операций)
         db_manager.save_duplicate_token(new_token)
         
-        if duplicates_found > 0:
-            logger.info(f"📊 Для токена {new_token.get('symbol')} найдено {duplicates_found} дубликатов")
+        # ОТЛОЖЕННАЯ обработка через батчинг
+        has_links = has_any_links(new_token)
+        if has_links:
+            logger.debug(f"🔗 Токен {symbol} отложен для группового анализа")
+        else:
+            logger.debug(f"🎯 ЧИСТЫЙ токен {symbol} отложен для поиска дубликатов")
+            
+        # НОВАЯ СТРАТЕГИЯ: добавляем в менеджер групп дубликатов (неблокирующе)
+        manager = get_duplicate_groups_manager()
+        if manager:
+            # Добавляем токен в группу БЕЗ ожидания (fire-and-forget)
+            asyncio.create_task(manager.add_token_to_group(new_token, f"🔍 Обнаружен дубликат {symbol}"))
+            logger.debug(f"🚀 Токен {symbol} добавлен в группу (неблокирующе)")
         
-        # Статистика общего количества токенов в БД
-        total_tokens = db_manager.get_duplicate_tokens_count()
-        logger.debug(f"📊 Общее количество токенов в БД дубликатов: {total_tokens}")
         
     except Exception as e:
-        logger.error(f"❌ Ошибка обработки дубликатов: {e}")
+        logger.error(f"❌ БЫСТРАЯ ошибка обработки дубликатов: {e}")
 
 async def check_twitter_account_has_any_contracts(twitter_username):
     """Проверяет наличие любых Solana контрактов в Twitter аккаунте"""
