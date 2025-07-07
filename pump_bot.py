@@ -22,7 +22,7 @@ from connection_monitor import connection_monitor
 from dynamic_cookie_rotation import get_next_proxy_cookie_async
 from twitter_profile_parser import TwitterProfileParser
 # Новая система групп дубликатов с Google Sheets интеграцией
-from duplicate_groups_manager import get_duplicate_groups_manager, initialize_duplicate_groups_manager
+from duplicate_groups_manager import get_duplicate_groups_manager, initialize_duplicate_groups_manager, shutdown_duplicate_groups_manager
 
 
 # Загрузка переменных окружения из .env файла
@@ -87,6 +87,7 @@ TWITTER_AUTHOR_BLACKLIST = {
 }
 # Очередь для асинхронной обработки анализа Twitter
 twitter_analysis_queue = asyncio.Queue()
+duplicate_detection_queue = None  # Будет создана в main()
 # Словарь для хранения результатов анализа
 twitter_analysis_results = {}
 
@@ -208,6 +209,29 @@ def send_telegram_photo(photo_url, caption, inline_keyboard=None):
 
 # send_vip_telegram_photo функция перенесена в vip_twitter_monitor.py
 
+def send_telegram_to_user(message, user_id=7891524244):
+    """Отправка сообщения лично пользователю"""
+    try:
+        payload = {
+            "chat_id": user_id,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False
+        }
+        
+        response = requests.post(TELEGRAM_URL, json=payload)
+        if response.status_code == 200:
+            logger.info(f"✅ Личное сообщение отправлено пользователю {user_id}")
+            return True
+        else:
+            logger.error(f"❌ Ошибка отправки личного сообщения: {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки личного сообщения: {e}")
+        return False
+
+
 async def search_single_query(query, headers, retry_count=0, use_quotes=False, cycle_cookie=None, session=None):
     """Выполняет одиночный поисковый запрос к Nitter с повторными попытками при 429 и динамическими cookies"""
     # Добавляем пустые параметры since, until, near как требует Nitter
@@ -320,7 +344,7 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=False, c
                                     f"3. Блокировка IP адреса\n\n"
                                     f"❌ <b>Twitter анализ недоступен!</b>"
                                 )
-                                send_telegram(alert_message)
+                                send_telegram_to_user(alert_message)
                                 return []
                                 
                         except Exception as challenge_error:
@@ -334,7 +358,7 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=False, c
                                 f"🛠️ <b>Требуется проверка системы</b>\n"
                                 f"❌ <b>Twitter анализ недоступен!</b>"
                             )
-                            send_telegram(alert_message)
+                            send_telegram_to_user(alert_message)
                             return []
                     
                     # Находим все твиты
@@ -603,8 +627,17 @@ async def search_with_pagination(query, headers, max_pages=3, cycle_cookie=None,
                                         
                                 except Exception as challenge_error:
                                     logger.error(f"❌ Ошибка решения challenge на странице {page_count} для '{query}': {challenge_error}")
-                                break
-                            
+                                    # Отправляем уведомление об ошибке
+                                    alert_message = (
+                                        f"🚫 <b>ОШИБКА РЕШЕНИЯ CHALLENGE!</b>\n\n"
+                                        f"📍 <b>Запрос:</b> {query}\n"
+                                        f"❌ <b>Ошибка:</b> {str(challenge_error)}\n\n"
+                                        f"🛠️ <b>Требуется проверка системы</b>\n"
+                                        f"❌ <b>Twitter анализ недоступен!</b>"
+                                    )
+                                    send_telegram_to_user(alert_message)
+                                    return []
+                                
                             # Находим все твиты на текущей странице
                             tweets = soup.find_all('div', class_='timeline-item')
                             # Исключаем элементы show-more и top-ref
@@ -935,12 +968,8 @@ async def format_new_token(data):
         logger.error(f"❌ Ошибка быстрого сохранения токена в БД: {e}")
         log_database_operation("SAVE_TOKEN", "tokens", "ERROR", str(e))
     
-    # Добавляем токен в очередь для фонового анализа Twitter
-    try:
-        await twitter_analysis_queue.put(data)
-        logger.info(f"📋 Токен {symbol} добавлен в очередь фонового анализа Twitter")
-    except Exception as e:
-        logger.error(f"❌ Ошибка добавления в очередь анализа: {e}")
+    # ОТКЛЮЧЕН: Twitter анализ больше не нужен, используем только дубликаты
+    logger.info(f"🚫 Twitter анализ отключен для {symbol} - анализируем только дубликаты")
     
     # Дополнительная информация
     uri = data.get('uri', '')
@@ -1134,21 +1163,21 @@ async def format_new_token(data):
                       f"Pool: {data.get('pool_type', 'Unknown')} | "
                       f"Initial Buy: {data.get('initialBuy', 0)} SOL")
     
-    # НОВАЯ ЛОГИКА: быстрое сохранение, анализ Twitter в фоне
-    # Немедленного уведомления нет - Twitter анализ идет в фоне
-    immediate_notify = False  # ОТКЛЮЧАЕМ немедленные уведомления - только с анализом Twitter
+    # НОВАЯ ЛОГИКА: только дубликаты, никаких уведомлений
+    # Уведомления отправляются только через duplicate_groups_manager
+    immediate_notify = False  # ОТКЛЮЧАЕМ все уведомления - используем только дубликаты
     
-    log_token_decision("⏳ ОЖИДАНИЕ_TWITTER_АНАЛИЗА", symbol, mint, 
-                      "Токен сохранен в БД, Twitter анализ запущен в фоновом режиме. "
-                      "Уведомление будет отправлено только после завершения анализа Twitter.")
+    log_token_decision("🔍 ТОЛЬКО_ДУБЛИКАТЫ", symbol, mint, 
+                      "Токен сохранен в БД, анализируем только дубликаты. "
+                      "Уведомления отправляются только через duplicate_groups_manager.")
     
-    # Все токены сохраняются в БД и добавляются в фоновый мониторинг
-    logger.info(f"⚡ Токен {symbol} - быстро сохранен, Twitter анализ запущен в фоне")
+    # Все токены сохраняются в БД и добавляются в систему дубликатов
+    logger.info(f"⚡ Токен {symbol} - сохранен, анализ дубликатов запущен")
     
     should_notify = immediate_notify
     
     log_token_decision("🚫 РЕШЕНИЕ_НЕМЕДЛЕННОЕ_УВЕДОМЛЕНИЕ", symbol, mint, 
-                      f"should_notify = {should_notify} (ВСЕГДА FALSE до анализа Twitter)")
+                      f"should_notify = {should_notify} (ВСЕГДА FALSE - используем только дубликаты)")
     
     # Логируем анализ токена
     log_token_analysis(data, twitter_analysis, should_notify)
@@ -1388,12 +1417,13 @@ async def handle_new_jupiter_token(pool_data):
             'pool_type': pool_type
         }
         
-        # Запускаем обнаружение дубликатов (асинхронно)
+        # Добавляем в очередь обнаружения дубликатов (НЕ блокирует основной поток)
         try:
             logger.debug(f"🔍 ДУБЛИКАТ DEBUG {symbol}: Twitter = '{duplicate_detection_data.get('twitter', '')}', Pool Type = '{pool_type}'")
-            await process_duplicate_detection(duplicate_detection_data)
+            await duplicate_detection_queue.put(duplicate_detection_data)
+            logger.debug(f"📋 Токен {symbol} добавлен в очередь обнаружения дубликатов")
         except Exception as e:
-            logger.error(f"❌ Ошибка обнаружения дубликатов для {symbol}: {e}")
+            logger.error(f"❌ Ошибка добавления в очередь дубликатов для {symbol}: {e}")
         
         # Отправляем уведомление
         if should_notify:
@@ -1465,12 +1495,13 @@ async def handle_legacy_pumpfun_token(data):
             'pool_type': 'legacy'
         }
         
-        # Запускаем обнаружение дубликатов (асинхронно)
+        # Добавляем в очередь обнаружения дубликатов (НЕ блокирует основной поток)
         try:
             logger.debug(f"🔍 LEGACY ДУБЛИКАТ DEBUG {symbol}: Twitter = '{duplicate_detection_data.get('twitter', '')}'")
-            await process_duplicate_detection(duplicate_detection_data)
+            await duplicate_detection_queue.put(duplicate_detection_data)
+            logger.debug(f"📋 Legacy токен {symbol} добавлен в очередь обнаружения дубликатов")
         except Exception as e:
-            logger.error(f"❌ Ошибка обнаружения дубликатов для legacy {symbol}: {e}")
+            logger.error(f"❌ Ошибка добавления legacy в очередь дубликатов для {symbol}: {e}")
         
         # Отправляем уведомление
         if should_notify:
@@ -1517,8 +1548,8 @@ async def send_daily_stats():
             stats_message += f"\n<b>🕐 Время:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             
             # Отправляем статистику
-            send_telegram(stats_message)
-            logger.info("📊 Ежедневная статистика отправлена")
+            # send_telegram(stats_message)  # Отключено по запросу пользователя
+            logger.info("📊 Ежедневная статистика НЕ отправлена (отключено)")
             
     except Exception as e:
         logger.error(f"❌ Ошибка отправки ежедневной статистики: {e}")
@@ -2160,6 +2191,34 @@ async def twitter_analysis_worker():
             else:
                 await asyncio.sleep(0.5)  # Короткая пауза при единичных ошибках
 
+
+async def duplicate_detection_worker():
+    """Фоновый обработчик обнаружения дубликатов"""
+    logger.info("🔄 Фоновый обработчик обнаружения дубликатов запущен")
+    
+    while True:
+        try:
+            # Получаем токен из очереди
+            data = await duplicate_detection_queue.get()
+            
+            # Обработка токена
+            symbol = data.get('symbol', 'Unknown')
+            mint = data.get('id', 'Unknown')
+            
+            logger.debug(f"🔍 Начинаем фоновое обнаружение дубликатов для токена {symbol}...")
+            
+            # Обработка дубликатов (БЕЗ блокировки основного потока)
+            await process_duplicate_detection(data)
+            
+            # Помечаем задачу как выполненную
+            duplicate_detection_queue.task_done()
+            
+        except asyncio.CancelledError:
+            logger.info("🛑 Фоновый обработчик обнаружения дубликатов остановлен")
+            break
+        except Exception as e:
+            logger.error(f"❌ Ошибка в фоновом обработчике обнаружения дубликатов: {e}")
+            await asyncio.sleep(5)  # Пауза перед повторной попыткой
 
 def reset_analyzing_tokens_timeout():
     """Находит старые токены в статусе анализа и добавляет их обратно в очередь (НЕ сбрасывает рейтинг)"""
@@ -3241,23 +3300,30 @@ async def main():
     last_stats_day = None
     last_heartbeat = datetime.now()
     
-    # Запускаем фоновый обработчик анализа Twitter
-    twitter_worker_task = asyncio.create_task(twitter_analysis_worker())
+    # Инициализируем очередь для дубликатов
+    global duplicate_detection_queue
+    duplicate_detection_queue = asyncio.Queue()
+    
+    # ОТКЛЮЧЕН: Twitter анализ больше не нужен
+    # twitter_worker_task = asyncio.create_task(twitter_analysis_worker())
+    
+    # Запускаем фоновый обработчик обнаружения дубликатов
+    duplicate_worker_task = asyncio.create_task(duplicate_detection_worker())
     
     # Сбрасываем старые "Анализируется..." при запуске
     reset_analyzing_tokens_timeout()
     
-    # Запускаем задачу повторного анализа каждые 10 минут
-    async def retry_analysis_scheduler():
-        while True:
-            await asyncio.sleep(600)  # 10 минут
-            
-            # Проверяем перегрузку очереди
-            await check_queue_overload()
-            
-            # Стандартная очистка
-            await check_and_retry_failed_analysis()
-            reset_analyzing_tokens_timeout()
+    # ОТКЛЮЧЕН: задачи повторного анализа Twitter больше не нужны
+    # async def retry_analysis_scheduler():
+    #     while True:
+    #         await asyncio.sleep(600)  # 10 минут
+    #         
+    #         # Проверяем перегрузку очереди
+    #         await check_queue_overload()
+    #         
+    #         # Стандартная очистка
+    #         await check_and_retry_failed_analysis()
+    #         reset_analyzing_tokens_timeout()
     
     # Запускаем мониторинг официальных контрактов каждую минуту
     async def official_contracts_monitor():
@@ -3270,11 +3336,11 @@ async def main():
     # Запускаем VIP мониторинг Twitter аккаунтов
     # VIP мониторинг Twitter аккаунтов перенесен в отдельную систему vip_twitter_monitor.py
     
-    retry_task = asyncio.create_task(retry_analysis_scheduler())
+    # retry_task = asyncio.create_task(retry_analysis_scheduler())
     contracts_monitor_task = asyncio.create_task(official_contracts_monitor())
     
-    logger.info("🔄 Запущен планировщик повторного анализа")
-    logger.info("🔄 Запущен фоновый обработчик анализа Twitter")
+    logger.info("🚫 Планировщик повторного анализа Twitter ОТКЛЮЧЕН")
+    logger.info("🚫 Фоновый обработчик Twitter анализа ОТКЛЮЧЕН")
     logger.info("🔍 Запущен мониторинг официальных контрактов (каждую минуту)")
     
     # Инициализируем новую систему групп дубликатов
@@ -3408,8 +3474,8 @@ async def main():
                     start_message = (
                         "🚀 <b>JUPITER БОТ v4.0 ЗАПУЩЕН!</b>\n\n"
                         "✅ Мониторинг ВСЕХ DEX'ов через Jupiter\n"
-                        "🔄 Асинхронный Twitter анализ в фоне\n"
-                        "⚡ НИКАКОЙ блокировки при анализе\n"
+                        "🚫 Twitter анализ ОТКЛЮЧЕН\n"
+                        "🔍 Фокус на обнаружении дубликатов\n"
                         "🌐 Источники: pump.fun, Raydium, Meteora, bags.fun\n"
                         "📊 В 3-5 раз БОЛЬШЕ токенов чем раньше\n"
                         "✅ Кнопки для быстрой покупки\n\n"
@@ -3434,11 +3500,11 @@ async def main():
                         start_message += "📍 Уведомления в тему 14\n\n"
                     
                     start_message += "💎 Революция в мониторинге токенов!"
-                    send_telegram_general(start_message)
+                    # send_telegram_general(start_message)  # Отключено по запросу пользователя
                     first_connection = False
                 else:
                     # Уведомление о переподключении
-                    send_telegram_general("🔄 <b>Jupiter переподключение успешно!</b>\n✅ Продолжаем мониторинг всех DEX'ов")
+                    send_telegram_to_user("🔄 <b>Jupiter переподключение успешно!</b>\n✅ Продолжаем мониторинг всех DEX'ов")
                 
                 # Сброс счетчика ретраев при успешном подключении
                 retry_count = 0
@@ -3459,14 +3525,14 @@ async def main():
                     
                     # Отправляем статистику раз в день в 12:00
                     if (last_stats_day != current_day and current_hour >= 12):
-                        await send_daily_stats()
+                        # await send_daily_stats()  # Отключено по запросу пользователя
                         last_stats_day = current_day
                     
                     # Отправляем статистику соединения каждый час
                     if message_count % 3600 == 0 and message_count > 0:  # Примерно каждый час при активности
                         connection_stats = connection_monitor.format_stats_message()
                         logger.info("📊 Отправляем статистику соединения")
-                        send_telegram(connection_stats)
+                        send_telegram_to_user(connection_stats)
                     
                     # Проверяем здоровье соединения периодически
                     if message_count % WEBSOCKET_CONFIG['health_check_interval'] == 0:
@@ -3556,13 +3622,13 @@ async def main():
                 # Не отправляем уведомление для обычных keepalive ошибок
             else:
                 logger.warning(f"⚠️ Соединение закрыто: {e}")
-                send_telegram(f"⚠️ <b>Соединение потеряно</b>\nКод: {e.code}\nПричина: {e.reason}\n🔄 Переподключение...")
+                send_telegram_to_user(f"⚠️ <b>Соединение потеряно</b>\nКод: {e.code}\nПричина: {e.reason}\n🔄 Переподключение...")
         except Exception as status_error:
             # Проверяем на ошибки статуса (совместимость с разными версиями websockets)
             if "InvalidStatusCode" in str(type(status_error)) or "InvalidStatus" in str(type(status_error)) or "HTTP 520" in str(status_error):
                 logger.error(f"❌ Неверный статус код: {status_error}")
                 if retry_count <= 3:
-                    send_telegram(f"❌ <b>Ошибка подключения</b>\nСтатус: {status_error}")
+                    send_telegram_to_user(f"❌ <b>Ошибка подключения</b>\nСтатус: {status_error}")
                 # Продолжаем к следующей итерации для переподключения
                 pass
             elif "WebSocketException" in str(type(status_error)) or "websockets" in str(type(status_error)):
@@ -3570,19 +3636,19 @@ async def main():
                 logger.error(f"❌ WebSocket ошибка: {status_error}")
                 # Не спамим уведомлениями при частых WebSocket ошибках
                 if retry_count <= 3:
-                    send_telegram(f"❌ <b>WebSocket ошибка</b>\n{status_error}")
+                    send_telegram_to_user(f"❌ <b>WebSocket ошибка</b>\n{status_error}")
             else:
                 # Другие неожиданные ошибки
                 logger.error(f"❌ Неожиданная ошибка: {status_error}")
                 if retry_count <= 1:
-                    send_telegram(f"❌ <b>Критическая ошибка</b>\n{status_error}")
+                    send_telegram_to_user(f"❌ <b>Критическая ошибка</b>\n{status_error}")
         except ConnectionResetError as e:
             logger.warning(f"⚠️ Соединение сброшено сетью: {e}")
             # Обычная сетевая ошибка, не требует уведомления
         except OSError as e:
             logger.error(f"❌ Системная ошибка сети: {e}")
             if retry_count <= 2:
-                send_telegram(f"❌ <b>Сетевая ошибка</b>\n{e}")
+                send_telegram_to_user(f"❌ <b>Сетевая ошибка</b>\n{e}")
         
         # Увеличиваем счетчик попыток
         retry_count = min(retry_count + 1, max_retries)
@@ -3590,7 +3656,7 @@ async def main():
         if retry_count >= max_retries:
             error_msg = "❌ <b>Максимум попыток переподключения достигнут</b>\n⏹️ Бот остановлен"
             logger.error(error_msg)
-            send_telegram(error_msg)
+            send_telegram_to_user(error_msg)
             break
         
         logger.info(f"🔄 Мгновенное переподключение... (попытка {retry_count}/{max_retries})")
@@ -3978,30 +4044,22 @@ async def search_twitter_mentions(twitter_url, token_name, token_symbol, contrac
             
         username = username_match.group(1)
         
-        # Создаем поисковые запросы - хештег и символ доллара
+        # Создаем поисковые запросы - символ доллара и контракт
         search_queries = []
         
-        # 1. Приоритет 1 - хештег символа (основной поиск)
-        if token_symbol:
-            search_queries.append({
-                'query': f'"#{token_symbol}"',
-                'priority': 1,
-                'type': 'hashtag_symbol'
-            })
-        
-        # 2. Приоритет 2 - символ с долларом
+        # 1. Приоритет 1 - символ с долларом (основной поиск)
         if token_symbol:
             search_queries.append({
                 'query': f'"${token_symbol}"',
-                'priority': 2,
+                'priority': 1,
                 'type': 'dollar_symbol'
             })
         
-        # 3. Приоритет 3 - контракт в кавычках (если есть)
+        # 2. Приоритет 2 - контракт в кавычках (если есть)
         if contract_address:
             search_queries.append({
                 'query': f'"{contract_address}"',
-                'priority': 3,
+                'priority': 2,
                 'type': 'quoted_contract'
             })
         
@@ -4054,8 +4112,46 @@ async def search_twitter_mentions(twitter_url, token_name, token_symbol, contrac
                                 # Проверяем на блокировку Nitter как в основной системе
                                 title = soup.find('title')
                                 if title and 'Making sure you\'re not a bot!' in title.get_text():
-                                    logger.warning(f"🚫 Nitter заблокирован для поиска '{query}' в @{username}")
-                                    break  # Прерываем retry для этого запроса
+                                    logger.warning(f"🚫 Nitter заблокирован для поиска '{query}' в @{username} - пытаемся решить challenge")
+                                    
+                                    # 🔄 РЕШАЕМ ANUBIS CHALLENGE
+                                    try:
+                                        from anubis_handler import handle_anubis_challenge_for_session
+                                        
+                                        # Решаем challenge
+                                        anubis_cookies = await handle_anubis_challenge_for_session(session, search_url, html)
+                                        
+                                        if anubis_cookies:
+                                            logger.info(f"✅ Anubis challenge решен для поиска '{query}' в @{username}")
+                                            
+                                            # Обновляем куки и повторяем запрос
+                                            from anubis_handler import update_cookies_in_string
+                                            new_cookie = update_cookies_in_string(cookie, anubis_cookies)
+                                            headers['Cookie'] = new_cookie
+                                            
+                                            # Повторяем запрос с новыми куками
+                                            async with session.get(search_url, headers=headers, timeout=20, **request_kwargs) as retry_response:
+                                                if retry_response.status == 200:
+                                                    retry_html = await retry_response.text()
+                                                    retry_soup = BeautifulSoup(retry_html, 'html.parser')
+                                                    
+                                                    # Проверяем что challenge исчез
+                                                    retry_title = retry_soup.find('title')
+                                                    if retry_title and 'Making sure you\'re not a bot!' not in retry_title.get_text():
+                                                        logger.info(f"✅ Успешно преодолели блокировку для поиска '{query}' в @{username}")
+                                                        soup = retry_soup  # Используем новый soup
+                                                    else:
+                                                        logger.error(f"❌ Challenge не решен для поиска '{query}' в @{username}")
+                                                        break
+                                                else:
+                                                    logger.error(f"❌ Ошибка после решения challenge для поиска '{query}' в @{username}")
+                                                    break
+                                        else:
+                                            logger.error(f"❌ Не удалось решить challenge для поиска '{query}' в @{username}")
+                                            break
+                                    except Exception as challenge_error:
+                                        logger.error(f"❌ Ошибка при решении challenge для поиска '{query}' в @{username}: {challenge_error}")
+                                        break
                                 
                                 tweets = soup.find_all('div', class_='timeline-item')
                                 
@@ -4282,19 +4378,16 @@ async def process_duplicate_detection(new_token):
         # Получаем менеджер БД
         db_manager = get_db_manager()
         
-        # Проверяем, не обрабатывали ли мы уже этот токен
-        if db_manager.is_token_already_processed(token_id):
-            logger.debug(f"🚫 Токен {new_token.get('symbol', 'Unknown')} ({token_id[:8]}...) уже в БД - пропускаем")
-            return
+        # УБИРАЕМ проверку на обработку - хотим искать дубликаты для всех токенов
+        # Каждый токен должен быть проверен на дубликаты хотя бы раз
+        logger.debug(f"🔍 Обрабатываем токен {new_token.get('symbol', 'Unknown')} ({token_id[:8]}...) на дубликаты")
             
-        # НОВАЯ СТРАТЕГИЯ: ищем ТОЛЬКО токены БЕЗ ссылок (потенциальные оригиналы)
-        if has_any_links(new_token):
-            logger.debug(f"🚫 Токен {new_token.get('symbol', 'Unknown')} ({token_id[:8]}...) пропущен - есть ссылки (скам)")
-            # Сохраняем скам токен в БД но не ищем дубликаты
-            db_manager.save_duplicate_token(new_token)
-            return
-        
-        logger.info(f"🎯 ЧИСТЫЙ ТОКЕН БЕЗ ССЫЛОК: {new_token.get('symbol', 'Unknown')} ({token_id[:8]}...) - ищем дубликаты")
+        # НОВАЯ СТРАТЕГИЯ: обрабатываем ВСЕ токены для определения главного Twitter в группах
+        has_links = has_any_links(new_token)
+        if has_links:
+            logger.debug(f"🔗 Токен {new_token.get('symbol', 'Unknown')} ({token_id[:8]}...) имеет ссылки - добавляем в группы дубликатов для анализа Twitter")
+        else:
+            logger.info(f"🎯 ЧИСТЫЙ ТОКЕН БЕЗ ССЫЛОК: {new_token.get('symbol', 'Unknown')} ({token_id[:8]}...) - ищем дубликаты")
         
         # Ищем похожие токены в БД
         similar_tokens = db_manager.find_similar_tokens(new_token, similarity_threshold=0.8)
@@ -4319,12 +4412,12 @@ async def process_duplicate_detection(new_token):
             # Преобразуем объект БД в словарь для совместимости с существующим кодом
             stored_token = {
                 'id': stored_token_db.mint,
-                'name': stored_token_db.name,
-                'symbol': stored_token_db.symbol,
-                'icon': stored_token_db.icon,
-                'twitter': stored_token_db.twitter,
-                'telegram': stored_token_db.telegram,
-                'website': stored_token_db.website
+                'name': getattr(stored_token_db, 'name', None),
+                'symbol': getattr(stored_token_db, 'symbol', None),
+                'icon': getattr(stored_token_db, 'icon', None),  # Безопасный доступ к icon (может не существовать)
+                'twitter': getattr(stored_token_db, 'twitter', None),
+                'telegram': getattr(stored_token_db, 'telegram', None),
+                'website': getattr(stored_token_db, 'website', None)
             }
             
             # ПРОВЕРКА: у нового токена НЕТ ссылок, но проверяем есть ли ссылки у найденного дубликата
@@ -4391,12 +4484,14 @@ async def process_duplicate_detection(new_token):
                 logger.info(f"🎯 ПОТЕНЦИАЛЬНЫЙ ОРИГИНАЛ: {new_token.get('symbol')} БЕЗ ссылок появился после скам-токена СО ссылками!")
                 
             elif not stored_has_links and new_has_links:
-                # Этого быть не должно, т.к. мы фильтруем токены с ссылками в начале
-                skip_reasons.append("новый токен с ссылками (ошибка фильтрации)")
+                # Старый токен БЕЗ ссылок, новый СО ссылками - добавляем в группу
+                send_notification = True
+                logger.info(f"🎯 ГРУППА ДУБЛИКАТОВ: {new_token.get('symbol')} - токен с ссылками + чистый токен!")
                 
             else:
-                # Оба со ссылками - не должно происходить
-                skip_reasons.append("оба токена со ссылками (ошибка фильтрации)")
+                # Оба со ссылками - тоже добавляем в группу
+                send_notification = True
+                logger.info(f"🔗 ГРУППА ДУБЛИКАТОВ: {new_token.get('symbol')} - оба токена с ссылками!")
             
             # Дополнительно анализируем Twitter если есть аккаунты
             if send_notification and (stored_twitter_accounts or new_twitter_accounts):
@@ -4414,7 +4509,7 @@ async def process_duplicate_detection(new_token):
             elif send_notification:
                 # Уведомление уже одобрено - отправляем
                 if True:
-                    # Создаем данные для уведомления (упрощенные, фокус на ссылках)
+                    # Создаем данные для уведомления (включая информацию о Twitter аккаунтах)
                     twitter_info = {
                         'stored_token_name': stored_token.get('name', ''),
                         'stored_token_symbol': stored_token.get('symbol', ''),
@@ -4423,16 +4518,19 @@ async def process_duplicate_detection(new_token):
                         'new_token_symbol': new_token.get('symbol', ''),
                         'new_has_links': new_has_links,
                         'stored_twitter_accounts': stored_twitter_accounts,
-                        'analysis_type': 'clean_token_vs_scam' if stored_has_links else 'clean_vs_clean'
+                        'new_twitter_accounts': new_twitter_accounts,
+                        'analysis_type': 'mixed_tokens'
                     }
                     
                     # Формируем детальное описание ситуации
                     if stored_has_links and not new_has_links:
-                        reason_text = f"🎯 ПОТЕНЦИАЛЬНЫЙ ОРИГИНАЛ БЕЗ ссылок! Схожесть {similarity_score:.0%}: {', '.join(similarity_reasons)}"
+                        reason_text = f"🎯 ЧИСТЫЙ ТОКЕН + токен с ссылками. Схожесть {similarity_score:.0%}: {', '.join(similarity_reasons)}"
+                    elif not stored_has_links and new_has_links:
+                        reason_text = f"🎯 ТОКЕН С ССЫЛКАМИ + чистый токен. Схожесть {similarity_score:.0%}: {', '.join(similarity_reasons)}"
                     elif not stored_has_links and not new_has_links:
                         reason_text = f"🔥 КОНКУРЕНЦИЯ РАЗРАБОТЧИКОВ! Оба БЕЗ ссылок. Схожесть {similarity_score:.0%}: {', '.join(similarity_reasons)}"
                     else:
-                        reason_text = f"Схожесть {similarity_score:.0%}: {', '.join(similarity_reasons)}"
+                        reason_text = f"🔗 ОБА С ССЫЛКАМИ. Схожесть {similarity_score:.0%}: {', '.join(similarity_reasons)}"
                     
                     # НОВАЯ СИСТЕМА: используем улучшенную систему групп дубликатов с Google Sheets
                     manager = get_duplicate_groups_manager()
@@ -5005,4 +5103,13 @@ def handle_telegram_callback(callback_query):
     return False
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("🛑 Получен сигнал завершения работы")
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка в main: {e}")
+    finally:
+        # Корректно завершаем работу менеджера групп дубликатов
+        shutdown_duplicate_groups_manager()
+        logger.info("👋 Программа завершена") 

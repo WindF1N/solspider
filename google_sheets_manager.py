@@ -257,13 +257,13 @@ class GoogleSheetsManager:
                     logger.error(f"❌ Не удалось создать таблицу для группы {group_key}")
                     return None
                 
-                # Предоставляем доступ к таблице пользователю
+                # Делаем таблицу доступной всем по ссылке для редактирования
                 try:
-                    # Предоставляем доступ на редактирование
-                    spreadsheet.share('agafonov.egorushka@gmail.com', perm_type='user', role='writer')
-                    logger.info(f"✅ Доступ к таблице {sheet_name} предоставлен для agafonov.egorushka@gmail.com")
+                    # Предоставляем доступ на редактирование всем с ссылкой
+                    spreadsheet.share('', perm_type='anyone', role='writer')
+                    logger.info(f"✅ Таблица {sheet_name} доступна всем по ссылке (с правами редактирования)")
                 except Exception as share_error:
-                    logger.warning(f"⚠️ Не удалось предоставить доступ к таблице {sheet_name}: {share_error}")
+                    logger.warning(f"⚠️ Не удалось сделать таблицу {sheet_name} публичной: {share_error}")
                 
                 # Настраиваем заголовки
                 worksheet = spreadsheet.sheet1
@@ -321,17 +321,14 @@ class GoogleSheetsManager:
             
             # Извлекаем дату создания
             created_at = token_data.get('firstPool', {}).get('createdAt', '')
-            if created_at:
-                try:
-                    created_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                    created_display = created_date.strftime('%d.%m.%Y %H:%M')
-                except:
-                    created_display = created_at
-            else:
-                created_display = "Неизвестно"
+            created_display = self._parse_jupiter_date(created_at)
             
-            # Время обнаружения
-            discovered_at = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
+            # Время обнаружения - используем реальное время из БД если есть
+            first_seen = token_data.get('first_seen', '')
+            if first_seen:
+                discovered_at = self._parse_jupiter_date(first_seen)
+            else:
+                discovered_at = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
             
             # Проверяем наличие ссылок
             has_links = self._check_token_links(token_data)
@@ -623,17 +620,14 @@ class GoogleSheetsManager:
                 
                 # Извлекаем дату создания
                 created_at = token_data.get('firstPool', {}).get('createdAt', '')
-                if created_at:
-                    try:
-                        created_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                        created_display = created_date.strftime('%d.%m.%Y %H:%M')
-                    except:
-                        created_display = created_at
-                else:
-                    created_display = "Неизвестно"
+                created_display = self._parse_jupiter_date(created_at)
                 
-                # Время обнаружения
-                discovered_at = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
+                # Время обнаружения - используем реальное время из БД если есть
+                first_seen = token_data.get('first_seen', '')
+                if first_seen:
+                    discovered_at = self._parse_jupiter_date(first_seen)
+                else:
+                    discovered_at = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
                 
                 # Проверяем наличие ссылок
                 has_links = self._check_token_links(token_data)
@@ -731,17 +725,14 @@ class GoogleSheetsManager:
             
             # Извлекаем дату создания
             created_at = token_data.get('firstPool', {}).get('createdAt', '')
-            if created_at:
-                try:
-                    created_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                    created_display = created_date.strftime('%d.%m.%Y %H:%M')
-                except:
-                    created_display = created_at
-            else:
-                created_display = "Неизвестно"
+            created_display = self._parse_jupiter_date(created_at)
             
-            # Время обнаружения
-            discovered_at = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
+            # Время обнаружения - используем реальное время из БД если есть
+            first_seen = token_data.get('first_seen', '')
+            if first_seen:
+                discovered_at = self._parse_jupiter_date(first_seen)
+            else:
+                discovered_at = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
             
             # Проверяем наличие ссылок
             has_links = self._check_token_links(token_data)
@@ -779,6 +770,27 @@ class GoogleSheetsManager:
             group_key, token_data, main_twitter
         )
         logger.debug(f"🔥 БЫСТРОЕ добавление токена {token_data.get('symbol', 'Unknown')} в очередь")
+
+    def _parse_jupiter_date(self, date_string: str) -> Optional[str]:
+        """Парсинг даты из Jupiter API формата '2025-07-05T16:03:59Z' в читаемый формат"""
+        if not date_string:
+            return "Неизвестно"
+            
+        try:
+            # Улучшенный парсинг UTC даты с Z-суффиксом
+            if date_string.endswith('Z'):
+                # Заменяем Z на +00:00 для явного указания UTC
+                date_string = date_string.replace('Z', '+00:00')
+            
+            # Парсим дату в формате ISO с таймзоной
+            created_date = datetime.fromisoformat(date_string)
+            
+            # Возвращаем в читаемом формате
+            return created_date.strftime('%d.%m.%Y %H:%M')
+            
+        except Exception as e:
+            logger.debug(f"⚠️ Ошибка парсинга Jupiter даты '{date_string}': {e}")
+            return date_string  # Возвращаем оригинальную строку
 
 # Глобальный экземпляр для использования в проекте
 sheets_manager = GoogleSheetsManager() 

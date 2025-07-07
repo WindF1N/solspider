@@ -1,7 +1,7 @@
 import os
 import logging
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, Float, Text, DateTime, Boolean, Index
+from sqlalchemy import create_engine, Column, Integer, String, Float, Text, DateTime, Boolean, Index, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
@@ -637,22 +637,30 @@ class DatabaseManager:
             session.close()
 
     def _parse_jupiter_date(self, date_string):
-        """Парсинг даты из Jupiter API формата '2025-06-30T01:47:45Z'"""
+        """Парсинг даты из Jupiter API формата '2025-07-05T16:03:59Z' (UTC)"""
         if not date_string:
             return None
             
         try:
             from datetime import datetime
-            # Убираем 'Z' в конце и парсим
-            if date_string.endswith('Z'):
-                date_string = date_string[:-1]
             
-            # Парсим дату в формате ISO
+            # Улучшенный парсинг UTC даты с Z-суффиксом
+            if date_string.endswith('Z'):
+                # Заменяем Z на +00:00 для явного указания UTC
+                date_string = date_string.replace('Z', '+00:00')
+            
+            # Парсим дату в формате ISO с таймзоной
             parsed_date = datetime.fromisoformat(date_string)
+            
+            # Конвертируем в UTC если нужно
+            if parsed_date.tzinfo is not None:
+                from datetime import timezone
+                parsed_date = parsed_date.astimezone(timezone.utc).replace(tzinfo=None)
+            
             return parsed_date
             
         except Exception as e:
-            logger.warning(f"⚠️ Ошибка парсинга даты '{date_string}': {e}")
+            logger.warning(f"⚠️ Ошибка парсинга Jupiter даты '{date_string}': {e}")
             return None
 
     def save_duplicate_token(self, token_data):
@@ -764,19 +772,20 @@ class DatabaseManager:
                 if parsed.path:
                     current_twitter_username = parsed.path.strip('/').split('/')[-1].lower()
             
-            # Поиск потенциальных дубликатов
-            query = session.query(DuplicateToken).filter(DuplicateToken.mint != current_mint)
+            # ИСПРАВЛЕНИЕ: Поиск в ОСНОВНОЙ таблице tokens вместо duplicate_tokens
+            query = session.query(Token).filter(Token.mint != current_mint)
             
             # Быстрый поиск по точным совпадениям
             conditions = []
             if current_name:
-                conditions.append(DuplicateToken.normalized_name == current_name)
+                conditions.append(func.lower(Token.name) == current_name)
             if current_symbol:
-                conditions.append(DuplicateToken.normalized_symbol == current_symbol)
+                conditions.append(func.lower(Token.symbol) == current_symbol)
             if current_icon:
-                conditions.append(DuplicateToken.icon == current_icon)
+                conditions.append(Token.icon == current_icon)
             if current_twitter_username:
-                conditions.append(DuplicateToken.twitter_username == current_twitter_username)
+                # Для основной таблицы tokens проверяем Twitter URL содержит username
+                conditions.append(func.lower(Token.twitter).like(f'%{current_twitter_username}%'))
             
             if conditions:
                 from sqlalchemy import or_
@@ -793,16 +802,18 @@ class DatabaseManager:
                 reasons = []
                 
                 # Проверяем название
-                if current_name and candidate.normalized_name:
+                candidate_name = (candidate.name or '').lower().strip()
+                if current_name and candidate_name:
                     total_checks += 1
-                    if current_name == candidate.normalized_name:
+                    if current_name == candidate_name:
                         matches += 1
                         reasons.append("одинаковое название")
                 
                 # Проверяем символ
-                if current_symbol and candidate.normalized_symbol:
+                candidate_symbol = (candidate.symbol or '').lower().strip()
+                if current_symbol and candidate_symbol:
                     total_checks += 1
-                    if current_symbol == candidate.normalized_symbol:
+                    if current_symbol == candidate_symbol:
                         matches += 1
                         reasons.append("одинаковый символ")
                 
@@ -814,9 +825,10 @@ class DatabaseManager:
                         reasons.append("одинаковая иконка")
                 
                 # Проверяем Twitter
-                if current_twitter_username and candidate.twitter_username:
+                candidate_twitter = (candidate.twitter or '').lower()
+                if current_twitter_username and candidate_twitter:
                     total_checks += 1
-                    if current_twitter_username == candidate.twitter_username:
+                    if current_twitter_username in candidate_twitter:
                         matches += 1
                         reasons.append("одинаковый Twitter")
                 
@@ -833,7 +845,7 @@ class DatabaseManager:
             # Сортируем по схожести (убывание)
             similar_tokens.sort(key=lambda x: x['similarity'], reverse=True)
             
-            logger.debug(f"🔍 Найдено {len(similar_tokens)} похожих токенов для {current_symbol}")
+            logger.debug(f"🔍 Найдено {len(similar_tokens)} похожих токенов для {current_symbol} в ОСНОВНОЙ таблице tokens")
             return similar_tokens
             
         except SQLAlchemyError as e:
@@ -855,9 +867,10 @@ class DatabaseManager:
             session.close()
 
     def is_token_already_processed(self, mint):
-        """Проверка, обработан ли уже токен"""
+        """Проверка, обработан ли уже токен на дубликаты"""
         session = self.Session()
         try:
+            # ИСПРАВЛЕНИЕ: Проверяем в таблице duplicate_tokens для дубликатов
             exists = session.query(DuplicateToken).filter_by(mint=mint).first() is not None
             return exists
         except SQLAlchemyError as e:
