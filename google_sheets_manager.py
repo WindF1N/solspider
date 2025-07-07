@@ -13,7 +13,7 @@ import re
 import time
 import asyncio
 import threading
-from queue import Queue
+from queue import Queue, PriorityQueue
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -39,10 +39,12 @@ class GoogleSheetsManager:
             'https://www.googleapis.com/auth/drive'
         ]
         
-        # Асинхронная очередь задач для Google Sheets
-        self.task_queue = Queue()
+        # Приоритетная очередь задач для Google Sheets
+        # Приоритет: 0 - высокий (отправленные уведомления), 1 - обычный (тестовые)
+        self.task_queue = PriorityQueue()
         self.worker_thread = None
         self.stop_worker = False
+        self.task_counter = 0  # Счетчик для разрешения конфликтов приоритета
         
         self._initialize_client()
         self._start_worker()
@@ -104,22 +106,30 @@ class GoogleSheetsManager:
             logger.info("🚀 Google Sheets воркер запущен")
     
     def _worker_loop(self):
-        """Основной цикл обработки задач Google Sheets"""
+        """Основной цикл обработки задач Google Sheets с приоритетами"""
         while not self.stop_worker:
             try:
-                # Получаем задачу из очереди (блокирующий вызов с таймаутом)
-                task = self.task_queue.get(timeout=5)
+                # Получаем задачу из приоритетной очереди (блокирующий вызов с таймаутом)
+                priority_task = self.task_queue.get(timeout=5)
+                
+                if priority_task is None:  # Сигнал остановки
+                    break
+                
+                # Распаковываем приоритетную задачу: (priority, counter, (func, args, kwargs))
+                priority, counter, task = priority_task
                 
                 if task is None:  # Сигнал остановки
                     break
                 
-                # Выполняем задачу
                 func, args, kwargs = task
+                
                 try:
                     result = func(*args, **kwargs)
-                    logger.debug(f"✅ Задача Google Sheets выполнена: {func.__name__}")
+                    priority_str = "🔥 ВЫСОКИЙ" if priority == 0 else "⏳ ОБЫЧНЫЙ"
+                    logger.debug(f"✅ Задача Google Sheets выполнена ({priority_str}): {func.__name__}")
                 except Exception as task_error:
-                    logger.error(f"❌ Ошибка выполнения задачи {func.__name__}: {task_error}")
+                    priority_str = "🔥 ВЫСОКИЙ" if priority == 0 else "⏳ ОБЫЧНЫЙ"
+                    logger.error(f"❌ Ошибка выполнения задачи ({priority_str}) {func.__name__}: {task_error}")
                 finally:
                     self.task_queue.task_done()
                     
@@ -130,17 +140,29 @@ class GoogleSheetsManager:
         
         logger.info("🛑 Google Sheets воркер остановлен")
     
-    def _queue_task(self, func: Callable, *args, **kwargs):
-        """Добавляет задачу в очередь для асинхронного выполнения"""
+    def _queue_task(self, func: Callable, *args, priority: int = 1, **kwargs):
+        """Добавляет задачу в приоритетную очередь для асинхронного выполнения
+        
+        Args:
+            func: Функция для выполнения
+            *args: Аргументы функции
+            priority: Приоритет (0 = высокий для отправленных уведомлений, 1 = обычный)
+            **kwargs: Именованные аргументы функции
+        """
         if not self.stop_worker:
-            self.task_queue.put((func, args, kwargs))
+            task_data = (func, args, kwargs)
+            # Добавляем счетчик для разрешения конфликтов приоритета
+            self.task_counter += 1
+            self.task_queue.put((priority, self.task_counter, task_data))
+            priority_str = "🔥 ВЫСОКИЙ" if priority == 0 else "⏳ ОБЫЧНЫЙ"
+            logger.debug(f"📤 Задача добавлена в очередь ({priority_str}): {func.__name__}")
         else:
             logger.warning("⚠️ Воркер остановлен, задача отклонена")
     
     def stop_worker_thread(self):
         """Останавливает воркер"""
         self.stop_worker = True
-        self.task_queue.put(None)  # Сигнал остановки
+        self.task_queue.put((0, 0, None))  # Сигнал остановки с высоким приоритетом и счетчиком
         if self.worker_thread:
             self.worker_thread.join(timeout=10)
             logger.info("🛑 Google Sheets воркер остановлен принудительно")
@@ -371,14 +393,23 @@ class GoogleSheetsManager:
             logger.error(f"❌ Ошибка добавления токена в таблицу {group_key}: {e}")
             return False
     
-    def add_token_to_sheet_async(self, group_key: str, token_data: Dict, main_twitter: str = None):
-        """Асинхронно добавляет токен в таблицу группы дубликатов (без блокировки основного потока)"""
+    def add_token_to_sheet_async(self, group_key: str, token_data: Dict, main_twitter: str = None, priority: int = 1):
+        """Асинхронно добавляет токен в таблицу группы дубликатов (без блокировки основного потока)
+        
+        Args:
+            group_key: Ключ группы
+            token_data: Данные токена
+            main_twitter: Главный Twitter аккаунт
+            priority: Приоритет (0 = высокий для отправленных уведомлений, 1 = обычный)
+        """
         # Добавляем задачу в очередь для выполнения в фоновом потоке
         self._queue_task(
             self._add_token_to_sheet_internal,
-            group_key, token_data, main_twitter
+            group_key, token_data, main_twitter,
+            priority=priority
         )
-        logger.debug(f"📋 Токен {token_data.get('symbol', 'Unknown')} добавлен в очередь Google Sheets")
+        priority_str = "🔥 ВЫСОКИЙ" if priority == 0 else "⏳ ОБЫЧНЫЙ"
+        logger.debug(f"📋 Токен {token_data.get('symbol', 'Unknown')} добавлен в очередь Google Sheets ({priority_str})")
     
     def _add_token_to_sheet_internal(self, group_key: str, token_data: Dict, main_twitter: str = None) -> bool:
         """Внутренний метод для добавления токена в таблицу (выполняется в фоновом потоке)"""
@@ -535,13 +566,21 @@ class GoogleSheetsManager:
             logger.error(f"❌ Ошибка обновления главного Twitter в таблице {group_key}: {e}")
             return False
     
-    def update_main_twitter_async(self, group_key: str, main_twitter: str):
-        """Асинхронно обновляет статусы токенов в таблице на основе главного Twitter аккаунта"""
+    def update_main_twitter_async(self, group_key: str, main_twitter: str, priority: int = 1):
+        """Асинхронно обновляет статусы токенов в таблице на основе главного Twitter аккаунта
+        
+        Args:
+            group_key: Ключ группы
+            main_twitter: Главный Twitter аккаунт
+            priority: Приоритет (0 = высокий для отправленных уведомлений, 1 = обычный)
+        """
         self._queue_task(
             self._update_main_twitter_internal,
-            group_key, main_twitter
+            group_key, main_twitter,
+            priority=priority
         )
-        logger.debug(f"📋 Обновление главного Twitter для {group_key} добавлено в очередь")
+        priority_str = "🔥 ВЫСОКИЙ" if priority == 0 else "⏳ ОБЫЧНЫЙ"
+        logger.debug(f"📋 Обновление главного Twitter для {group_key} добавлено в очередь ({priority_str})")
     
     def _update_main_twitter_internal(self, group_key: str, main_twitter: str) -> bool:
         """Внутренний метод для обновления главного Twitter (выполняется в фоновом потоке)"""
@@ -690,13 +729,22 @@ class GoogleSheetsManager:
             logger.error(f"❌ Ошибка батчевого добавления токенов в группу {group_key}: {e}")
             return False
     
-    def add_tokens_batch_async(self, group_key: str, tokens_list: List[Dict], main_twitter: str = None):
-        """🔥 Асинхронное батчевое добавление всех токенов группы"""
+    def add_tokens_batch_async(self, group_key: str, tokens_list: List[Dict], main_twitter: str = None, priority: int = 1):
+        """🔥 Асинхронное батчевое добавление всех токенов группы
+        
+        Args:
+            group_key: Ключ группы
+            tokens_list: Список токенов
+            main_twitter: Главный Twitter аккаунт
+            priority: Приоритет (0 = высокий для отправленных уведомлений, 1 = обычный)
+        """
         self._queue_task(
             self.add_tokens_batch,
-            group_key, tokens_list, main_twitter
+            group_key, tokens_list, main_twitter,
+            priority=priority
         )
-        logger.info(f"🔥 БАТЧЕВОЕ добавление {len(tokens_list)} токенов группы {group_key} добавлено в очередь")
+        priority_str = "🔥 ВЫСОКИЙ" if priority == 0 else "⏳ ОБЫЧНЫЙ"
+        logger.info(f"🔥 БАТЧЕВОЕ добавление {len(tokens_list)} токенов группы {group_key} добавлено в очередь ({priority_str})")
     
     def add_single_token_fast(self, group_key: str, token_data: Dict, main_twitter: str = None) -> bool:
         """🔥 БЫСТРОЕ добавление одного токена в существующую таблицу (без сортировки)"""
@@ -763,13 +811,22 @@ class GoogleSheetsManager:
             logger.error(f"❌ Ошибка быстрого добавления токена в таблицу {group_key}: {e}")
             return False
     
-    def add_single_token_fast_async(self, group_key: str, token_data: Dict, main_twitter: str = None):
-        """🔥 Асинхронное быстрое добавление одного токена"""
+    def add_single_token_fast_async(self, group_key: str, token_data: Dict, main_twitter: str = None, priority: int = 1):
+        """🔥 Асинхронное быстрое добавление одного токена
+        
+        Args:
+            group_key: Ключ группы
+            token_data: Данные токена
+            main_twitter: Главный Twitter аккаунт
+            priority: Приоритет (0 = высокий для отправленных уведомлений, 1 = обычный)
+        """
         self._queue_task(
             self.add_single_token_fast,
-            group_key, token_data, main_twitter
+            group_key, token_data, main_twitter,
+            priority=priority
         )
-        logger.debug(f"🔥 БЫСТРОЕ добавление токена {token_data.get('symbol', 'Unknown')} в очередь")
+        priority_str = "🔥 ВЫСОКИЙ" if priority == 0 else "⏳ ОБЫЧНЫЙ"
+        logger.debug(f"🔥 БЫСТРОЕ добавление токена {token_data.get('symbol', 'Unknown')} в очередь ({priority_str})")
 
     def _parse_jupiter_date(self, date_string: str) -> Optional[str]:
         """Парсинг даты из Jupiter API формата '2025-07-05T16:03:59Z' в читаемый формат"""

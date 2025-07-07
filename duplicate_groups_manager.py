@@ -1164,8 +1164,9 @@ class DuplicateGroupsManager:
                             return False
                     
                     group.main_twitter = new_main_twitter
-                    # Обновляем статусы в Google Sheets асинхронно
-                    sheets_manager.update_main_twitter_async(group_key, new_main_twitter)
+                    # Обновляем статусы в Google Sheets асинхронно с приоритетом
+                    priority = 0 if group.message_id else 1  # Высокий приоритет для отправленных групп
+                    sheets_manager.update_main_twitter_async(group_key, new_main_twitter, priority=priority)
                     
                     # Обновляем официальный анонс если изменился главный аккаунт
                     if new_main_twitter:
@@ -1568,7 +1569,7 @@ class DuplicateGroupsManager:
             return []
     
     def _create_sheet_and_update_message_async(self, group_key: str, tokens: List[Dict], main_twitter: str):
-        """🔥 СУПЕР БЫСТРОЕ асинхронное создание Google Sheets таблицы батчем"""
+        """🔥 СУПЕР БЫСТРОЕ асинхронное создание Google Sheets таблицы батчем с приоритизацией"""
         def create_sheet_task():
             try:
                 logger.info(f"🔥 Создаем Google Sheets таблицу для группы {group_key} БАТЧЕМ ({len(tokens)} токенов)...")
@@ -1620,9 +1621,20 @@ class DuplicateGroupsManager:
                 import traceback
                 logger.error(f"❌ Трассировка: {traceback.format_exc()}")
         
-        # Запускаем в фоновом потоке Google Sheets
-        logger.info(f"📤 DEBUG: Добавляем задачу create_sheet_task для {group_key} в очередь")
-        sheets_manager._queue_task(create_sheet_task)
+        # 🔥 ОПРЕДЕЛЯЕМ ПРИОРИТЕТ: Высокий для отправленных уведомлений, обычный для тестовых
+        group = self.groups.get(group_key)
+        if group and group.message_id:
+            # Высокий приоритет для отправленных уведомлений
+            priority = 0
+            priority_msg = "🔥 ВЫСОКИЙ (отправленное уведомление)"
+        else:
+            # Обычный приоритет для тестовых/необработанных групп
+            priority = 1
+            priority_msg = "⏳ ОБЫЧНЫЙ (тестовая группа)"
+        
+        # Запускаем в фоновом потоке Google Sheets с приоритетом
+        logger.info(f"📤 DEBUG: Добавляем задачу create_sheet_task для {group_key} в очередь с приоритетом {priority_msg}")
+        sheets_manager._queue_task(create_sheet_task, priority=priority)
     
     def _format_group_message_sync(self, group: 'GroupData') -> str:
         """Синхронно форматирует текст сообщения для группы дубликатов (для фонового потока)"""
