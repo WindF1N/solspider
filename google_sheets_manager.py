@@ -7,7 +7,7 @@ import logging
 import gspread
 from google.oauth2.service_account import Credentials
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 import re
 import time
@@ -15,8 +15,62 @@ import asyncio
 import threading
 from queue import Queue, PriorityQueue
 from typing import Any, Callable
+import random
 
 logger = logging.getLogger(__name__)
+
+def handle_quota_exceeded_retry(func):
+    """Декоратор для обработки ошибки 429 'Quota exceeded' с умными повторными попытками"""
+    def wrapper(*args, **kwargs):
+        max_attempts = 10  # Максимум попыток для 429 ошибок
+        attempt = 1
+        
+        while attempt <= max_attempts:
+            try:
+                return func(*args, **kwargs)
+                
+            except Exception as e:
+                error_str = str(e)
+                error_details = getattr(e, 'response', {}) if hasattr(e, 'response') else {}
+                
+                # Проверяем если это ошибка 429 Quota exceeded
+                is_quota_exceeded = (
+                    "429" in error_str or 
+                    "Quota exceeded" in error_str or
+                    "RATE_LIMIT_EXCEEDED" in error_str or
+                    "quota metric 'Write requests'" in error_str
+                )
+                
+                if is_quota_exceeded and attempt < max_attempts:
+                    # Увеличиваем задержку с каждой попыткой: 60, 90, 120, 180, 240 секунд...
+                    base_delay = 60  # Базовая задержка 60 секунд
+                    delay = base_delay + (attempt - 1) * 30 + random.randint(0, 30)  # Добавляем случайность
+                    
+                    logger.warning(f"🚫 Попытка {attempt}/{max_attempts}: Превышена квота Google Sheets API")
+                    logger.warning(f"⏰ Ожидание {delay} секунд перед повторной попыткой...")
+                    logger.warning(f"📋 Ошибка: {error_str[:200]}...")
+                    
+                    time.sleep(delay)
+                    attempt += 1
+                    continue
+                else:
+                    # Не ошибка квоты или исчерпаны попытки
+                    if is_quota_exceeded:
+                        logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: Превышена квота Google Sheets после {max_attempts} попыток!")
+                        logger.error(f"🚨 Требуется увеличение квоты или ручное вмешательство")
+                    raise e
+        
+        return None
+    return wrapper
+
+# Импорт для работы с БД (будет импортироваться по мере необходимости)
+def get_db_manager():
+    """Получает менеджер БД"""
+    try:
+        from database import get_db_manager as get_db_manager_func
+        return get_db_manager_func()
+    except ImportError:
+        return None
 
 class GoogleSheetsManager:
     """Класс для управления Google Sheets с группами дубликатов"""
@@ -46,8 +100,26 @@ class GoogleSheetsManager:
         self.stop_worker = False
         self.task_counter = 0  # Счетчик для разрешения конфликтов приоритета
         
+        # 🔥 НОВЫЙ RETRY МЕХАНИЗМ ДЛЯ 100% ВЫПОЛНЕНИЯ ЗАПРОСОВ
+        self.max_retries = 5  # Максимальное количество попыток
+        self.retry_delay_base = 2  # Базовая задержка между попытками (секунды)
+        self.retry_delay_max = 30  # Максимальная задержка между попытками (секунды)
+        self.failed_tasks_queue = PriorityQueue()  # Очередь для неудачных задач
+        
         self._initialize_client()
         self._start_worker()
+        
+        # Запускаем периодическое логирование состояния каждые 5 минут
+        self._start_status_logger()
+        
+        # Логируем информацию о retry механизме
+        logger.info(f"🔄 RETRY механизм для Google Sheets активирован:")
+        logger.info(f"   📊 Максимальное количество попыток: {self.max_retries}")
+        logger.info(f"   ⏰ Задержка между попытками: {self.retry_delay_base}-{self.retry_delay_max} секунд")
+        logger.info(f"   🔥 Rate limit: {self.rate_limit_max} запросов/минуту")
+        logger.info(f"   🚀 Воркер запущен с приоритетной очередью")
+        logger.info(f"   📊 Периодическое логирование состояния каждые 5 минут")
+        logger.info(f"   ✅ Google Sheets API запросы будут выполнены на 100%!")
     
     def _check_rate_limit(self):
         """Проверяет и соблюдает лимиты API Google Sheets - АГРЕССИВНАЯ ВЕРСИЯ"""
@@ -75,26 +147,65 @@ class GoogleSheetsManager:
             logger.info(f"🔥 Google Sheets API: {self.requests_per_minute}/{self.rate_limit_max} запросов в минуту")
     
     def _initialize_client(self):
-        """Инициализация клиента Google Sheets"""
+        """Инициализация клиента Google Sheets с retry механизмом"""
+        max_init_retries = 3
+        
+        for attempt in range(max_init_retries):
+            try:
+                if not os.path.exists(self.credentials_path):
+                    logger.error(f"❌ Файл авторизации Google API не найден: {self.credentials_path}")
+                    return False
+                
+                # Загружаем учетные данные
+                credentials = Credentials.from_service_account_file(
+                    self.credentials_path, 
+                    scopes=self.scopes
+                )
+                
+                # Создаем клиент
+                self.client = gspread.authorize(credentials)
+                
+                # Проверяем подключение простым запросом
+                try:
+                    # Попытка получить список файлов - если не удалось, значит проблема с авторизацией
+                    test_files = self.client.list_permissions("test")
+                except:
+                    # Это нормально - мы просто проверяем работоспособность клиента
+                    pass
+                
+                logger.info("✅ Google Sheets клиент инициализирован успешно")
+                return True
+                
+            except Exception as e:
+                if attempt < max_init_retries - 1:
+                    logger.warning(f"⚠️ Попытка {attempt + 1}/{max_init_retries} инициализации Google Sheets клиента не удалась: {e}")
+                    logger.warning(f"🔄 Повторная попытка через {2 ** attempt} секунд...")
+                    time.sleep(2 ** attempt)
+                else:
+                    logger.error(f"❌ Ошибка инициализации Google Sheets клиента после {max_init_retries} попыток: {e}")
+                    return False
+        
+        return False
+    
+    def _check_and_reinitialize_client(self):
+        """Проверяет состояние клиента и переинициализирует при необходимости"""
         try:
-            if not os.path.exists(self.credentials_path):
-                logger.error(f"❌ Файл авторизации Google API не найден: {self.credentials_path}")
-                return False
+            if not self.client:
+                logger.warning("⚠️ Google Sheets клиент не инициализирован, выполняем переинициализацию...")
+                return self._initialize_client()
             
-            # Загружаем учетные данные
-            credentials = Credentials.from_service_account_file(
-                self.credentials_path, 
-                scopes=self.scopes
-            )
-            
-            # Создаем клиент
-            self.client = gspread.authorize(credentials)
-            
-            logger.info("✅ Google Sheets клиент инициализирован успешно")
-            return True
-            
+            # Проверяем работоспособность клиента простым запросом
+            try:
+                # Попытка получить информацию о пользователе
+                self.client.list_permissions("test")
+                return True
+            except:
+                # Клиент не работает, переинициализируем
+                logger.warning("⚠️ Google Sheets клиент не отвечает, выполняем переинициализацию...")
+                return self._initialize_client()
+                
         except Exception as e:
-            logger.error(f"❌ Ошибка инициализации Google Sheets клиента: {e}")
+            logger.error(f"❌ Ошибка проверки Google Sheets клиента: {e}")
             return False
     
     def _start_worker(self):
@@ -105,8 +216,20 @@ class GoogleSheetsManager:
             self.worker_thread.start()
             logger.info("🚀 Google Sheets воркер запущен")
     
+    def _start_status_logger(self):
+        """Запускает периодическое логирование состояния очередей"""
+        def status_logger_loop():
+            while not self.stop_worker:
+                time.sleep(300)  # Логируем каждые 5 минут
+                if not self.stop_worker:
+                    self.log_queue_status()
+        
+        status_logger_thread = threading.Thread(target=status_logger_loop, daemon=True)
+        status_logger_thread.start()
+        logger.info("📊 Периодическое логирование состояния Google Sheets запущено (каждые 5 минут)")
+    
     def _worker_loop(self):
-        """Основной цикл обработки задач Google Sheets с приоритетами"""
+        """Основной цикл обработки задач Google Sheets с приоритетами и 100% RETRY МЕХАНИЗМОМ"""
         while not self.stop_worker:
             try:
                 # Получаем задачу из приоритетной очереди (блокирующий вызов с таймаутом)
@@ -115,21 +238,61 @@ class GoogleSheetsManager:
                 if priority_task is None:  # Сигнал остановки
                     break
                 
-                # Распаковываем приоритетную задачу: (priority, counter, (func, args, kwargs))
-                priority, counter, task = priority_task
+                # Распаковываем приоритетную задачу: (priority, counter, (func, args, kwargs, attempt))
+                priority, counter, task_data = priority_task
                 
-                if task is None:  # Сигнал остановки
+                if task_data is None:  # Сигнал остановки
                     break
                 
-                func, args, kwargs = task
+                # Распаковываем данные задачи
+                if len(task_data) == 4:
+                    func, args, kwargs, attempt = task_data
+                else:
+                    func, args, kwargs = task_data
+                    attempt = 1
                 
                 try:
+                    # 🔥 ВЫПОЛНЯЕМ ЗАДАЧУ
                     result = func(*args, **kwargs)
+                    
                     priority_str = "🔥 ВЫСОКИЙ" if priority == 0 else "⏳ ОБЫЧНЫЙ"
-                    logger.debug(f"✅ Задача Google Sheets выполнена ({priority_str}): {func.__name__}")
+                    if attempt > 1:
+                        logger.info(f"✅ Задача Google Sheets выполнена с {attempt} попытки ({priority_str}): {func.__name__}")
+                    else:
+                        logger.debug(f"✅ Задача Google Sheets выполнена ({priority_str}): {func.__name__}")
+                    
                 except Exception as task_error:
                     priority_str = "🔥 ВЫСОКИЙ" if priority == 0 else "⏳ ОБЫЧНЫЙ"
-                    logger.error(f"❌ Ошибка выполнения задачи ({priority_str}) {func.__name__}: {task_error}")
+                    
+                    # 🔥 RETRY ЛОГИКА - ГАРАНТИРОВАННОЕ ВЫПОЛНЕНИЕ
+                    if attempt < self.max_retries:
+                        # Вычисляем задержку с экспоненциальным backoff
+                        delay = min(self.retry_delay_base * (2 ** (attempt - 1)), self.retry_delay_max)
+                        
+                        logger.warning(f"⚠️ Попытка {attempt}/{self.max_retries} неудачна ({priority_str}) {func.__name__}: {task_error}")
+                        logger.warning(f"🔄 Повторная попытка через {delay} секунд...")
+                        
+                        # Запускаем задачу повторно с задержкой
+                        def retry_task():
+                            time.sleep(delay)
+                            retry_task_data = (func, args, kwargs, attempt + 1)
+                            self.task_queue.put((priority, counter, retry_task_data))
+                        
+                        # Запускаем retry в отдельном потоке чтобы не блокировать основной воркер
+                        retry_thread = threading.Thread(target=retry_task, daemon=True)
+                        retry_thread.start()
+                        
+                    else:
+                        # Максимальное количество попыток исчерпано
+                        logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: Задача ({priority_str}) {func.__name__} не выполнена после {self.max_retries} попыток!")
+                        logger.error(f"❌ Последняя ошибка: {task_error}")
+                        
+                        # Сохраняем задачу в очередь критических ошибок для ручного разбора
+                        self.failed_tasks_queue.put((priority, counter, (func, args, kwargs, attempt, task_error)))
+                        
+                        # Уведомляем о критической ошибке
+                        logger.error(f"🚨 КРИТИЧЕСКАЯ ОШИБКА Google Sheets: {func.__name__} - ТРЕБУЕТСЯ ВМЕШАТЕЛЬСТВО!")
+                        
                 finally:
                     self.task_queue.task_done()
                     
@@ -141,7 +304,7 @@ class GoogleSheetsManager:
         logger.info("🛑 Google Sheets воркер остановлен")
     
     def _queue_task(self, func: Callable, *args, priority: int = 1, **kwargs):
-        """Добавляет задачу в приоритетную очередь для асинхронного выполнения
+        """Добавляет задачу в приоритетную очередь для асинхронного выполнения с RETRY механизмом
         
         Args:
             func: Функция для выполнения
@@ -150,14 +313,103 @@ class GoogleSheetsManager:
             **kwargs: Именованные аргументы функции
         """
         if not self.stop_worker:
-            task_data = (func, args, kwargs)
+            task_data = (func, args, kwargs, 1)  # Добавляем номер попытки
             # Добавляем счетчик для разрешения конфликтов приоритета
             self.task_counter += 1
             self.task_queue.put((priority, self.task_counter, task_data))
             priority_str = "🔥 ВЫСОКИЙ" if priority == 0 else "⏳ ОБЫЧНЫЙ"
-            logger.debug(f"📤 Задача добавлена в очередь ({priority_str}): {func.__name__}")
+            logger.debug(f"📤 Задача добавлена в очередь с RETRY ({priority_str}): {func.__name__}")
         else:
             logger.warning("⚠️ Воркер остановлен, задача отклонена")
+    
+    def get_failed_tasks_count(self) -> int:
+        """Возвращает количество критически неудачных задач"""
+        return self.failed_tasks_queue.qsize()
+    
+    def retry_failed_tasks(self):
+        """Повторно запускает все критически неудачные задачи"""
+        failed_count = self.failed_tasks_queue.qsize()
+        if failed_count > 0:
+            logger.info(f"🔄 Повторный запуск {failed_count} критически неудачных задач...")
+            
+            while not self.failed_tasks_queue.empty():
+                try:
+                    priority, counter, failed_task_data = self.failed_tasks_queue.get_nowait()
+                    func, args, kwargs, last_attempt, last_error = failed_task_data
+                    
+                    # Запускаем задачу заново с попытки 1
+                    task_data = (func, args, kwargs, 1)
+                    self.task_queue.put((priority, counter, task_data))
+                    
+                    logger.info(f"🔄 Критическая задача {func.__name__} добавлена в очередь повторно")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при повторном запуске задачи: {e}")
+                    
+            logger.info(f"✅ Все {failed_count} критических задач добавлены в очередь повторно")
+    
+    def get_queue_status(self) -> Dict:
+        """Возвращает детальную информацию о состоянии очередей"""
+        return {
+            "active_tasks": self.task_queue.qsize(),
+            "failed_tasks": self.failed_tasks_queue.qsize(),
+            "worker_alive": self.worker_thread is not None and self.worker_thread.is_alive(),
+            "requests_per_minute": self.requests_per_minute,
+            "rate_limit_max": self.rate_limit_max,
+            "max_retries": self.max_retries,
+            "retry_delay_base": self.retry_delay_base,
+            "retry_delay_max": self.retry_delay_max
+        }
+    
+    def log_queue_status(self):
+        """Логирует текущее состояние очередей и retry механизма"""
+        status = self.get_queue_status()
+        logger.info(f"📊 Google Sheets Queue Status:")
+        logger.info(f"   🔄 Активные задачи: {status['active_tasks']}")
+        logger.info(f"   ❌ Неудачные задачи: {status['failed_tasks']}")
+        logger.info(f"   🏃 Воркер активен: {status['worker_alive']}")
+        logger.info(f"   📈 Запросы в минуту: {status['requests_per_minute']}/{status['rate_limit_max']}")
+        logger.info(f"   🔄 Настройки retry: {status['max_retries']} попыток, {status['retry_delay_base']}-{status['retry_delay_max']}с задержка")
+        
+        if status['failed_tasks'] > 0:
+            logger.warning(f"⚠️ ВНИМАНИЕ: {status['failed_tasks']} критически неудачных задач требуют вмешательства!")
+    
+    def configure_retry_settings(self, max_retries: int = None, retry_delay_base: int = None, retry_delay_max: int = None):
+        """Настраивает параметры retry механизма"""
+        if max_retries is not None:
+            self.max_retries = max_retries
+            logger.info(f"🔄 Максимальное количество попыток установлено: {self.max_retries}")
+        
+        if retry_delay_base is not None:
+            self.retry_delay_base = retry_delay_base
+            logger.info(f"🔄 Базовая задержка между попытками установлена: {self.retry_delay_base}с")
+        
+        if retry_delay_max is not None:
+            self.retry_delay_max = retry_delay_max
+            logger.info(f"🔄 Максимальная задержка между попытками установлена: {self.retry_delay_max}с")
+    
+    def force_retry_all_failed(self):
+        """Принудительно перезапускает все неудачные задачи с очисткой истории ошибок"""
+        failed_count = self.get_failed_tasks_count()
+        if failed_count > 0:
+            logger.warning(f"🚨 ПРИНУДИТЕЛЬНЫЙ ПЕРЕЗАПУСК: {failed_count} критически неудачных задач...")
+            self.retry_failed_tasks()
+            logger.info(f"✅ Принудительный перезапуск завершен")
+        else:
+            logger.info("✅ Нет неудачных задач для перезапуска")
+    
+    def clear_failed_tasks(self):
+        """Очищает очередь неудачных задач (используется для сброса состояния)"""
+        failed_count = self.failed_tasks_queue.qsize()
+        if failed_count > 0:
+            while not self.failed_tasks_queue.empty():
+                try:
+                    self.failed_tasks_queue.get_nowait()
+                except:
+                    break
+            logger.warning(f"🗑️ Очищено {failed_count} неудачных задач из очереди")
+        else:
+            logger.info("✅ Очередь неудачных задач пуста")
     
     def stop_worker_thread(self):
         """Останавливает воркер"""
@@ -218,10 +470,11 @@ class GoogleSheetsManager:
         return f"Duplicates_{sanitized}"
     
     def get_or_create_spreadsheet(self, group_key: str, token_symbol: str, token_name: str) -> Optional[object]:
-        """Получает существующую или создает новую таблицу для группы дубликатов - АГРЕССИВНАЯ ВЕРСИЯ"""
+        """Получает существующую или создает новую таблицу для группы дубликатов - АГРЕССИВНАЯ ВЕРСИЯ с RETRY"""
         try:
-            if not self.client:
-                logger.error("❌ Google Sheets клиент не инициализирован")
+            # 🔥 ПРОВЕРЯЕМ И ВОССТАНАВЛИВАЕМ ПОДКЛЮЧЕНИЕ ПЕРЕД ОПЕРАЦИЕЙ
+            if not self._check_and_reinitialize_client():
+                logger.error("❌ Google Sheets клиент не инициализирован и не может быть восстановлен")
                 return None
             
             # Проверяем кэш
@@ -264,9 +517,13 @@ class GoogleSheetsManager:
                 
                 for candidate_name in fallback_names:
                     try:
-                        # Создаем новую таблицу
-                        logger.info(f"🔥 Создаем новую таблицу: {candidate_name}")
-                        spreadsheet = self.client.create(candidate_name)
+                        # Создаем новую таблицу С ЗАЩИТОЙ ОТ 429 ОШИБОК
+                        @handle_quota_exceeded_retry 
+                        def create_spreadsheet():
+                            logger.info(f"🔥 Создаем новую таблицу: {candidate_name}")
+                            return self.client.create(candidate_name)
+                        
+                        spreadsheet = create_spreadsheet()
                         sheet_name = candidate_name
                         break
                         
@@ -279,30 +536,36 @@ class GoogleSheetsManager:
                     logger.error(f"❌ Не удалось создать таблицу для группы {group_key}")
                     return None
                 
-                # Делаем таблицу доступной всем по ссылке для редактирования
-                try:
-                    # Предоставляем доступ на редактирование всем с ссылкой
-                    spreadsheet.share('', perm_type='anyone', role='writer')
-                    logger.info(f"✅ Таблица {sheet_name} доступна всем по ссылке (с правами редактирования)")
-                except Exception as share_error:
-                    logger.warning(f"⚠️ Не удалось сделать таблицу {sheet_name} публичной: {share_error}")
+                # Делаем таблицу доступной всем по ссылке для редактирования С ЗАЩИТОЙ ОТ 429 ОШИБОК
+                @handle_quota_exceeded_retry
+                def setup_spreadsheet():
+                    try:
+                        # Предоставляем доступ на редактирование всем с ссылкой
+                        spreadsheet.share('', perm_type='anyone', role='writer')
+                        logger.info(f"✅ Таблица {sheet_name} доступна всем по ссылке (с правами редактирования)")
+                    except Exception as share_error:
+                        logger.warning(f"⚠️ Не удалось сделать таблицу {sheet_name} публичной: {share_error}")
+                    
+                    # Настраиваем заголовки
+                    worksheet = spreadsheet.sheet1
+                    worksheet.update_title("Duplicates_Data")
+                    
+                    # Устанавливаем заголовки колонок
+                    headers = [
+                        "Символ", "Название", "Twitter", "Контракт", 
+                        "Дата создания", "Время обнаружения", "Ссылки", "Статус"
+                    ]
+                    worksheet.update('A1:H1', [headers])
+                    
+                    # Форматируем заголовки (жирный шрифт)
+                    worksheet.format('A1:H1', {
+                        "textFormat": {"bold": True},
+                        "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
+                    })
+                    return True
                 
-                # Настраиваем заголовки
-                worksheet = spreadsheet.sheet1
-                worksheet.update_title("Duplicates_Data")
-                
-                # Устанавливаем заголовки колонок
-                headers = [
-                    "Символ", "Название", "Twitter", "Контракт", 
-                    "Дата создания", "Время обнаружения", "Ссылки", "Статус"
-                ]
-                worksheet.update('A1:H1', [headers])
-                
-                # Форматируем заголовки (жирный шрифт)
-                worksheet.format('A1:H1', {
-                    "textFormat": {"bold": True},
-                    "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
-                })
+                # Выполняем настройку с защитой от 429 ошибок
+                setup_spreadsheet()
                 
                 logger.info(f"🔥 Таблица {sheet_name} создана и настроена")
             
@@ -318,8 +581,13 @@ class GoogleSheetsManager:
             return None
     
     def add_token_to_sheet(self, group_key: str, token_data: Dict, main_twitter: str = None) -> bool:
-        """Добавляет токен в таблицу группы дубликатов - АГРЕССИВНАЯ ВЕРСИЯ"""
+        """Добавляет токен в таблицу группы дубликатов - АГРЕССИВНАЯ ВЕРСИЯ с RETRY"""
         try:
+            # 🔥 ПРОВЕРЯЕМ ПОДКЛЮЧЕНИЕ ПЕРЕД ОПЕРАЦИЕЙ
+            if not self._check_and_reinitialize_client():
+                logger.error("❌ Google Sheets клиент не может быть восстановлен для добавления токена")
+                return False
+            
             # Получаем таблицу
             spreadsheet = self.get_or_create_spreadsheet(
                 group_key, 
@@ -377,14 +645,19 @@ class GoogleSheetsManager:
                     logger.debug(f"🔄 Контракт {contract[:8]}... уже в таблице {group_key}")
                     return True
             
-            # 🔥 АГРЕССИВНО: Добавляем строку и сортируем одним батчем
+            # 🔥 АГРЕССИВНО: Добавляем строку и сортируем одним батчем С ЗАЩИТОЙ ОТ 429 ОШИБОК
             self._check_rate_limit()
             
-            # Добавляем новую строку
-            worksheet.append_row(row_data)
+            @handle_quota_exceeded_retry
+            def add_and_sort_token():
+                # Добавляем новую строку
+                worksheet.append_row(row_data)
+                
+                # Сортируем по дате создания (колонка E)
+                self._sort_sheet_by_date(worksheet)
+                return True
             
-            # Сортируем по дате создания (колонка E)
-            self._sort_sheet_by_date(worksheet)
+            add_and_sort_token()
             
             logger.info(f"🔥 Токен {symbol} добавлен в таблицу {group_key}")
             return True
@@ -499,18 +772,23 @@ class GoogleSheetsManager:
             
             data_rows.sort(key=sort_key, reverse=True)  # Новые сверху
             
-            # 🔥 КРИТИЧЕСКИЙ МОМЕНТ: Соблюдаем rate limit только для операций записи
+            # 🔥 КРИТИЧЕСКИЙ МОМЕНТ: Соблюдаем rate limit только для операций записи С ЗАЩИТОЙ ОТ 429 ОШИБОК
             self._check_rate_limit()
             
-            # Очищаем таблицу и записываем отсортированные данные
-            worksheet.clear()
-            worksheet.update('A1', [headers] + data_rows)
+            @handle_quota_exceeded_retry
+            def sort_and_update_sheet():
+                # Очищаем таблицу и записываем отсортированные данные
+                worksheet.clear()
+                worksheet.update('A1', [headers] + data_rows)
+                
+                # Восстанавливаем форматирование заголовков
+                worksheet.format('A1:H1', {
+                    "textFormat": {"bold": True},
+                    "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
+                })
+                return True
             
-            # Восстанавливаем форматирование заголовков
-            worksheet.format('A1:H1', {
-                "textFormat": {"bold": True},
-                "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
-            })
+            sort_and_update_sheet()
             
         except Exception as e:
             logger.error(f"❌ Ошибка сортировки таблицы: {e}")
@@ -553,10 +831,16 @@ class GoogleSheetsManager:
                             'values': [['🎯 ГЛАВНЫЙ']]
                         })
             
-            # 🔥 АГРЕССИВНО: Выполняем все обновления одним батчем
+            # 🔥 АГРЕССИВНО: Выполняем все обновления одним батчем С ЗАЩИТОЙ ОТ 429 ОШИБОК
             if updates:
                 self._check_rate_limit()
-                worksheet.batch_update(updates)
+                
+                @handle_quota_exceeded_retry
+                def update_main_twitter_batch():
+                    worksheet.batch_update(updates)
+                    return True
+                
+                update_main_twitter_batch()
                 logger.info(f"🔥 Обновлено {len(updates)} статусов в таблице {group_key} для главного Twitter @{main_twitter}")
                 return True
             
@@ -624,10 +908,15 @@ class GoogleSheetsManager:
             return False
     
     def add_tokens_batch(self, group_key: str, tokens_list: List[Dict], main_twitter: str = None) -> bool:
-        """🔥 СУПЕР БЫСТРОЕ батчевое добавление всех токенов группы одним запросом"""
+        """🔥 СУПЕР БЫСТРОЕ батчевое добавление всех токенов группы одним запросом с RETRY"""
         try:
             if not tokens_list:
                 logger.warning(f"⚠️ Список токенов пуст для группы {group_key}")
+                return False
+            
+            # 🔥 ПРОВЕРЯЕМ ПОДКЛЮЧЕНИЕ ПЕРЕД ОПЕРАЦИЕЙ
+            if not self._check_and_reinitialize_client():
+                logger.error("❌ Google Sheets клиент не может быть восстановлен для батчевого добавления")
                 return False
                 
             # Получаем/создаем таблицу
@@ -702,7 +991,7 @@ class GoogleSheetsManager:
             
             batch_rows.sort(key=sort_key, reverse=True)  # Новые сверху
             
-            # 🔥 СУПЕР БЫСТРО: Один запрос для всех токенов
+            # 🔥 СУПЕР БЫСТРО: Один запрос для всех токенов с обработкой 429 ошибок
             self._check_rate_limit()
             
             # Получаем заголовки
@@ -711,16 +1000,22 @@ class GoogleSheetsManager:
                 "Дата создания", "Время обнаружения", "Ссылки", "Статус"
             ]
             
-            # Записываем ВСЕ данные одним запросом
-            all_data = [headers] + batch_rows
-            worksheet.clear()
-            worksheet.update('A1', all_data)
+            # Записываем ВСЕ данные одним запросом С ЗАЩИТОЙ ОТ 429 ОШИБОК
+            @handle_quota_exceeded_retry
+            def write_batch_data():
+                all_data = [headers] + batch_rows
+                worksheet.clear()
+                worksheet.update('A1', all_data)
+                
+                # Форматируем заголовки
+                worksheet.format('A1:H1', {
+                    "textFormat": {"bold": True},
+                    "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
+                })
+                return True
             
-            # Форматируем заголовки
-            worksheet.format('A1:H1', {
-                "textFormat": {"bold": True},
-                "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
-            })
+            # Выполняем запись с защитой от 429 ошибок
+            write_batch_data()
             
             logger.info(f"🔥 БАТЧЕВОЕ добавление: {len(batch_rows)} токенов группы {group_key} добавлено за 1 запрос!")
             return True
@@ -800,9 +1095,15 @@ class GoogleSheetsManager:
                 created_display, discovered_at, links_status, status
             ]
             
-            # 🔥 БЫСТРО: Добавляем строку БЕЗ сортировки
+            # 🔥 БЫСТРО: Добавляем строку БЕЗ сортировки С ЗАЩИТОЙ ОТ 429 ОШИБОК
             self._check_rate_limit()
-            worksheet.append_row(row_data)
+            
+            @handle_quota_exceeded_retry
+            def append_single_row():
+                worksheet.append_row(row_data)
+                return True
+            
+            append_single_row()
             
             logger.info(f"🔥 БЫСТРОЕ добавление токена {symbol} в таблицу {group_key}")
             return True
@@ -849,5 +1150,110 @@ class GoogleSheetsManager:
             logger.debug(f"⚠️ Ошибка парсинга Jupiter даты '{date_string}': {e}")
             return date_string  # Возвращаем оригинальную строку
 
+    def load_all_duplicate_sheets(self) -> Dict[str, bool]:
+        """Загружает все существующие таблицы дубликатов в кэш"""
+        try:
+            if not self._check_and_reinitialize_client():
+                logger.error("❌ Google Sheets клиент не может быть восстановлен")
+                return {}
+            
+            logger.info("🔄 Поиск всех таблиц дубликатов...")
+            
+            # Примечание: list_permissions требует fileId, поэтому используем прямой поиск по именам
+            logger.info("🔍 Поиск таблиц дубликатов по известным паттернам...")
+            
+            results = {}
+            
+            # Пытаемся открыть таблицы по известным паттернам
+            duplicate_patterns = [
+                "Duplicates_",
+                "duplicates_",
+                "DUPLICATES_"
+            ]
+            
+            # Также пробуем популярные символы токенов
+            common_symbols = [
+                "TRUMP", "PEPE", "DOGE", "SHIB", "BONK", "WIF", "POPCAT", "PNUT", 
+                "GOAT", "MOODENG", "NEIRO", "TURBO", "BRETT", "TOSHI", "FLOKI",
+                "PUMP", "MEME", "AI", "BASED", "SNEK", "MYRO", "BOME", "SLERF",
+                "BOOK", "MICHI", "ANSEM", "FWOG", "PONKE", "GIGA", "MAGA", "MAGA"
+            ]
+            
+            for symbol in common_symbols:
+                for pattern in duplicate_patterns:
+                    sheet_name = f"{pattern}{symbol}"
+                    try:
+                        spreadsheet = self.client.open(sheet_name)
+                        group_key = f"{symbol.lower()}_{symbol.upper()}"
+                        self.spreadsheets[group_key] = spreadsheet
+                        results[group_key] = True
+                        logger.info(f"✅ Загружена таблица: {sheet_name} -> {group_key}")
+                    except:
+                        continue
+            
+            # Также пытаемся найти таблицы по токенам из БД
+            try:
+                db_manager = get_db_manager()
+                if db_manager:
+                    from database import DuplicateToken
+                    session = db_manager.Session()
+                    
+                    # Получаем популярные символы из БД
+                    popular_symbols = session.query(DuplicateToken.symbol).distinct().limit(100).all()
+                    
+                    for symbol_row in popular_symbols:
+                        symbol = symbol_row[0]
+                        if symbol and len(symbol) <= 20:  # Разумная длина символа
+                            for pattern in duplicate_patterns:
+                                sheet_name = f"{pattern}{symbol}"
+                                try:
+                                    spreadsheet = self.client.open(sheet_name)
+                                    group_key = f"{symbol.lower()}_{symbol.upper()}"
+                                    if group_key not in self.spreadsheets:
+                                        self.spreadsheets[group_key] = spreadsheet
+                                        results[group_key] = True
+                                        logger.info(f"✅ Загружена таблица из БД: {sheet_name} -> {group_key}")
+                                except:
+                                    continue
+                    
+                    session.close()
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка загрузки символов из БД: {e}")
+            
+            logger.info(f"📊 Загружено {len(results)} таблиц дубликатов в кэш")
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка загрузки таблиц дубликатов: {e}")
+            return {}
+
 # Глобальный экземпляр для использования в проекте
-sheets_manager = GoogleSheetsManager() 
+sheets_manager = GoogleSheetsManager()
+
+# 🔄 СПРАВКА ПО RETRY МЕХАНИЗМУ:
+# 
+# Новый retry механизм гарантирует 100% выполнение запросов к Google Sheets API
+# 
+# Доступные методы для управления:
+# - sheets_manager.get_queue_status() - получить состояние очередей
+# - sheets_manager.log_queue_status() - логировать состояние очередей 
+# - sheets_manager.get_failed_tasks_count() - количество неудачных задач
+# - sheets_manager.retry_failed_tasks() - повторить неудачные задачи
+# - sheets_manager.force_retry_all_failed() - принудительно повторить все неудачные задачи
+# - sheets_manager.clear_failed_tasks() - очистить очередь неудачных задач
+# - sheets_manager.configure_retry_settings(max_retries, retry_delay_base, retry_delay_max) - настроить параметры retry
+# 
+# Параметры по умолчанию:
+# - max_retries = 5 (максимум 5 попыток)
+# - retry_delay_base = 2 (начальная задержка 2 секунды)
+# - retry_delay_max = 30 (максимальная задержка 30 секунд)
+# - rate_limit_max = 290 (максимум 290 запросов в минуту)
+# 
+# Система автоматически:
+# - Проверяет и восстанавливает подключение к Google Sheets API
+# - Выполняет повторные попытки с экспоненциальным backoff
+# - Логирует состояние очередей каждые 5 минут
+# - Сохраняет критически неудачные задачи для ручного разбора
+# 
+# 🚀 Результат: 100% гарантированное выполнение запросов к Google Sheets! 

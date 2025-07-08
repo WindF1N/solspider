@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Продвинутая система управления группами дубликатов токенов
+Продвинутая система управления группами токенов (включая одиночные токены)
 Интеграция с Google Sheets, умные Telegram сообщения, отслеживание официальных контрактов
 """
 import logging
@@ -24,6 +24,7 @@ from google_sheets_manager import sheets_manager
 from database import get_db_manager, DuplicateToken, Token
 from dynamic_cookie_rotation import get_next_proxy_cookie_async
 from anubis_handler import handle_anubis_challenge_for_session, update_cookies_in_string
+from twitter_profile_parser import TwitterProfileParser
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +149,7 @@ class TelegramMessageQueue:
         return self.queue.qsize()
 
 class DuplicateGroupsManager:
-    """Менеджер для управления группами дубликатов с умными функциями"""
+    """Менеджер для управления группами токенов (включая одиночные) с умными функциями"""
     
     def __init__(self, telegram_token: str):
         """Инициализация с токеном Telegram бота"""
@@ -158,7 +159,7 @@ class DuplicateGroupsManager:
         self.telegram_queue = TelegramMessageQueue(telegram_token)
         self.telegram_queue.start()
         
-        # Группы дубликатов {group_key: GroupData}
+        # Группы токенов {group_key: GroupData}
         self.groups = {}
         
         # Отслеживание официальных контрактов {group_key: official_contract_info}
@@ -171,7 +172,7 @@ class DuplicateGroupsManager:
         
         # Настройки
         self.target_chat_id = -1002680160752  # ID группы
-        self.message_thread_id = 14  # ID темы для дубликатов
+        self.message_thread_id = 14  # ID темы для групп токенов
     
     def __del__(self):
         """Деструктор - останавливает очередь сообщений"""
@@ -184,7 +185,7 @@ class DuplicateGroupsManager:
     def stop(self):
         """Останавливает очередь сообщений"""
         self.telegram_queue.stop()
-        logger.info("🛑 Менеджер групп дубликатов остановлен")
+        logger.info("🛑 Менеджер групп токенов остановлен")
     
     def get_queue_stats(self) -> Dict:
         """Возвращает статистику очереди сообщений"""
@@ -196,7 +197,7 @@ class DuplicateGroupsManager:
         }
     
     class GroupData:
-        """Данные группы дубликатов"""
+        """Данные группы токенов"""
         def __init__(self, group_key: str, symbol: str, name: str):
             self.group_key = group_key
             self.symbol = symbol
@@ -1003,8 +1004,8 @@ class DuplicateGroupsManager:
             logger.error(f"❌ Ошибка проверки контрактов в @{twitter_account}: {e}")
             return False
     
-    async def add_token_to_group(self, token_data: Dict, reason: str = "Обнаружен дубликат") -> bool:
-        """Добавляет токен в группу дубликатов"""
+    async def add_token_to_group(self, token_data: Dict, reason: str = "Обнаружен токен") -> bool:
+        """Добавляет токен в группу (создает группу даже для одного токена)"""
         try:
             group_key = self.create_group_key(token_data)
             token_id = token_data.get('id')
@@ -1057,13 +1058,13 @@ class DuplicateGroupsManager:
                 logger.info(f"🔄 Пересоздаем таблицу для группы {symbol} с {len(existing_group.tokens)} токенами...")
                 self._create_sheet_and_update_message_async(existing_group_key, existing_group.tokens, existing_group.main_twitter)
                 
-                logger.info(f"🐛✅ WORMSTER ПОПОЛНИЛ КОЛЛЕКЦИЮ! Токен {symbol} добавлен в стаю дубликатов (всего жертв: {len(existing_group.tokens)}) 🎯")
+                logger.info(f"🐛✅ WORMSTER ПОПОЛНИЛ КОЛЛЕКЦИЮ! Токен {symbol} добавлен в группу (всего токенов: {len(existing_group.tokens)}) 🎯")
                 return True
             
             # Если группы нет - проверяем, существует ли группа с точным ключом
             if group_key not in self.groups:
-                # Создаем новую группу
-                logger.info(f"🆕 Создаем новую группу дубликатов: {symbol}")
+                # Создаем новую группу токенов
+                logger.info(f"🆕 Создаем новую группу токенов: {symbol}")
                 
                 # Загружаем все токены этого символа из БД
                 db_tokens = self._load_tokens_from_db(symbol)
@@ -1107,14 +1108,19 @@ class DuplicateGroupsManager:
                     logger.info(f"📅 Найден официальный анонс токена {symbol} от {oldest_mention['date']}")
                 else:
                     group.official_announcement = None
-                    logger.warning(f"🐛❌ WORMSTER НЕ НАШЁЛ АНОНС В @{group.main_twitter}, но всё равно создаёт группу {symbol}! 🚫")
+                    logger.warning(f"🐛❌ WORMSTER НЕ НАШЁЛ АНОНС В @{group.main_twitter}! НЕ отправляем сообщение без анонса! 🚫")
                 
                 # 🚀 ПОЛНОСТЬЮ АСИНХРОННАЯ ЛОГИКА: сообщение БЕЗ кнопки, затем таблица в фоне
                 logger.info(f"📊 Группа {symbol} создается асинхронно...")
                 
-                # Сначала отправляем сообщение БЕЗ кнопки (не тормозим поток)
+                # 🚫 НОВАЯ ПРОВЕРКА: Отправляем сообщение ТОЛЬКО если есть официальный анонс
                 group.sheet_url = None  # Пока нет таблицы
-                group.message_id = await self._send_group_message(group)
+                if group.official_announcement:
+                    group.message_id = await self._send_group_message(group)
+                    logger.info(f"✅ Сообщение о группе {symbol} отправлено в Telegram (есть анонс)")
+                else:
+                    group.message_id = None  # НЕ отправляем сообщение без анонса
+                    logger.info(f"🚫 Сообщение о группе {symbol} НЕ отправлено (нет анонса)")
                 
                 # Сохраняем группу
                 self.groups[group_key] = group
@@ -1144,8 +1150,9 @@ class DuplicateGroupsManager:
                     group.latest_added_token = self._enrich_token_with_date(token_data)  # Обогащаем датой из БД!
                     group.last_updated = datetime.now()
                     
-                    # Обновляем сообщение с актуальными данными
-                    await self._update_group_message(group)
+                    # Обновляем сообщение с актуальными данными (только если есть анонс)
+                    if group.official_announcement and group.message_id:
+                        await self._update_group_message(group)
                     return True
                 
                 # Добавляем новый токен
@@ -1172,6 +1179,11 @@ class DuplicateGroupsManager:
                     if new_main_twitter:
                         oldest_mention = await self._find_oldest_token_mention(new_main_twitter, symbol)
                         group.official_announcement = oldest_mention
+                        
+                        # 🚀 НОВАЯ ЛОГИКА: Если анонс найден впервые, отправляем сообщение
+                        if oldest_mention and not group.message_id:
+                            group.message_id = await self._send_group_message(group)
+                            logger.info(f"✅ Впервые отправлено сообщение для группы {symbol} (новый Twitter с анонсом)")
                 
                 # 🔍 ИСПРАВЛЕНИЕ: Ищем анонс если его нет в существующей группе
                 if group.main_twitter and not group.official_announcement:
@@ -1180,12 +1192,24 @@ class DuplicateGroupsManager:
                     if oldest_mention:
                         group.official_announcement = oldest_mention
                         logger.info(f"📅 Найден анонс для существующей группы {symbol} от {oldest_mention['date']}")
+                        
+                        # 🚀 НОВАЯ ЛОГИКА: Если анонс найден впервые, отправляем сообщение
+                        if not group.message_id:
+                            group.message_id = await self._send_group_message(group)
+                            logger.info(f"✅ Впервые отправлено сообщение для группы {symbol} (найден анонс)")
                 
                 # 🔧 ИСПРАВЛЕНИЕ: Всегда пересоздаем таблицу с полным списком токенов
                 logger.info(f"🔄 Пересоздаем таблицу для группы {symbol} с {len(group.tokens)} токенами...")
-                self._create_sheet_and_update_message_async(group_key, group.tokens, group.main_twitter)
+                # Обновляем сообщение только если есть анонс и message_id
+                if group.official_announcement and group.message_id:
+                    self._create_sheet_and_update_message_async(group_key, group.tokens, group.main_twitter)
+                else:
+                    # Создаем только таблицу без обновления сообщения
+                    if group.main_twitter:
+                        sheets_manager.add_tokens_batch(group_key, group.tokens, group.main_twitter)
+                        logger.info(f"📊 Таблица для группы {symbol} обновлена БЕЗ уведомления (нет анонса)")
                 
-                logger.info(f"🐛✅ WORMSTER ПОПОЛНИЛ КОЛЛЕКЦИЮ! Токен {symbol} добавлен в стаю дубликатов (всего жертв: {len(group.tokens)}) 🎯")
+                logger.info(f"🐛✅ WORMSTER ПОПОЛНИЛ КОЛЛЕКЦИЮ! Токен {symbol} добавлен в группу (всего токенов: {len(group.tokens)}) 🎯")
                 return True
                 
         except Exception as e:
@@ -1405,9 +1429,11 @@ class DuplicateGroupsManager:
             # ПРОСТОЙ ЗАГОЛОВОК
             message = f"🐛💰 <b>НОВЫЙ ЗАПУСК МОНЕТЫ: ${group.symbol.upper()}!</b>\n\n"
             
-            # Информация о главном Twitter аккаунте
+            # Детальная информация о главном Twitter аккаунте
             if group.main_twitter:
-                message += f"🐦 <b>TWITTER ОСНОВАТЕЛЯ:</b> @{group.main_twitter}\n"
+                # Получаем детальную информацию о главном Twitter
+                main_twitter_info = await self._format_twitter_profile_info(group.main_twitter, is_main=True)
+                message += main_twitter_info
                 
                 # Официальный анонс токена (самый старый твит)
                 if group.official_announcement:
@@ -1418,14 +1444,23 @@ class DuplicateGroupsManager:
                     if len(announcement_text) > 150:
                         announcement_text = announcement_text[:150] + "..."
                     message += f"<blockquote>{announcement_text}</blockquote>\n"
+                
+                # Добавляем список дополнительных Twitter аккаунтов с краткой информацией
+                additional_accounts = await self._get_additional_twitter_accounts(group)
+                if additional_accounts:
+                    message += f"\n🔗 <b>ДОПОЛНИТЕЛЬНЫЕ TWITTER АККАУНТЫ:</b>\n"
                     
-                    # Добавляем список дополнительных Twitter аккаунтов
-                    additional_accounts = await self._get_additional_twitter_accounts(group)
-                    if additional_accounts:
-                        accounts_str = ", ".join([f"@{account}" for account in additional_accounts])
-                        message += f"{accounts_str}\n\n"
-                    else:
-                        message += "\n"
+                    # Ограничиваем количество дополнительных аккаунтов для краткости
+                    max_additional = 3
+                    for i, account in enumerate(additional_accounts[:max_additional]):
+                        additional_info = await self._format_twitter_profile_info(account, is_main=False)
+                        message += f"• {additional_info}\n"
+                    
+                    if len(additional_accounts) > max_additional:
+                        remaining = len(additional_accounts) - max_additional
+                        message += f"• и еще {remaining} аккаунт(ов)\n"
+                    
+                    message += "\n"
                 else:
                     message += "\n"
             else:
@@ -1452,9 +1487,19 @@ class DuplicateGroupsManager:
             return f"❌ Ошибка форматирования группы {group.symbol}"
     
     def _create_group_keyboard(self, group: 'GroupData') -> Dict:
-        """Создает inline клавиатуру для группы без кнопки Google Sheets"""
+        """Создает inline клавиатуру для группы с кнопкой Google Sheets"""
         try:
             buttons = []
+            
+            # 📊 КНОПКА GOOGLE SHEETS - всегда добавляем когда URL готов
+            if group.sheet_url and group.sheet_url.strip():
+                buttons.append([{
+                    "text": "📊 Смотреть в Google Sheets",
+                    "url": group.sheet_url
+                }])
+                logger.debug(f"✅ Кнопка Google Sheets добавлена для группы {group.symbol}: {group.sheet_url}")
+            else:
+                logger.debug(f"📊 Кнопка Google Sheets пока не готова для группы {group.symbol} (таблица создается)")
             
             # Кнопка "Окей" появляется только когда найден официальный контракт
             if group.official_contract:
@@ -1555,13 +1600,14 @@ class DuplicateGroupsManager:
                             
                             logger.info(f"🔥 БАТЧЕВАЯ таблица создана для {group_key}, URL: {sheet_url}")
                             
-                            # Обновляем сообщение с кнопкой синхронно (из фонового потока)
+                            # Обновляем сообщение с кнопкой асинхронно (из фонового потока)
                             if group.message_id:
                                 try:
                                     logger.info(f"📱 DEBUG: Обновляем сообщение {group.message_id} для {group_key}")
-                                    self._update_message_with_sheet_button_sync(group)
+                                    # Создаем задачу для async обновления сообщения с полной информацией о Twitter
+                                    self._schedule_async_message_update(group)
                                 except Exception as e:
-                                    logger.error(f"❌ Ошибка синхронного обновления сообщения: {e}")
+                                    logger.error(f"❌ Ошибка планирования обновления сообщения: {e}")
                             else:
                                 logger.debug(f"📊 Сообщение для группы {group_key} не отправлено (тест режим)")
                             
@@ -1617,13 +1663,16 @@ class DuplicateGroupsManager:
                         announcement_text = announcement_text[:150] + "..."
                     message += f"<blockquote>{announcement_text}</blockquote>\n"
                     
-                    # Добавляем список дополнительных Twitter аккаунтов (синхронно)
-                    additional_accounts = self._get_additional_twitter_accounts_sync(group)
-                    if additional_accounts:
+                # Добавляем список дополнительных Twitter аккаунтов (упрощенная синхронная версия)
+                additional_accounts = self._get_additional_twitter_accounts_sync(group)
+                if additional_accounts:
+                    if len(additional_accounts) <= 3:
                         accounts_str = ", ".join([f"@{account}" for account in additional_accounts])
-                        message += f"{accounts_str}\n\n"
+                        message += f"🔗 <b>ДОПОЛНИТЕЛЬНЫЕ TWITTER:</b> {accounts_str}\n\n"
                     else:
-                        message += "\n"
+                        first_three = ", ".join([f"@{account}" for account in additional_accounts[:3]])
+                        remaining = len(additional_accounts) - 3
+                        message += f"🔗 <b>ДОПОЛНИТЕЛЬНЫЕ TWITTER:</b> {first_three} и еще {remaining}\n\n"
                 else:
                     message += "\n"
             else:
@@ -1648,6 +1697,43 @@ class DuplicateGroupsManager:
         except Exception as e:
             logger.error(f"❌ Ошибка синхронного форматирования сообщения группы: {e}")
             return f"❌ Ошибка форматирования группы {group.symbol}"
+
+    def _schedule_async_message_update(self, group: 'GroupData') -> bool:
+        """Планирует async обновление сообщения с полной информацией о Twitter (для фонового потока)"""
+        try:
+            import asyncio
+            import threading
+            
+            def run_async_update():
+                """Запускает async обновление в отдельном потоке"""
+                try:
+                    # Создаем новый event loop для этого потока
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    
+                    # Выполняем async обновление
+                    result = loop.run_until_complete(self._update_message_with_sheet_button(group))
+                    
+                    if result:
+                        logger.info(f"✅ Async обновление сообщения {group.symbol} с детальной Twitter информацией завершено")
+                    else:
+                        logger.error(f"❌ Async обновление сообщения {group.symbol} не удалось")
+                    
+                    loop.close()
+                    
+                except Exception as e:
+                    logger.error(f"❌ Ошибка async обновления сообщения {group.symbol}: {e}")
+            
+            # Запускаем в отдельном потоке
+            update_thread = threading.Thread(target=run_async_update, daemon=True)
+            update_thread.start()
+            
+            logger.info(f"📤 Async обновление сообщения группы {group.symbol} запланировано")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка планирования async обновления сообщения: {e}")
+            return False
 
     def _update_message_with_sheet_button_sync(self, group: 'GroupData') -> bool:
         """Синхронно обновляет сообщение Telegram с кнопкой Google Sheets (для фонового потока)"""
@@ -2038,27 +2124,267 @@ class DuplicateGroupsManager:
             logger.error(f"❌ Ошибка очистки групп: {e}")
             return results
 
+    async def restore_groups_from_sheets_and_update_messages(self) -> Dict[str, bool]:
+        """Восстанавливает группы из Google Sheets и обновляет существующие сообщения с кнопками"""
+        try:
+            logger.info("🔄 Начинаем восстановление групп из Google Sheets...")
+            
+            # Получаем все существующие таблицы
+            from google_sheets_manager import sheets_manager
+            if not sheets_manager:
+                logger.error("❌ Google Sheets manager не инициализирован")
+                return {}
+            
+            # Сначала загружаем все существующие таблицы в кэш
+            logger.info("📥 Загружаем все таблицы токенов в кэш...")
+            loaded_sheets = sheets_manager.load_all_duplicate_sheets()
+            
+            if not loaded_sheets:
+                logger.warning("⚠️ Не удалось загрузить таблицы дубликатов")
+                return {}
+            
+            logger.info(f"📊 Загружено {len(loaded_sheets)} таблиц в кэш")
+            
+            # Получаем список всех таблиц
+            existing_sheets = sheets_manager.spreadsheets
+            if not existing_sheets:
+                logger.warning("⚠️ Нет существующих таблиц для восстановления")
+                return {}
+            
+            results = {}
+            
+            for group_key, spreadsheet in existing_sheets.items():
+                try:
+                    logger.info(f"🔍 Восстанавливаем группу {group_key}...")
+                    
+                    # Получаем данные из таблицы
+                    worksheet = spreadsheet.sheet1
+                    all_data = worksheet.get_all_values()
+                    
+                    if len(all_data) <= 1:
+                        logger.warning(f"⚠️ Таблица {group_key} пуста")
+                        continue
+                    
+                    # Парсим данные токенов из таблицы
+                    tokens = []
+                    symbol = None
+                    name = None
+                    main_twitter = None
+                    
+                    for row in all_data[1:]:  # Пропускаем заголовок
+                        if len(row) >= 4:
+                            if not symbol:
+                                symbol = row[0]  # Символ
+                            if not name:
+                                name = row[1]  # Название
+                            
+                            # Ищем главный Twitter (статус "🎯 ГЛАВНЫЙ")
+                            if len(row) >= 8 and row[7] == "🎯 ГЛАВНЫЙ":
+                                twitter_cell = row[2]
+                                # Извлекаем Twitter аккаунт
+                                if twitter_cell and twitter_cell.startswith('@'):
+                                    main_twitter = twitter_cell[1:]  # Убираем @
+                            
+                            # Создаем данные токена
+                            token_data = {
+                                'symbol': row[0],
+                                'name': row[1],
+                                'id': row[3],  # Контракт
+                                'twitter': row[2] if len(row) > 2 else None,
+                                'firstPool': {
+                                    'createdAt': row[4] if len(row) > 4 else None
+                                }
+                            }
+                            tokens.append(token_data)
+                    
+                    if not tokens or not symbol:
+                        logger.warning(f"⚠️ Не удалось восстановить данные для группы {group_key}")
+                        continue
+                    
+                    # Создаем группу
+                    group = self.GroupData(group_key, symbol, name or symbol)
+                    group.tokens = tokens
+                    group.main_twitter = main_twitter
+                    group.sheet_url = spreadsheet.url
+                    group.latest_added_token = tokens[-1] if tokens else None
+                    
+                    # Ищем официальный анонс если есть главный Twitter
+                    if main_twitter:
+                        oldest_mention = await self._find_oldest_token_mention(main_twitter, symbol)
+                        group.official_announcement = oldest_mention
+                    
+                    # Сохраняем группу
+                    self.groups[group_key] = group
+                    
+                    logger.info(f"✅ Группа {group_key} восстановлена ({len(tokens)} токенов, главный Twitter: @{main_twitter or 'не определен'})")
+                    results[group_key] = True
+                    
+                except Exception as e:
+                    logger.error(f"❌ Ошибка восстановления группы {group_key}: {e}")
+                    results[group_key] = False
+            
+            logger.info(f"🔄 Восстановление завершено: {len(results)} групп обработано")
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка восстановления групп: {e}")
+            return {}
+
+    async def update_existing_messages_with_buttons(self, chat_id: int, thread_id: int = None) -> Dict[str, bool]:
+        """Обновляет существующие сообщения в чате с кнопками Google Sheets"""
+        try:
+            logger.info("🔄 Начинаем поиск и обновление существующих сообщений...")
+            
+            # Сначала восстанавливаем группы
+            restored_groups = await self.restore_groups_from_sheets_and_update_messages()
+            if not restored_groups:
+                logger.warning("⚠️ Нет восстановленных групп для обновления")
+                return {}
+            
+            results = {}
+            
+            # Пытаемся найти сообщения для каждой группы
+            for group_key, group in self.groups.items():
+                try:
+                    if not group.sheet_url:
+                        logger.warning(f"⚠️ Группа {group_key} не имеет URL таблицы")
+                        continue
+                    
+                    # Попытка найти сообщение по содержимому
+                    # Это сложная задача, так как нужно сканировать историю чата
+                    # Для простоты создадим новое сообщение
+                    
+                    logger.info(f"🔍 Пытаемся найти сообщение для группы {group.symbol}...")
+                    
+                    # Отправляем новое сообщение с кнопкой
+                    group.message_id = await self._send_group_message(group)
+                    
+                    if group.message_id:
+                        logger.info(f"✅ Создано новое сообщение для группы {group.symbol} с кнопкой Google Sheets")
+                        results[group_key] = True
+                    else:
+                        logger.error(f"❌ Не удалось создать сообщение для группы {group.symbol}")
+                        results[group_key] = False
+                        
+                except Exception as e:
+                    logger.error(f"❌ Ошибка обновления сообщения для группы {group_key}: {e}")
+                    results[group_key] = False
+            
+            logger.info(f"🔄 Обновление сообщений завершено: {len(results)} групп обработано")
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка обновления сообщений: {e}")
+            return {}
+
+    async def _get_twitter_profile_info(self, twitter_account: str) -> Optional[Dict]:
+        """Получает детальную информацию о Twitter профиле"""
+        try:
+            # Создаем парсер с контекстным менеджером
+            async with TwitterProfileParser() as parser:
+                # Получаем профиль
+                result = await parser.get_profile_with_replies_multi_page(twitter_account, max_pages=1)
+                
+                # Проверяем что получили правильное количество значений
+                if result and len(result) == 3:
+                    profile_data, all_tweets, tweets_with_contracts = result
+                elif result and len(result) == 2:
+                    profile_data, all_tweets = result
+                    tweets_with_contracts = []
+                else:
+                    logger.warning(f"⚠️ Неожиданный результат от парсера для @{twitter_account}: {result}")
+                    return None
+                
+                if profile_data:
+                    logger.info(f"✅ Получены данные профиля @{twitter_account}: {profile_data.get('followers_count', 0)} подписчиков")
+                    return profile_data
+                else:
+                    logger.warning(f"⚠️ Не удалось получить данные профиля @{twitter_account}")
+                    return None
+                    
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения профиля @{twitter_account}: {e}")
+            return None
+
+    def _format_number(self, number: int) -> str:
+        """Форматирует число в читаемый вид (1.2K, 15M и т.д.)"""
+        if number >= 1_000_000:
+            return f"{number / 1_000_000:.1f}M"
+        elif number >= 1_000:
+            return f"{number / 1_000:.1f}K"
+        else:
+            return str(number)
+
+    async def _format_twitter_profile_info(self, twitter_account: str, is_main: bool = False) -> str:
+        """Форматирует информацию о Twitter профиле для сообщения"""
+        try:
+            profile_info = await self._get_twitter_profile_info(twitter_account)
+            
+            if not profile_info:
+                return f"@{twitter_account} (информация недоступна)"
+            
+            if is_main:
+                # Полная информация для главного аккаунта
+                display_name = profile_info.get('display_name', twitter_account)
+                bio = profile_info.get('bio', 'Нет описания')
+                join_date = profile_info.get('join_date', 'Неизвестно')
+                is_verified = profile_info.get('is_verified', False)
+                
+                # Статистика
+                tweets = self._format_number(profile_info.get('tweets_count', 0))
+                followers = self._format_number(profile_info.get('followers_count', 0))
+                following = self._format_number(profile_info.get('following_count', 0))
+                likes = self._format_number(profile_info.get('likes_count', 0))
+                
+                # Формируем информацию
+                verified_badge = "✅" if is_verified else ""
+                
+                info = f"🐦 <b>ГЛАВНЫЙ TWITTER:</b> @{twitter_account} {verified_badge}\n"
+                info += f"📋 <b>Имя:</b> {display_name}\n"
+                
+                if bio and bio != 'Нет описания':
+                    # Bio в виде цитаты, обрезаем если слишком длинное
+                    bio_short = bio[:200] + "..." if len(bio) > 200 else bio
+                    info += f"📝 <b>Описание:</b>\n<blockquote>{bio_short}</blockquote>\n"
+                
+                info += f"📅 <b>Регистрация:</b> {join_date}\n"
+                info += f"📊 <b>Статистика:</b> {tweets} твитов • {followers} подписчиков • {following} подписок • {likes} лайков\n"
+                
+                return info
+            else:
+                # Краткая информация для дополнительных аккаунтов
+                display_name = profile_info.get('display_name', twitter_account)
+                followers = self._format_number(profile_info.get('followers_count', 0))
+                is_verified = profile_info.get('is_verified', False)
+                
+                verified_badge = "✅" if is_verified else ""
+                return f"@{twitter_account} {verified_badge} ({display_name}, {followers} подписчиков)"
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка форматирования профиля @{twitter_account}: {e}")
+            return f"@{twitter_account} (ошибка загрузки)"
+
 # Глобальный экземпляр для использования в проекте
 # Будет инициализирован в main при запуске
 _duplicate_groups_manager = None
 
 def get_duplicate_groups_manager():
-    """Возвращает текущий экземпляр менеджера групп дубликатов"""
+    """Возвращает текущий экземпляр менеджера групп токенов"""
     global _duplicate_groups_manager
     return _duplicate_groups_manager
 
 def initialize_duplicate_groups_manager(telegram_token: str):
-    """Инициализирует глобальный менеджер групп дубликатов"""
+    """Инициализирует глобальный менеджер групп токенов"""
     global _duplicate_groups_manager
     _duplicate_groups_manager = DuplicateGroupsManager(telegram_token)
-    logger.info("✅ Менеджер групп дубликатов инициализирован")
+    logger.info("✅ Менеджер групп токенов инициализирован")
 
 def shutdown_duplicate_groups_manager():
-    """Корректно завершает работу менеджера групп дубликатов"""
+    """Корректно завершает работу менеджера групп токенов"""
     global _duplicate_groups_manager
     if _duplicate_groups_manager:
         _duplicate_groups_manager.stop()
         _duplicate_groups_manager = None
-        logger.info("🛑 Менеджер групп дубликатов завершен")
+        logger.info("🛑 Менеджер групп токенов завершен")
 
 # Обратная совместимость - удалена, используйте get_duplicate_groups_manager() 

@@ -931,10 +931,28 @@ async def analyze_token_sentiment(mint, symbol, cycle_cookie=None, session=None)
 async def format_new_token(data):
     """Форматирование сообщения о новом токене с быстрым сохранением и фоновым анализом Twitter"""
     mint = data.get('mint', 'Unknown')
+    
+    # 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Очищаем символы и имена от null bytes и обрезаем
     name = data.get('name', 'Unknown Token')
     symbol = data.get('symbol', 'UNK')
     description = data.get('description', 'Нет описания')
     creator = data.get('traderPublicKey', 'Unknown')
+    
+    # Очистка от null bytes и обрезка до лимитов БД
+    if name:
+        name = name.replace('\x00', '').strip()[:255]  # Лимит 255 символов
+    if symbol:
+        symbol = symbol.replace('\x00', '').strip()[:20]  # Лимит 20 символов 
+    if description:
+        description = description.replace('\x00', '').strip()[:1000]  # Лимит текста
+    if creator:
+        creator = creator.replace('\x00', '').strip()[:44]  # Лимит адреса
+    
+    # Проверка на пустые значения после очистки
+    if not name or name == '':
+        name = 'Unknown Token'
+    if not symbol or symbol == '':
+        symbol = 'UNK'
     
     # === ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ НАЧАЛА АНАЛИЗА ТОКЕНА ===
     log_token_decision("🚀 НОВЫЙ_ТОКЕН_ОБНАРУЖЕН", symbol, mint, 
@@ -1377,6 +1395,12 @@ async def handle_new_jupiter_token(pool_data):
         twitter_url = base_asset.get('twitter', '')
         if twitter_url:
             logger.info(f"   🐦 TWITTER НАЙДЕН: {twitter_url[:50]}... (тип пула: {pool_type})")
+            
+            # 🚫 ФИЛЬТРАЦИЯ: Пропускаем токены с ссылками на посты Twitter (содержат /status/)
+            if '/status/' in twitter_url:
+                logger.info(f"   ❌ ПРОПУСК: Токен {symbol} содержит ссылку на пост Twitter вместо профиля")
+                logger.info(f"   🔗 Ссылка: {twitter_url}")
+                return  # Пропускаем этот токен
         
         # Обрабатываем ВСЕ токены независимо от типа пула
         logger.debug(f"   ✅ Обрабатываем токен из {pool_type}")
@@ -1474,6 +1498,13 @@ async def handle_legacy_pumpfun_token(data):
         mint = data.get('mint', 'Unknown')
         symbol = data.get('symbol', 'Unknown')
         logger.info(f"🚀 LEGACY ТОКЕН: {token_name} ({symbol}) - {mint[:8]}...")
+        
+        # 🚫 ФИЛЬТРАЦИЯ: Пропускаем токены с ссылками на посты Twitter (содержат /status/)
+        twitter_url = data.get('twitter', '')
+        if twitter_url and '/status/' in twitter_url:
+            logger.info(f"   ❌ ПРОПУСК LEGACY: Токен {symbol} содержит ссылку на пост Twitter вместо профиля")
+            logger.info(f"   🔗 Ссылка: {twitter_url}")
+            return  # Пропускаем этот токен
         
         # Анализируем токен и получаем сообщение
         msg, keyboard, should_notify, token_image_url = await format_new_token(data)
@@ -4454,7 +4485,7 @@ async def process_duplicate_detection(new_token):
         manager = get_duplicate_groups_manager()
         if manager:
             # Добавляем токен в группу БЕЗ ожидания (fire-and-forget)
-            asyncio.create_task(manager.add_token_to_group(new_token, f"🔍 Обнаружен дубликат {symbol}"))
+            asyncio.create_task(manager.add_token_to_group(new_token, f"🔍 Обнаружен токен {symbol}"))
             logger.debug(f"🚀 Токен {symbol} добавлен в группу (неблокирующе)")
         
         
@@ -4804,9 +4835,9 @@ async def send_or_update_grouped_duplicate_alert(token_data, reason="Обнар�
         return False
 
 async def send_full_duplicate_group_from_db(symbol):
-    """🚀 НОВАЯ СИСТЕМА: Создает группу дубликатов через DuplicateGroupsManager с Google Sheets"""
+    """🚀 НОВАЯ СИСТЕМА: Создает группу токенов через DuplicateGroupsManager с Google Sheets"""
     try:
-        logger.info(f"🔍 Создаем НОВУЮ группу дубликатов для символа {symbol} с Google Sheets...")
+        logger.info(f"🔍 Создаем НОВУЮ группу токенов для символа {symbol} с Google Sheets...")
         
         db_manager = get_db_manager()
         session = db_manager.Session()
@@ -4818,7 +4849,8 @@ async def send_full_duplicate_group_from_db(symbol):
         
         session.close()
         
-        if len(tokens) < 2:  # Нужно минимум 2 токена для группы
+        # Убираем ограничение в 2 токена - создаем группу даже для одного токена
+        if len(tokens) < 1:  # Нужно минимум 1 токен для группы
             logger.info(f"📊 Недостаточно токенов {symbol} для группы: {len(tokens)}")
             return None
             
@@ -4838,6 +4870,8 @@ async def send_full_duplicate_group_from_db(symbol):
                 twitter_count += 1
         
         logger.info(f"📊 Группа {symbol}: всего токенов {len(tokens)}, с валидными Twitter аккаунтами: {twitter_count}")
+        
+        # Новая логика: создаем группу даже для одного токена, если он проходит проверки
         
         if twitter_count == 0:
             logger.info(f"🚫 Группа {symbol} пропущена - нет валидных Twitter аккаунтов")
@@ -4866,7 +4900,7 @@ async def send_full_duplicate_group_from_db(symbol):
             
         success = await manager.add_token_to_group(
             test_token_data, 
-            f"🧪 ТЕСТОВАЯ ПОЛНАЯ ГРУППА {symbol.upper()} из БД"
+            f"🧪 ГРУППА {symbol.upper()} из БД"
         )
         
         if success:
@@ -4875,7 +4909,7 @@ async def send_full_duplicate_group_from_db(symbol):
             group = manager.groups.get(group_key)
             
             if group:
-                logger.info(f"✅ НОВАЯ система: группа {symbol} создана с Google Sheets!")
+                logger.info(f"✅ НОВАЯ система: группа токенов {symbol} создана с Google Sheets!")
                 logger.info(f"📊 Google Sheets URL: {group.sheet_url}")
                 logger.info(f"📩 Telegram message ID: {group.message_id}")
                 return group.message_id
@@ -4887,7 +4921,7 @@ async def send_full_duplicate_group_from_db(symbol):
             return None
             
     except Exception as e:
-        logger.error(f"❌ Ошибка создания НОВОЙ группы для {symbol}: {e}")
+        logger.error(f"❌ Ошибка создания НОВОЙ группы токенов для {symbol}: {e}")
         import traceback
         traceback.print_exc()
         return None
