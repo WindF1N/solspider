@@ -1,30 +1,214 @@
 #!/usr/bin/env python3
 """
-Модуль для автоматического решения Anubis challenge и обновления куки
-Интеграция с существующими системами куки в проекте SolSpider
+Обработчик Anubis challenge для автоматического решения защиты Nitter
 """
 
-import aiohttp
 import asyncio
-import json
 import hashlib
-import time
-import re
-import os
-from urllib.parse import urljoin, urlparse
-from bs4 import BeautifulSoup
+import json
 import logging
-from typing import Dict, Optional, Tuple, Any
+import time
+from typing import Dict, Any, Optional, Tuple
+from urllib.parse import urlparse, urljoin
+import aiohttp
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
+
+# 🛡️ УЛУЧШЕННАЯ ОБРАБОТКА СЕТЕВЫХ ОШИБОК С ПЕРЕКЛЮЧЕНИЕМ ДОМЕНОВ
+async def robust_network_request(session: aiohttp.ClientSession, 
+                                method: str, 
+                                url: str, 
+                                max_retries: int = 5,
+                                switch_domain_on_network_error: bool = True,
+                                **kwargs) -> Optional[aiohttp.ClientResponse]:
+    """
+    Выполняет HTTP запрос с обработкой сетевых ошибок и переключением доменов
+    
+    Args:
+        session: HTTP сессия
+        method: HTTP метод (GET, POST)
+        url: URL для запроса
+        max_retries: Максимальное количество попыток
+        switch_domain_on_network_error: Переключать домены при сетевых ошибках
+        **kwargs: Дополнительные параметры для запроса
+        
+    Returns:
+        HTTP ответ или None при неудаче
+    """
+    NETWORK_ERRORS = [
+        "Server disconnected",
+        "Connection reset by peer", 
+        "Cannot connect to host",
+        "Connection timed out",
+        "Timeout",
+        "SSL", 
+        "Name resolution failed",
+        "Network is unreachable",
+        "Connection refused",
+        "Connection aborted",
+        "Broken pipe",
+        "No route to host",
+        "Host is unreachable",
+        "Connection closed",
+        "Connection lost",
+        "Socket error",
+        "ClientConnectorError",
+        "ClientError",
+        "ServerDisconnectedError",
+        "ClientOSError"
+    ]
+    
+    current_url = url
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            logger.debug(f"🔄 Попытка {attempt + 1}/{max_retries}: {method} {current_url}")
+            
+            # Выполняем запрос
+            if method.upper() == 'GET':
+                async with session.get(current_url, **kwargs) as response:
+                    await response.read()  # Загружаем содержимое
+                    return response
+            elif method.upper() == 'POST':
+                async with session.post(current_url, **kwargs) as response:
+                    await response.read()  # Загружаем содержимое
+                    return response
+            else:
+                raise ValueError(f"Неподдерживаемый HTTP метод: {method}")
+                
+        except Exception as e:
+            last_error = e
+            error_str = str(e).lower()
+            
+            # Проверяем, является ли это сетевой ошибкой
+            is_network_error = any(net_err.lower() in error_str for net_err in NETWORK_ERRORS)
+            
+            if is_network_error:
+                logger.warning(f"🌐 Сетевая ошибка (попытка {attempt + 1}/{max_retries}): {e}")
+                
+                # Если включено переключение доменов и это не последняя попытка
+                if switch_domain_on_network_error and attempt < max_retries - 1:
+                    try:
+                        # Импортируем функции для переключения доменов
+                        from nitter_domain_rotator import get_next_nitter_domain
+                        from duplicate_groups_manager import format_nitter_url
+                        
+                        # Получаем новый домен
+                        new_domain = get_next_nitter_domain()
+                        
+                        # Формируем новый URL с тем же путем
+                        parsed_url = urlparse(current_url)
+                        new_base_url = format_nitter_url(new_domain)
+                        current_url = f"{new_base_url}{parsed_url.path}"
+                        if parsed_url.query:
+                            current_url += f"?{parsed_url.query}"
+                        
+                        logger.info(f"🔄 Переключаемся на новый домен: {new_domain}")
+                        
+                        # Обновляем заголовки для нового домена
+                        if 'headers' in kwargs:
+                            from duplicate_groups_manager import add_host_header_if_needed
+                            add_host_header_if_needed(kwargs['headers'], new_domain)
+                        
+                    except Exception as domain_error:
+                        logger.error(f"❌ Ошибка переключения домена: {domain_error}")
+                
+                # Экспоненциальная задержка
+                backoff_time = min(30, (attempt + 1) * 2 + (attempt * 0.5))
+                logger.info(f"⏳ Ждем {backoff_time:.1f}с перед повтором...")
+                await asyncio.sleep(backoff_time)
+                continue
+            else:
+                # Не сетевая ошибка - пробрасываем дальше
+                raise e
+    
+    # Если все попытки исчерпаны
+    logger.error(f"💀 ВСЕ {max_retries} ПОПЫТОК ИСЧЕРПАНЫ. Последняя ошибка: {last_error}")
+    raise last_error
 
 class AnubisHandler:
     """Класс для обработки Anubis challenge и автоматического обновления куки"""
     
-    def __init__(self, session: Optional[aiohttp.ClientSession] = None):
+    def __init__(self, session: Optional[aiohttp.ClientSession] = None, nitter_domain_rotator=None):
         self.session = session
         self.cookies_updated = False
+        self.nitter_domain_rotator = nitter_domain_rotator
         
+    async def _anubis_network_request(self, url: str, headers: Dict[str, str], params: Dict[str, Any] = None, max_retries: int = 3) -> Optional[aiohttp.ClientResponse]:
+        """
+        Специальная функция для сетевых запросов Anubis challenge с обработкой ошибок
+        При сетевых ошибках переключает домены через nitter_domain_rotator
+        """
+        if not self.session:
+            logger.error("❌ Нет активной HTTP сессии")
+            return None
+            
+        original_url = url
+        current_url = url
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"🌐 Попытка {attempt + 1}/{max_retries} для Anubis запроса: {current_url}")
+                
+                if params:
+                    response = await self.session.get(current_url, headers=headers, params=params, allow_redirects=False)
+                else:
+                    response = await self.session.get(current_url, headers=headers)
+                    
+                logger.info(f"✅ Anubis запрос успешен, статус: {response.status}")
+                return response
+                
+            except Exception as e:
+                error_str = str(e)
+                logger.warning(f"⚠️ Ошибка Anubis запроса (попытка {attempt + 1}): {error_str}")
+                
+                # Проверяем на сетевые ошибки
+                network_errors = [
+                    "Network is unreachable",
+                    "Cannot connect to host",
+                    "Connection reset by peer",
+                    "Server disconnected",
+                    "Connection timeout",
+                    "SSL: CERTIFICATE_VERIFY_FAILED",
+                    "Can not decode content-encoding: brotli",
+                    "503",
+                    "502",
+                    "bad gateway"
+                ]
+                
+                is_network_error = any(err in error_str for err in network_errors)
+                
+                if is_network_error and self.nitter_domain_rotator and attempt < max_retries - 1:
+                    logger.info(f"🔄 Сетевая ошибка, переключаем домен для Anubis challenge")
+                    
+                    # Получаем новый домен
+                    new_domain = self.nitter_domain_rotator.get_next_domain()
+                    if new_domain:
+                        # Заменяем домен в URL
+                        parsed_url = urlparse(current_url)
+                        new_url = current_url.replace(parsed_url.netloc, new_domain)
+                        current_url = new_url
+                        
+                        logger.info(f"🌐 Переключились на новый домен для Anubis: {new_domain}")
+                        
+                        # Небольшая задержка перед повторной попыткой
+                        await asyncio.sleep(1)
+                        continue
+                    else:
+                        logger.error("❌ Не удалось получить новый домен")
+                
+                # Если это последняя попытка или не сетевая ошибка
+                if attempt == max_retries - 1:
+                    logger.error(f"❌ Все попытки Anubis запроса исчерпаны: {error_str}")
+                    return None
+                    
+                # Задержка перед следующей попыткой
+                await asyncio.sleep(2 ** attempt)
+                
+        return None
+
     async def detect_and_solve_challenge(self, url: str, response_text: str, force_fresh_challenge: bool = True) -> Optional[Dict[str, Any]]:
         """
         Обнаруживает Anubis challenge и автоматически решает его
@@ -62,21 +246,28 @@ class AnubisHandler:
                     'Upgrade-Insecure-Requests': '1',
                 }
                 
-                async with self.session.get(url, headers=fresh_headers) as fresh_response:
-                    if fresh_response.status != 200:
-                        logger.error(f"❌ Ошибка получения свежего challenge: {fresh_response.status}")
-                        return None
+                # Делаем новый запрос для получения СВЕЖЕГО challenge с обработкой сетевых ошибок
+                fresh_response = await self._anubis_network_request(url, fresh_headers)
+                if not fresh_response:
+                    logger.error(f"❌ Не удалось получить свежий challenge из-за сетевых ошибок")
+                    return None
                     
-                    fresh_html = await fresh_response.text()
+                if fresh_response.status != 200:
+                    logger.error(f"❌ Ошибка получения свежего challenge: {fresh_response.status}")
+                    fresh_response.close()
+                    return None
                     
-                    # Проверяем что challenge все еще нужен
-                    if not self._is_challenge_page(fresh_html):
-                        logger.info("🎉 Challenge больше не требуется - сайт доступен!")
-                        return {}
-                    
-                    # Используем СВЕЖИЕ данные challenge
-                    response_text = fresh_html
-                    logger.info(f"✅ Получен свежий challenge")
+                fresh_html = await fresh_response.text()
+                fresh_response.close()
+                
+                # Проверяем что challenge все еще нужен
+                if not self._is_challenge_page(fresh_html):
+                    logger.info("🎉 Challenge больше не требуется - сайт доступен!")
+                    return {}
+                
+                # Используем СВЕЖИЕ данные challenge
+                response_text = fresh_html
+                logger.info(f"✅ Получен свежий challenge")
             
             # Парсим данные challenge (свежие или оригинальные)
             challenge_data = self._parse_challenge_data(response_text)
@@ -272,44 +463,51 @@ class AnubisHandler:
             
             logger.info(f"🌐 Отправляем с браузерными заголовками для обхода защиты")
             
-            # НЕ следуем автоматически за редиректом - обрабатываем вручную
-            async with self.session.get(submit_url, params=params, headers=challenge_headers, allow_redirects=False) as response:
-                logger.info(f"📊 Статус ответа: {response.status}")
+            # НЕ следуем автоматически за редиректом - обрабатываем вручную с обработкой сетевых ошибок
+            response = await self._anubis_network_request(submit_url, challenge_headers, params)
+            if not response:
+                logger.error(f"❌ Не удалось отправить решение challenge из-за сетевых ошибок")
+                return None
                 
-                # Логируем содержимое ответа для диагностики
-                response_text = await response.text()
-                logger.info(f"📝 Ответ сервера (первые 200 символов): {response_text[:200]}")
+            logger.info(f"📊 Статус ответа: {response.status}")
+            
+            # Логируем содержимое ответа для диагностики
+            response_text = await response.text()
+            logger.info(f"📝 Ответ сервера (первые 200 символов): {response_text[:200]}")
+            
+            # Извлекаем куки из заголовков
+            new_cookies = self._extract_cookies_from_response(response)
+            
+            # Обрабатываем разные статусы
+            if response.status == 302:
+                location = response.headers.get('Location')
+                logger.info(f"🔄 Редирект на: {location}")
                 
-                # Извлекаем куки из заголовков
-                new_cookies = self._extract_cookies_from_response(response)
-                
-                # Обрабатываем разные статусы
-                if response.status == 302:
-                    location = response.headers.get('Location')
-                    logger.info(f"🔄 Редирект на: {location}")
-                    
-                    if new_cookies:
-                        logger.info(f"✅ Challenge решен успешно! Получены куки для редиректа")
-                    else:
-                        logger.warning(f"⚠️ Редирект без новых куки")
-                elif response.status == 200:
-                    logger.info(f"📋 Статус 200 - анализируем содержимое ответа...")
-                    
-                    # Проверяем наличие success сообщений в ответе
-                    if "success" in response_text.lower() or "passed" in response_text.lower():
-                        logger.info(f"✅ Challenge возможно решен (статус 200 + успех в содержимом)")
-                    else:
-                        logger.warning(f"⚠️ Статус 200 но неясно успешность")
+                if new_cookies:
+                    logger.info(f"✅ Challenge решен успешно! Получены куки для редиректа")
                 else:
-                    logger.warning(f"⚠️ Неожиданный статус: {response.status}")
+                    logger.warning(f"⚠️ Редирект без новых куки")
+            elif response.status == 200:
+                logger.info(f"📋 Статус 200 - анализируем содержимое ответа...")
                 
-                return {
-                    'status': response.status,
-                    'cookies': new_cookies,
-                    'url': str(response.url),
-                    'redirect_location': response.headers.get('Location') if response.status == 302 else None,
-                    'response_text': response_text[:500]  # Первые 500 символов для диагностики
-                }
+                # Проверяем наличие success сообщений в ответе
+                if "success" in response_text.lower() or "passed" in response_text.lower():
+                    logger.info(f"✅ Challenge возможно решен (статус 200 + успех в содержимом)")
+                else:
+                    logger.warning(f"⚠️ Статус 200 но неясно успешность")
+            else:
+                logger.warning(f"⚠️ Неожиданный статус: {response.status}")
+            
+            result = {
+                'status': response.status,
+                'cookies': new_cookies,
+                'url': str(response.url),
+                'redirect_location': response.headers.get('Location') if response.status == 302 else None,
+                'response_text': response_text[:500]  # Первые 500 символов для диагностики
+            }
+            
+            response.close()
+            return result
                 
         except Exception as e:
             logger.error(f"Ошибка отправки решения: {e}")
@@ -368,7 +566,8 @@ class AnubisHandler:
 async def handle_anubis_challenge_for_session(session: aiohttp.ClientSession, 
                                             url: str, 
                                             response_text: str,
-                                            force_fresh_challenge: bool = True) -> Optional[Dict[str, str]]:
+                                            force_fresh_challenge: bool = True,
+                                            nitter_domain_rotator=None) -> Optional[Dict[str, str]]:
     """
     Удобная функция для обработки Anubis challenge в существующей сессии
     
@@ -377,11 +576,12 @@ async def handle_anubis_challenge_for_session(session: aiohttp.ClientSession,
         url: URL страницы с challenge
         response_text: HTML содержимое страницы
         force_fresh_challenge: Всегда получать СВЕЖИЙ challenge (рекомендуется)
+        nitter_domain_rotator: Ротатор доменов для переключения при сетевых ошибках
         
     Returns:
         Словарь с новыми куки или None если challenge не был решен
     """
-    handler = AnubisHandler(session)
+    handler = AnubisHandler(session, nitter_domain_rotator)
     result = await handler.detect_and_solve_challenge(url, response_text, force_fresh_challenge=force_fresh_challenge)
     
     if result and result.get('cookies'):

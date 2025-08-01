@@ -1,0 +1,54 @@
+{
+  "nitter.tiekoetter.com": {
+    "domain": "nitter.tiekoetter.com",
+    "status": "working",
+    "response_time": 0.2529110908508301,
+    "status_code": 200,
+    "error": null,
+    "has_anubis": true,
+    "needs_cookies": true,
+    "cookies_obtained": false,
+    "proxy_used": false,
+    "test_time": "2025-07-15T01:41:51.748712",
+    "anubis_solved": true
+  },
+  "nitter.privacyredirect.com": {
+    "domain": "nitter.privacyredirect.com",
+    "status": "working",
+    "response_time": 13.296831846237183,
+    "status_code": 200,
+    "error": null,
+    "has_anubis": true,
+    "needs_cookies": true,
+    "cookies_obtained": false,
+    "proxy_used": true,
+    "test_time": "2025-07-15T01:42:01.405600",
+    "anubis_solved": true
+  },
+  "nitter.kuuro.net": {
+    "domain": "nitter.kuuro.net",
+    "status": "working",
+    "response_time": 0.962024450302124,
+    "status_code": 200,
+    "error": null,
+    "has_anubis": true,
+    "needs_cookies": true,
+    "cookies_obtained": false,
+    "proxy_used": true,
+    "test_time": "2025-07-15T01:42:28.344665",
+    "anubis_solved": true
+  },
+  "89.252.140.174": {
+    "domain": "89.252.140.174",
+    "status": "working",
+    "response_time": 1.2763888835906982,
+    "status_code": 200,
+    "error": null,
+    "has_anubis": false,
+    "needs_cookies": true,
+    "cookies_obtained": false,
+    "proxy_used": true,
+    "test_time": "2025-07-15T01:42:41.222272",
+    "anubis_solved": false
+  }
+}

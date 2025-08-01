@@ -1,0 +1,20 @@
+{
+  "nitter.kuuro.net": {
+    "success": false,
+    "status": "challenge_failed",
+    "cookies_count": 0,
+    "cookie_names": []
+  },
+  "nitter.privacyredirect.com": {
+    "success": false,
+    "status": "challenge_failed",
+    "cookies_count": 0,
+    "cookie_names": []
+  },
+  "nitter.tiekoetter.com": {
+    "success": false,
+    "status": "challenge_failed",
+    "cookies_count": 0,
+    "cookie_names": []
+  }
+}

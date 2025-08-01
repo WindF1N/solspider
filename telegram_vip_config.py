@@ -156,6 +156,10 @@ def format_telegram_message(template_name, **kwargs):
     """Форматирует Telegram сообщение по шаблону"""
     template = TELEGRAM_MESSAGE_TEMPLATES.get(template_name, "")
     try:
+        # Экранируем HTML символы в message_text для безопасности
+        import html
+        if 'message_text' in kwargs:
+            kwargs['message_text'] = html.escape(kwargs['message_text'])
         return template.format(**kwargs)
     except KeyError as e:
         return f"❌ Ошибка форматирования сообщения: отсутствует параметр {e}"

@@ -102,37 +102,45 @@ class TelegramVipTelethon:
             logger.error(f"❌ {self.notification_config['chat_id_env_var']} не задан в переменных окружения!")
     
     def extract_contracts_from_text(self, text: str) -> List[str]:
-        """Извлекает Solana контракты из текста сообщения"""
+        """Извлекает Solana контракты и Ethereum адреса из текста сообщения"""
         if not text:
             return []
         
         all_contracts = []
         
-        # 1. Ищем обычные адреса Solana (32-44 символа, буквы и цифры)
+        # 1. Ищем Ethereum адреса (0x + 40 hex символов)
+        eth_addresses = re.findall(r'\b0x[A-Fa-f0-9]{40}\b', text)
+        all_contracts.extend(eth_addresses)
+        
+        # 2. Ищем обычные адреса Solana (32-44 символа, буквы и цифры)
         basic_contracts = re.findall(r'\b[A-Za-z0-9]{32,44}\b', text)
         all_contracts.extend(basic_contracts)
         
-        # 2. Ищем контракты в URL pump.fun и других платформах
+        # 3. Ищем контракты в URL pump.fun и других платформах
         pump_contracts = re.findall(r'pump\.fun/coin/([A-Za-z0-9]{32,44})', text, re.IGNORECASE)
         all_contracts.extend(pump_contracts)
         
-        # 3. Ищем контракты в dexscreener URL
+        # 4. Ищем контракты в dexscreener URL (Solana)
         dex_contracts = re.findall(r'dexscreener\.com/solana/([A-Za-z0-9]{32,44})', text, re.IGNORECASE)
         all_contracts.extend(dex_contracts)
         
-        # 4. Ищем контракты в birdeye URL
+        # 5. Ищем контракты в dexscreener URL (Ethereum)
+        dex_eth_contracts = re.findall(r'dexscreener\.com/ethereum/(0x[A-Fa-f0-9]{40})', text, re.IGNORECASE)
+        all_contracts.extend(dex_eth_contracts)
+        
+        # 6. Ищем контракты в birdeye URL
         birdeye_contracts = re.findall(r'birdeye\.so/token/([A-Za-z0-9]{32,44})', text, re.IGNORECASE)
         all_contracts.extend(birdeye_contracts)
         
-        # 5. Ищем контракты в jupiter URL
+        # 7. Ищем контракты в jupiter URL
         jupiter_contracts = re.findall(r'jup\.ag/swap/[A-Za-z0-9]+-([A-Za-z0-9]{32,44})', text, re.IGNORECASE)
         all_contracts.extend(jupiter_contracts)
         
-        # 6. Ищем контракты в raydium URL
+        # 8. Ищем контракты в raydium URL
         raydium_contracts = re.findall(r'raydium\.io/swap/\?([A-Za-z0-9]{32,44})', text, re.IGNORECASE)
         all_contracts.extend(raydium_contracts)
         
-        # 7. Ищем контракты после специальных префиксов
+        # 9. Ищем контракты после специальных префиксов (Solana)
         prefix_patterns = [
             r'(?:contract|контракт|ca|address|адрес)[:=\s]+([A-Za-z0-9]{32,44})(?:\s|$)',
             r'(?:token|токен)[:=\s]+([A-Za-z0-9]{32,44})(?:\s|$)',
@@ -143,13 +151,30 @@ class TelegramVipTelethon:
             prefix_contracts = re.findall(pattern, text, re.IGNORECASE)
             all_contracts.extend(prefix_contracts)
         
-        # 8. Ищем контракты в Markdown ссылках и коде
+        # 10. Ищем ETH адреса после специальных префиксов
+        eth_prefix_patterns = [
+            r'(?:eth|ethereum|contract|контракт|ca|address|адрес|token|токен)[:=\s]+(0x[A-Fa-f0-9]{40})(?:\s|$)',
+        ]
+        
+        for pattern in eth_prefix_patterns:
+            prefix_eth = re.findall(pattern, text, re.IGNORECASE)
+            all_contracts.extend(prefix_eth)
+        
+        # 11. Ищем контракты в Markdown ссылках и коде
         markdown_contracts = re.findall(r'`([A-Za-z0-9]{32,44})`', text)
         all_contracts.extend(markdown_contracts)
         
-        # 9. Ищем контракты в квадратных скобках (цитаты)
+        # 12. Ищем ETH адреса в Markdown ссылках и коде
+        markdown_eth = re.findall(r'`(0x[A-Fa-f0-9]{40})`', text)
+        all_contracts.extend(markdown_eth)
+        
+        # 13. Ищем контракты в квадратных скобках (цитаты)
         quote_contracts = re.findall(r'\[([A-Za-z0-9]{32,44})\]', text)
         all_contracts.extend(quote_contracts)
+        
+        # 14. Ищем ETH адреса в квадратных скобках (цитаты)
+        quote_eth = re.findall(r'\[(0x[A-Fa-f0-9]{40})\]', text)
+        all_contracts.extend(quote_eth)
         
         # Фильтруем и очищаем все найденные контракты
         clean_contracts = []
@@ -157,13 +182,20 @@ class TelegramVipTelethon:
             if not contract:
                 continue
                 
-            # Убираем "pump" с конца если есть
-            if contract.endswith('pump'):
+            # Убираем "pump" с конца если есть (только для Solana)
+            if contract.endswith('pump') and not contract.startswith('0x'):
                 contract = contract[:-4]
             
-            # Проверяем что это похоже на Solana адрес
-            if 32 <= len(contract) <= 44 and contract.isalnum():
-                # Исключаем явно неправильные адреса
+            # Проверяем тип адреса
+            is_eth_address = contract.startswith('0x') and len(contract) == 42 and re.match(r'0x[A-Fa-f0-9]{40}', contract)
+            is_solana_address = 32 <= len(contract) <= 44 and contract.isalnum() and not contract.startswith('0x')
+            
+            if is_eth_address:
+                # Ethereum адрес - проверяем на валидность
+                if not contract.lower() in ['0x0000000000000000000000000000000000000000']:  # Исключаем нулевой адрес
+                    clean_contracts.append(contract)
+            elif is_solana_address:
+                # Solana адрес - применяем существующую логику
                 if not contract.startswith('0000') and not contract.endswith('0000'):
                     # Исключаем общие токены (SOL, USDC и т.д.)
                     excluded_tokens = [

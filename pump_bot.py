@@ -25,6 +25,17 @@ from twitter_profile_parser import TwitterProfileParser
 # Новая система групп дубликатов с Google Sheets интеграцией
 from duplicate_groups_manager import get_duplicate_groups_manager, initialize_duplicate_groups_manager, shutdown_duplicate_groups_manager
 
+# Импорт Token Behavior Monitor для отслеживания паттернов разработчиков
+try:
+    from token_behavior_monitor import monitor_new_token
+    TOKEN_BEHAVIOR_MONITOR_AVAILABLE = True
+    logger = logging.getLogger(__name__)
+    logger.info("✅ Token Behavior Monitor импортирован")
+except ImportError as e:
+    TOKEN_BEHAVIOR_MONITOR_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning(f"⚠️ Token Behavior Monitor недоступен: {e}")
+
 
 # Загрузка переменных окружения из .env файла
 try:
@@ -235,8 +246,16 @@ def send_telegram_to_user(message, user_id=7891524244):
 
 async def search_single_query(query, headers, retry_count=0, use_quotes=False, cycle_cookie=None, session=None):
     """Выполняет одиночный поисковый запрос к Nitter с повторными попытками при 429 и динамическими cookies"""
+    import time
+    
+    # Получаем домен из ротатора
+    from nitter_domain_rotator import get_next_nitter_domain
+    from duplicate_groups_manager import format_nitter_url
+    domain = get_next_nitter_domain()
+    
     # Добавляем пустые параметры since, until, near как требует Nitter
-    url = f"https://nitter.tiekoetter.com/search?f=tweets&q={quote(query)}&since=&until=&near="
+    base_url = format_nitter_url(domain)
+    url = f"{base_url}/search?f=tweets&q={quote(query)}&since=&until=&near="
     
     # Используем только новую динамическую систему куки с anubis_handler
     if session:
@@ -250,8 +269,15 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=False, c
     headers_with_cookie = headers.copy()
     headers_with_cookie['Cookie'] = current_cookie
     
+    # Добавляем заголовок Host для специальных IP-адресов
+    from duplicate_groups_manager import add_host_header_if_needed
+    add_host_header_if_needed(headers_with_cookie, domain)
+    
     current_session = None
     session_created_locally = False
+    
+    # Засекаем время для статистики
+    request_start_time = time.time()
     
     try:
         # Настройка прокси если требуется
@@ -429,24 +455,43 @@ async def search_single_query(query, headers, retry_count=0, use_quotes=False, c
                                     if numbers:
                                         tweet_data[i]['engagement'] += int(numbers[0])
                     
+                    # Записываем успешный результат в статистику
+                    response_time = time.time() - request_start_time
+                    from nitter_domain_rotator import record_nitter_request_result
+                    record_nitter_request_result(domain, True, response_time, response.status)
+                    
                     return tweet_data
                 elif response.status == 429:
-                    # Ошибка 429 - Too Many Requests, увеличиваем паузу
-                    if retry_count < 2:  # Максимум 2 попытки с увеличивающимися паузами
-                        pause_time = 0.1  # МИНИМАЛЬНАЯ пауза при 429
-                        logger.warning(f"⚠️ Nitter 429 (Too Many Requests) для '{query}', ждём {pause_time}с (попытка {retry_count + 1}/2)")
-                        await asyncio.sleep(pause_time)
+                    # Записываем 429 ошибку в статистику
+                    response_time = time.time() - request_start_time
+                    from nitter_domain_rotator import record_nitter_request_result
+                    record_nitter_request_result(domain, False, response_time, 429)
+                    
+                    # Ошибка 429 - Too Many Requests, переключаемся на следующий домен
+                    if retry_count < 2:  # Максимум 2 попытки с разными доменами
+                        from nitter_domain_rotator import get_next_nitter_domain
+                        new_domain = get_next_nitter_domain()
+                        logger.warning(f"🌐 HTTP 429 для '{query}' - переключаемся на новый домен: {new_domain} (попытка {retry_count + 1}/2)")
+                        await asyncio.sleep(0.1)  # Минимальная пауза
                         return await search_single_query(query, headers, retry_count + 1, use_quotes, cycle_cookie, session)
                     else:
-                        # После 2 попыток помещаем прокси в спячку на минуту вместо полной блокировки
-                        from dynamic_cookie_rotation import mark_proxy_temp_blocked
-                        mark_proxy_temp_blocked(proxy, current_cookie, 1)
-                        logger.warning(f"😴 Прокси помещен в спячку на 1 минуту после 429 ошибок для '{query}'")
+                        # После 2 попыток с разными доменами возвращаем пустой результат
+                        logger.warning(f"🚫 Все домены дают 429 для '{query}' - возвращаем пустой результат")
                         return []
                 else:
+                    # Записываем неуспешный результат в статистику
+                    response_time = time.time() - request_start_time
+                    from nitter_domain_rotator import record_nitter_request_result
+                    record_nitter_request_result(domain, False, response_time, response.status)
+                    
                     logger.warning(f"❌ Nitter ответил {response.status} для '{query}'")
                     return []
         except Exception as e:
+            # Записываем ошибку в статистику
+            response_time = time.time() - request_start_time
+            from nitter_domain_rotator import record_nitter_request_result
+            record_nitter_request_result(domain, False, response_time, None)
+            
             # Обрабатываем ошибки HTTP запроса
             logger.error(f"❌ Ошибка HTTP запроса для '{query}': {e}")
             raise  # Поднимаем исключение для обработки во внешнем блоке
@@ -526,11 +571,19 @@ def ensure_nitter_params(url):
 
 async def search_with_pagination(query, headers, max_pages=3, cycle_cookie=None, session=None):
     """Выполняет поиск с пагинацией, проходя по всем доступным страницам с динамическими куки"""
+    import time
+    
+    # Получаем домен из ротатора
+    from nitter_domain_rotator import get_next_nitter_domain
+    from duplicate_groups_manager import format_nitter_url
+    domain = get_next_nitter_domain()
+    
     try:
         all_tweets = []
         all_authors = []
         page_count = 0
-        current_url = f"https://nitter.tiekoetter.com/search?f=tweets&q={quote(query)}&since=&until=&near="
+        base_url = format_nitter_url(domain)
+        current_url = f"{base_url}/search?f=tweets&q={quote(query)}&since=&until=&near="
         
         # Используем только новую динамическую систему куки с anubis_handler
         if session:
@@ -543,6 +596,10 @@ async def search_with_pagination(query, headers, max_pages=3, cycle_cookie=None,
         # Обновляем заголовки с cookie
         headers_with_cookie = headers.copy()
         headers_with_cookie['Cookie'] = current_cookie
+        
+        # Добавляем заголовок Host для специальных IP-адресов
+        from duplicate_groups_manager import add_host_header_if_needed
+        add_host_header_if_needed(headers_with_cookie, domain)
         
         # Настройка соединения (прокси или без прокси)
         connector = aiohttp.TCPConnector(ssl=False)
@@ -615,10 +672,10 @@ async def search_with_pagination(query, headers, max_pages=3, cycle_cookie=None,
                                                 html = retry_html
                                             else:
                                                 if retry_response.status == 429:
-                                                    # При 429 ошибке помещаем прокси в спячку на минуту
-                                                    from dynamic_cookie_rotation import mark_proxy_temp_blocked
-                                                    mark_proxy_temp_blocked(proxy, current_cookie, 1)
-                                                    logger.warning(f"😴 Прокси помещен в спячку на 1 минуту из-за 429 ошибки при повторном запросе страницы {page_count} для '{query}'")
+                                                    # При 429 ошибке переключаемся на следующий домен
+                                                    from nitter_domain_rotator import get_next_nitter_domain
+                                                    new_domain = get_next_nitter_domain()
+                                                    logger.warning(f"🌐 HTTP 429 при повторном запросе страницы {page_count} для '{query}' - переключаемся на домен: {new_domain}")
                                                 else:
                                                     logger.error(f"❌ Ошибка повторного запроса страницы {page_count} для '{query}': {retry_response.status}")
                                                 break
@@ -691,14 +748,14 @@ async def search_with_pagination(query, headers, max_pages=3, cycle_cookie=None,
                                         'page': page_count
                                     })
                             
-                            # Ищем ссылку на следующую страницу
+                                                        # Ищем ссылку на следующую страницу
                             next_page_url = extract_next_page_url(soup)
                             if next_page_url and page_count < max_pages:
                                 # Формируем полный URL
-                                if next_page_url.startswith('?'):
-                                    current_url = f"https://nitter.tiekoetter.com/search{next_page_url}"
+                                if next_page_url.startswith('?'): # line 733
+                                    current_url = f"https://{domain}/search{next_page_url}"
                                 elif next_page_url.startswith('/search'):
-                                    current_url = f"https://nitter.tiekoetter.com{next_page_url}"
+                                    current_url = f"https://{domain}{next_page_url}"
                                 else:
                                     current_url = next_page_url
                                 
@@ -714,11 +771,22 @@ async def search_with_pagination(query, headers, max_pages=3, cycle_cookie=None,
                                 break
                                 
                         elif response.status == 429:
-                            # При 429 ошибке помещаем прокси в спячку на минуту
-                            from dynamic_cookie_rotation import mark_proxy_temp_blocked
-                            mark_proxy_temp_blocked(proxy, current_cookie, 1)
-                            logger.warning(f"😴 Прокси помещен в спячку на 1 минуту из-за 429 ошибки на странице {page_count} для '{query}' - останавливаем пагинацию")
-                            break
+                            # При 429 ошибке переключаемся на следующий домен
+                            from nitter_domain_rotator import get_next_nitter_domain
+                            new_domain = get_next_nitter_domain()
+                            logger.warning(f"🌐 HTTP 429 на странице {page_count} для '{query}' - переключаемся на домен: {new_domain}")
+                            
+                            # Обновляем current_url с новым доменом
+                            from urllib.parse import urlparse
+                            parsed_url = urlparse(current_url)
+                            new_base_url = format_nitter_url(new_domain)
+                            current_url = f"{new_base_url}{parsed_url.path}"
+                            if parsed_url.query:
+                                current_url += f"?{parsed_url.query}"
+                            
+                            # Повторяем ту же страницу с новым доменом
+                            page_count -= 1
+                            continue
                         else:
                             logger.warning(f"❌ Nitter ответил {response.status} на странице {page_count} для '{query}'")
                             break
@@ -942,7 +1010,11 @@ async def format_new_token(data):
     if name:
         name = name.replace('\x00', '').strip()[:255]  # Лимит 255 символов
     if symbol:
-        symbol = symbol.replace('\x00', '').strip()[:20]  # Лимит 20 символов 
+        symbol = symbol.replace('\x00', '').strip()[:50]  # Лимит 50 символов 
+        # Дополнительная проверка на длину символа
+        if len(symbol) > 50:
+            logger.warning(f"⚠️ Символ токена слишком длинный ({len(symbol)} символов): {symbol[:30]}...")
+            symbol = symbol[:50]
     if description:
         description = description.replace('\x00', '').strip()[:1000]  # Лимит текста
     if creator:
@@ -1158,7 +1230,9 @@ async def format_new_token(data):
             
             # Весь текст твита в цитате
             if tweet_text:
-                message += f"   💬 <blockquote>{tweet_text}</blockquote>\n"
+                import html
+                tweet_text_escaped = html.escape(tweet_text)
+                message += f"   💬 <blockquote>{tweet_text_escaped}</blockquote>\n"
     
     message += f"\n<b>🕐 Время:</b> {datetime.now().strftime('%H:%M:%S')}"
     
@@ -1455,6 +1529,14 @@ async def handle_new_jupiter_token(pool_data):
             logger.info(f"✅ Токен {symbol} ({dex}) прошел фильтрацию - отправляем уведомление")
             send_telegram_photo(token_image_url, msg, keyboard)
             
+            # 🔍 ЗАПУСКАЕМ МОНИТОРИНГ ПОВЕДЕНИЯ ТОКЕНА
+            if TOKEN_BEHAVIOR_MONITOR_AVAILABLE:
+                try:
+                    asyncio.create_task(monitor_new_token(mint, symbol))
+                    logger.info(f"🔍 Запущен мониторинг поведения для токена {symbol} ({mint[:8]}...)")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка запуска мониторинга поведения для {symbol}: {e}")
+            
             # Сохраняем в БД
             try:
                 db_manager = get_db_manager()
@@ -1539,6 +1621,14 @@ async def handle_legacy_pumpfun_token(data):
         if should_notify:
             logger.info(f"✅ Legacy токен {symbol} прошел фильтрацию - отправляем уведомление")
             send_telegram_photo(token_image_url, msg, keyboard)
+            
+            # 🔍 ЗАПУСКАЕМ МОНИТОРИНГ ПОВЕДЕНИЯ ТОКЕНА (LEGACY)
+            if TOKEN_BEHAVIOR_MONITOR_AVAILABLE:
+                try:
+                    asyncio.create_task(monitor_new_token(mint, symbol))
+                    logger.info(f"🔍 Запущен мониторинг поведения для legacy токена {symbol} ({mint[:8]}...)")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка запуска мониторинга поведения для legacy {symbol}: {e}")
             
             # Сохраняем в БД
             try:
@@ -3077,32 +3167,43 @@ async def analyze_author_page_contracts(author_username, tweets_on_page=None, lo
 
 def extract_contracts_from_text(text):
     """
-    ЕДИНАЯ ФУНКЦИЯ для извлечения Solana контрактов из текста твита
-    Возвращает список уникальных контрактов длиной 32-44 символа
+    ЕДИНАЯ ФУНКЦИЯ для извлечения Solana контрактов и Ethereum адресов из текста твита
+    Возвращает список уникальных контрактов и адресов
     """
     if not text:
         return []
     
-    # Используем более гибкое регулярное выражение:
-    # 1. Ищем последовательности из 32-48 символов (включая возможное "pump")
-    # 2. Не требуем строгих границ слов, но исключаем полностью буквенные строки
-    contracts = re.findall(r'[A-Za-z0-9]{32,48}', text)
+    all_contracts = []
+    
+    # 1. Ищем Ethereum адреса (0x + 40 hex символов)
+    eth_addresses = re.findall(r'\b0x[A-Fa-f0-9]{40}\b', text)
+    all_contracts.extend(eth_addresses)
+    
+    # 2. Ищем Solana адреса (32-48 символов, включая возможное "pump")
+    solana_contracts = re.findall(r'[A-Za-z0-9]{32,48}', text)
+    all_contracts.extend(solana_contracts)
     
     # Очищаем и фильтруем контракты
     clean_contracts = []
-    for contract in contracts:
-        # Убираем "pump" с конца если есть
+    for contract in all_contracts:
+        # Убираем "pump" с конца если есть (только для Solana)
         clean_contract = contract
-        if contract.endswith('pump'):
+        if contract.endswith('pump') and not contract.startswith('0x'):
             clean_contract = contract[:-4]
         
-        # Проверяем что это похоже на Solana адрес:
-        # - 32-44 символа
-        # - только буквы и цифры
-        # - содержит хотя бы одну цифру (чтобы исключить чисто буквенные строки)
-        if (32 <= len(clean_contract) <= 44 and 
-            clean_contract.isalnum() and 
-            any(c.isdigit() for c in clean_contract)):
+        # Проверяем тип адреса
+        is_eth_address = clean_contract.startswith('0x') and len(clean_contract) == 42 and re.match(r'0x[A-Fa-f0-9]{40}', clean_contract)
+        is_solana_address = (32 <= len(clean_contract) <= 44 and 
+                           clean_contract.isalnum() and 
+                           any(c.isdigit() for c in clean_contract) and 
+                           not clean_contract.startswith('0x'))
+        
+        if is_eth_address:
+            # Ethereum адрес - добавляем если не нулевой
+            if not clean_contract.lower() in ['0x0000000000000000000000000000000000000000']:
+                clean_contracts.append(clean_contract)
+        elif is_solana_address:
+            # Solana адрес - применяем существующую логику
             clean_contracts.append(clean_contract)
     
     # Возвращаем уникальные контракты
@@ -3370,7 +3471,9 @@ def format_authors_section(authors, prefix_newline=True):
         
         # Текст твита
         if tweet_text:
-            message += f"   💬 <blockquote>{tweet_text}</blockquote>\n"
+            import html
+            tweet_text_escaped = html.escape(tweet_text)
+            message += f"   💬 <blockquote>{tweet_text_escaped}</blockquote>\n"
     
     message += "\n"
     return message
@@ -4041,13 +4144,18 @@ def send_duplicate_alert(original_token, duplicate_token, reason, twitter_info=N
             
             if tweet1 and tweet2 and tweet1.strip() == tweet2.strip():
                 # Твиты одинаковые - показываем как одну цитату
-                tweet_quote = f"\n\n💬 <b>Найденный твит:</b>\n<blockquote>{tweet1}</blockquote>\n"
+                import html
+                tweet1_escaped = html.escape(tweet1)
+                tweet_quote = f"\n\n💬 <b>Найденный твит:</b>\n<blockquote>{tweet1_escaped}</blockquote>\n"
             else:
                 # Твиты разные - показываем отдельно если есть
+                import html
                 if tweet1:
-                    tweet_quote += f"\n💬 <b>Твит токена #1:</b>\n<blockquote>{tweet1}</blockquote>\n"
+                    tweet1_escaped = html.escape(tweet1)
+                    tweet_quote += f"\n💬 <b>Твит токена #1:</b>\n<blockquote>{tweet1_escaped}</blockquote>\n"
                 if tweet2:
-                    tweet_quote += f"\n💬 <b>Твит токена #2:</b>\n<blockquote>{tweet2}</blockquote>\n"
+                    tweet2_escaped = html.escape(tweet2)
+                    tweet_quote += f"\n💬 <b>Твит токена #2:</b>\n<blockquote>{tweet2_escaped}</blockquote>\n"
             
             # Формируем анализ статуса
             twitter_analysis = "\n🔍 <b>АНАЛИЗ TWITTER:</b>\n"
@@ -4175,8 +4283,12 @@ async def search_twitter_mentions(twitter_url, token_name, token_symbol, contrac
             query_type = query_info['type']
             priority = query_info['priority']
             
+            # Получаем домен из ротатора
+            from nitter_domain_rotator import get_next_nitter_domain
+            domain = get_next_nitter_domain()
+            
             # Формируем URL поиска как в основной системе
-            search_url = f"https://nitter.tiekoetter.com/{username}/search?f=tweets&q={quote(query)}&since=&until=&near="
+            search_url = f"https://{domain}/{username}/search?f=tweets&q={quote(query)}&since=&until=&near="
             
             # Retry механизм для каждого запроса (как в основной системе)
             for retry_attempt in range(3):  # до 3 попыток
@@ -4253,11 +4365,14 @@ async def search_twitter_mentions(twitter_url, token_name, token_symbol, contrac
                                     break  # Нет смысла retry если твиты не найдены
                             elif response.status == 429:
                                 if retry_attempt < 2:
-                                    logger.warning(f"⚠️ Rate limit для поиска '{query}' в @{username} (попытка {retry_attempt + 1}/3)")
+                                    # При 429 переключаемся на следующий домен
+                                    from nitter_domain_rotator import get_next_nitter_domain
+                                    new_domain = get_next_nitter_domain()
+                                    logger.warning(f"🌐 HTTP 429 для поиска '{query}' в @{username} - переключаемся на домен: {new_domain} (попытка {retry_attempt + 1}/3)")
                                     await asyncio.sleep(0.1)  # Мини пауза
                                     continue  # Повторяем попытку
                                 else:
-                                    logger.warning(f"❌ Rate limit для поиска '{query}' в @{username} - превышены попытки")
+                                    logger.warning(f"❌ Все домены дают 429 для поиска '{query}' в @{username} - превышены попытки")
                                     break
                             else:
                                 logger.warning(f"⚠️ Не удалось проверить '{query}' в Twitter @{username}: {response.status}")
@@ -4523,8 +4638,13 @@ async def check_twitter_account_has_any_contracts(twitter_username):
                 connector = aiohttp.TCPConnector()
                 request_kwargs['proxy'] = proxy
         
-        # Загружаем страницу пользователя
-        profile_url = f"https://nitter.tiekoetter.com/{twitter_username}"
+        # Загружаем страницу пользователя - используем динамический выбор домена
+        try:
+            from duplicate_groups_manager import get_nitter_base_url
+            nitter_base = get_nitter_base_url()
+        except ImportError:
+            nitter_base = "http://185.207.1.206:8085"
+        profile_url = f"{nitter_base}/{twitter_username}"
         
         async with aiohttp.ClientSession(connector=connector) as session:
             async with session.get(profile_url, headers=headers, timeout=20, **request_kwargs) as response:
@@ -4563,7 +4683,10 @@ async def check_twitter_account_has_any_contracts(twitter_username):
                     logger.debug(f"🔍 Аккаунт @{twitter_username} не содержит контрактов")
                     return False
                 elif response.status == 429:
-                    logger.warning(f"⚠️ Rate limit для проверки @{twitter_username}")
+                    # При 429 переключаемся на следующий домен
+                    from nitter_domain_rotator import get_next_nitter_domain
+                    new_domain = get_next_nitter_domain()
+                    logger.warning(f"🌐 HTTP 429 для проверки @{twitter_username} - переключились на домен: {new_domain}")
                     return False
                 else:
                     logger.warning(f"⚠️ Не удалось проверить @{twitter_username}: {response.status}")

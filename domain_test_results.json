@@ -1,0 +1,41 @@
+[
+  {
+    "domain": "nitter.kuuro.net",
+    "available": true,
+    "search_works": true,
+    "queries_tested": 3,
+    "successful_queries": 3,
+    "errors": [],
+    "response_times": [
+      0.6700994968414307,
+      0.20297956466674805,
+      0.19807124137878418
+    ]
+  },
+  {
+    "domain": "nitter.privacyredirect.com",
+    "available": true,
+    "search_works": true,
+    "queries_tested": 3,
+    "successful_queries": 3,
+    "errors": [],
+    "response_times": [
+      0.33794736862182617,
+      0.08771657943725586,
+      0.08891463279724121
+    ]
+  },
+  {
+    "domain": "nitter.tiekoetter.com",
+    "available": true,
+    "search_works": true,
+    "queries_tested": 3,
+    "successful_queries": 3,
+    "errors": [],
+    "response_times": [
+      0.09714150428771973,
+      0.1213531494140625,
+      0.12511062622070312
+    ]
+  }
+]

@@ -273,6 +273,10 @@ def format_vip_message(template_name, **kwargs):
     """Форматирует VIP сообщение по шаблону"""
     template = VIP_MESSAGE_TEMPLATES.get(template_name, "")
     try:
+        # Экранируем HTML символы в tweet_text для безопасности
+        import html
+        if 'tweet_text' in kwargs:
+            kwargs['tweet_text'] = html.escape(kwargs['tweet_text'])
         return template.format(**kwargs)
     except KeyError as e:
         return f"❌ Ошибка форматирования сообщения: отсутствует параметр {e}"

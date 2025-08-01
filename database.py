@@ -32,7 +32,7 @@ class Token(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     mint = Column(String(44), unique=True, nullable=False, index=True)
     name = Column(String(255), nullable=True)
-    symbol = Column(String(20), nullable=True)
+    symbol = Column(String(50), nullable=True)
     description = Column(Text, nullable=True)
     creator = Column(String(44), nullable=True, index=True)
     bonding_curve_key = Column(String(44), nullable=True)

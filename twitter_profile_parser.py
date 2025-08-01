@@ -94,25 +94,40 @@ class TwitterProfileParser:
     
     def extract_contracts_from_text(self, text):
         """
-        ЕДИНАЯ ФУНКЦИЯ для извлечения Solana контрактов из текста твита
-        Возвращает список уникальных контрактов длиной 32-44 символа
+        ЕДИНАЯ ФУНКЦИЯ для извлечения Solana контрактов и Ethereum адресов из текста твита
+        Возвращает список уникальных контрактов и адресов
         """
         if not text:
             return []
         
-        # Используем границы слов для точного поиска
-        contracts = re.findall(r'\b[A-Za-z0-9]{32,44}\b', text)
+        all_contracts = []
+        
+        # 1. Ищем Ethereum адреса (0x + 40 hex символов)
+        eth_addresses = re.findall(r'\b0x[A-Fa-f0-9]{40}\b', text)
+        all_contracts.extend(eth_addresses)
+        
+        # 2. Ищем Solana адреса (32-44 символа, буквы и цифры)
+        solana_contracts = re.findall(r'\b[A-Za-z0-9]{32,44}\b', text)
+        all_contracts.extend(solana_contracts)
         
         # Очищаем и фильтруем контракты
         clean_contracts = []
-        for contract in contracts:
-            # Убираем "pump" с конца если есть
+        for contract in all_contracts:
+            # Убираем "pump" с конца если есть (только для Solana)
             clean_contract = contract
-            if contract.endswith('pump'):
+            if contract.endswith('pump') and not contract.startswith('0x'):
                 clean_contract = contract[:-4]
             
-            # Проверяем что это похоже на Solana адрес (32-44 символа, только буквы и цифры)
-            if 32 <= len(clean_contract) <= 44 and clean_contract.isalnum():
+            # Проверяем тип адреса
+            is_eth_address = clean_contract.startswith('0x') and len(clean_contract) == 42 and re.match(r'0x[A-Fa-f0-9]{40}', clean_contract)
+            is_solana_address = 32 <= len(clean_contract) <= 44 and clean_contract.isalnum() and not clean_contract.startswith('0x')
+            
+            if is_eth_address:
+                # Ethereum адрес - добавляем если не нулевой
+                if not clean_contract.lower() in ['0x0000000000000000000000000000000000000000']:
+                    clean_contracts.append(clean_contract)
+            elif is_solana_address:
+                # Solana адрес - применяем существующую логику
                 clean_contracts.append(clean_contract)
         
         # Возвращаем уникальные контракты
@@ -238,7 +253,8 @@ class TwitterProfileParser:
             # Получаем динамические cookies через новую систему
             proxy, cookies_string = await get_background_proxy_cookie_async(self.session)
             
-            if not cookies_string:
+            # Для IP-адресов Nitter cookies не нужны (пустая строка - это нормально)
+            if cookies_string is None:
                 logger.error(f"❌ Не удалось получить cookies для @{username}")
                 return None
                 
@@ -255,7 +271,14 @@ class TwitterProfileParser:
                 logger.error(f"❌ Ошибка парсинга cookies для @{username}: {e}")
                 return None
             
-            url = f"https://nitter.tiekoetter.com/{username}"
+            # Используем динамический выбор домена
+            try:
+                from duplicate_groups_manager import get_nitter_domain_and_url, add_host_header_if_needed
+                current_domain, nitter_base = get_nitter_domain_and_url()
+            except ImportError:
+                current_domain = "185.207.1.206:8085"
+                nitter_base = "http://185.207.1.206:8085"
+            url = f"{nitter_base}/{username}"
             
             headers = {
                 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -266,6 +289,9 @@ class TwitterProfileParser:
                 'Connection': 'keep-alive',
                 'Upgrade-Insecure-Requests': '1'
             }
+            
+            # Добавляем заголовок Host для специальных IP-адресов
+            add_host_header_if_needed(headers, current_domain)
             
             async with self.session.get(url, headers=headers, cookies=cookies) as response:
                 html_content = await response.text()
@@ -320,8 +346,16 @@ class TwitterProfileParser:
                         
                 elif response.status == 429:
                     logger.warning(f"⚠️ Rate limit при загрузке профиля @{username}")
-                    await asyncio.sleep(2)
-                    return None
+                    
+                    # При 429 переключаемся на следующий домен Nitter, а не меняем прокси
+                    from nitter_domain_rotator import get_next_nitter_domain
+                    new_domain = get_next_nitter_domain()
+                    logger.warning(f"🌐 HTTP 429 - переключаемся на новый домен: {new_domain}")
+                    
+                    await asyncio.sleep(2)  # Короткая пауза перед повтором
+                    
+                    # НИКОГДА НЕ СДАЕМСЯ! Рекурсивно вызываем себя с новым доменом
+                    return await self.get_profile(username)
                     
                 elif response.status == 404:
                     logger.warning(f"⚠️ Профиль @{username} не найден")
@@ -357,7 +391,20 @@ class TwitterProfileParser:
                     # Улучшенное извлечение текста с правильными разделителями
                     tweet_text = self.extract_clean_text(tweet_content)
                     if tweet_text:
-                        tweets.append(tweet_text)
+                        # Извлекаем дату твита
+                        tweet_date_elem = item.find('span', class_='tweet-date')
+                        
+                        # Извлекаем URL твита
+                        tweet_link = item.find('a', class_='tweet-link')
+                        tweet_url = tweet_link.get('href', '') if tweet_link else ''
+                        
+                        # Возвращаем словарь вместо строки (для совместимости с duplicate_groups_manager)
+                        tweet_dict = {
+                            'text': tweet_text,
+                            'date': tweet_date_elem,  # Элемент для парсинга в duplicate_groups_manager
+                            'url': tweet_url
+                        }
+                        tweets.append(tweet_dict)
             
             logger.info(f"📱 Извлечено {len(tweets)} оригинальных твитов с профиля (пропущено {retweets_skipped} ретвитов)")
             return tweets
@@ -451,7 +498,8 @@ class TwitterProfileParser:
             # Получаем динамические cookies через новую систему
             proxy, cookies_string = await get_background_proxy_cookie_async(self.session)
             
-            if not cookies_string:
+            # Для IP-адресов Nitter cookies не нужны (пустая строка - это нормально)
+            if cookies_string is None:
                 logger.error(f"❌ Не удалось получить cookies для @{username}")
                 return None, []
             
@@ -466,6 +514,15 @@ class TwitterProfileParser:
                 logger.error(f"❌ Ошибка парсинга cookies для @{username}: {e}")
                 return None, []
             
+            # Используем динамический выбор домена
+            try:
+                from duplicate_groups_manager import get_nitter_domain_and_url, add_host_header_if_needed
+                current_domain, nitter_base = get_nitter_domain_and_url()
+            except ImportError:
+                # Fallback на IP-адрес если не удается импортировать
+                current_domain = "185.207.1.206:8085"
+                nitter_base = "http://185.207.1.206:8085"
+            
             headers = {
                 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -476,8 +533,11 @@ class TwitterProfileParser:
                 'Upgrade-Insecure-Requests': '1'
             }
             
+            # Добавляем заголовок Host для специальных IP-адресов
+            add_host_header_if_needed(headers, current_domain)
+            
             # Начинаем с первой страницы профиля с /with_replies
-            base_url = f"https://nitter.tiekoetter.com/{username}/with_replies"
+            base_url = f"{nitter_base}/{username}/with_replies"
             current_url = base_url
             
             profile_data = None
@@ -549,20 +609,35 @@ class TwitterProfileParser:
                                 if next_page_path.startswith('?'):
                                     current_url = f"{base_url}{next_page_path}"
                                 else:
-                                    current_url = f"https://nitter.tiekoetter.com{next_page_path}"
+                                    current_url = f"{nitter_base}{next_page_path}"
                                 
                                 logger.debug(f"🔗 Следующая страница: {current_url}")
                                 
-                                # Небольшая пауза между страницами
-                                await asyncio.sleep(1)
+                                # Увеличенная пауза между страницами
+                                await asyncio.sleep(3)
                             else:
                                 logger.info(f"📄 Больше страниц нет или достигнут лимит для @{username}")
                                 break
                                 
                         elif response.status == 429:
                             logger.warning(f"⚠️ Rate limit при загрузке страницы {page_count} для @{username}")
-                            await asyncio.sleep(2)
-                            break
+                            
+                            # При 429 переключаемся на следующий домен Nitter, а не меняем прокси
+                            from nitter_domain_rotator import get_next_nitter_domain
+                            new_domain = get_next_nitter_domain()
+                            logger.warning(f"🌐 HTTP 429 - переключаемся на новый домен: {new_domain}")
+                            
+                            # Формируем новый URL с новым доменом
+                            from urllib.parse import urlparse
+                            parsed_url = urlparse(current_url)
+                            new_base_url = f"http://{new_domain}" if new_domain.count('.') >= 3 else f"https://{new_domain}"
+                            current_url = f"{new_base_url}{parsed_url.path}"
+                            if parsed_url.query:
+                                current_url += f"?{parsed_url.query}"
+                                
+                            await asyncio.sleep(2)  # Короткая пауза перед повтором
+                            page_count -= 1  # Повторяем ту же страницу с новым доменом
+                            continue
                             
                         elif response.status == 404:
                             logger.warning(f"⚠️ Профиль @{username} не найден")
@@ -613,7 +688,8 @@ class TwitterProfileParser:
             # Получаем динамические cookies через новую систему
             proxy, cookies_string = await get_background_proxy_cookie_async(self.session)
             
-            if not cookies_string:
+            # Для IP-адресов Nitter cookies не нужны (пустая строка - это нормально)
+            if cookies_string is None:
                 logger.error(f"❌ Не удалось получить cookies для @{username}")
                 return None, []
             
@@ -628,7 +704,14 @@ class TwitterProfileParser:
                 logger.error(f"❌ Ошибка парсинга cookies для @{username}: {e}")
                 return None, []
             
-            url = f"https://nitter.tiekoetter.com/{username}"
+            # Используем динамический выбор домена
+            try:
+                from duplicate_groups_manager import get_nitter_domain_and_url, add_host_header_if_needed
+                current_domain, nitter_base = get_nitter_domain_and_url()
+            except ImportError:
+                current_domain = "185.207.1.206:8085"
+                nitter_base = "http://185.207.1.206:8085"
+            url = f"{nitter_base}/{username}"
             
             headers = {
                 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -639,6 +722,9 @@ class TwitterProfileParser:
                 'Connection': 'keep-alive',
                 'Upgrade-Insecure-Requests': '1'
             }
+            
+            # Добавляем заголовок Host для специальных IP-адресов
+            add_host_header_if_needed(headers, current_domain)
             
             if retry_count == 0:
                 logger.info(f"🔍 Загружаем профиль с твитами @{username}")
@@ -668,9 +754,16 @@ class TwitterProfileParser:
                         
                 elif response.status == 429:
                     logger.warning(f"⚠️ Rate limit при загрузке профиля @{username}")
-                    # Используем новую динамическую систему - куки автоматически ротируются при ошибках
-                    await asyncio.sleep(2)
-                    return None, []
+                    
+                    # При 429 переключаемся на следующий домен Nitter, а не меняем прокси
+                    from nitter_domain_rotator import get_next_nitter_domain
+                    new_domain = get_next_nitter_domain()
+                    logger.warning(f"🌐 HTTP 429 - переключаемся на новый домен: {new_domain}")
+                    
+                    await asyncio.sleep(2)  # Короткая пауза перед повтором
+                    
+                    # НИКОГДА НЕ СДАЕМСЯ! Рекурсивно вызываем себя с новым доменом
+                    return await self.get_profile_with_tweets(username, retry_count, max_retries)
                     
                 elif response.status == 404:
                     logger.warning(f"⚠️ Профиль @{username} не найден")
@@ -718,9 +811,9 @@ class TwitterProfileParser:
                 logger.error(f"❌ Ошибка получения профиля @{username}: {e}")
                 profiles[username] = None
             
-            # Пауза между запросами
+            # Увеличенная пауза между запросами профилей
             if i < len(usernames):
-                await asyncio.sleep(delay)
+                await asyncio.sleep(max(delay, 3.0))
         
         logger.info(f"✅ Загружено {len([p for p in profiles.values() if p])} из {len(usernames)} профилей")
         return profiles
@@ -748,9 +841,18 @@ class TwitterProfileParser:
             contract_frequency = {}
             
             for tweet in tweets_with_contracts:
-                for contract in tweet['contracts']:
-                    # Фильтруем по длине (Solana адреса обычно 32-44 символа)
-                    if 32 <= len(contract) <= 44 and contract.isalnum():
+                # Проверяем что tweet это словарь
+                if not isinstance(tweet, dict):
+                    logger.debug(f"⚠️ Пропущен твит неправильного типа в анализе контрактов: {type(tweet)}")
+                    continue
+                    
+                contracts = tweet.get('contracts', [])
+                if not isinstance(contracts, list):
+                    logger.debug(f"⚠️ Поле contracts не является списком: {type(contracts)}")
+                    continue
+                    
+                for contract in contracts:
+                    if isinstance(contract, str) and 32 <= len(contract) <= 44 and contract.isalnum():
                         all_contracts.append(contract)
                         contract_frequency[contract] = contract_frequency.get(contract, 0) + 1
             
@@ -883,8 +985,12 @@ async def test_profile_with_replies():
             if tweets_with_contracts:
                 logger.info(f"\n📝 Примеры твитов с контрактами:")
                 for i, tweet in enumerate(tweets_with_contracts[:3], 1):
-                    logger.info(f"  {i}. [{tweet.get('date', 'N/A')}] {tweet['text'][:100]}...")
-                    logger.info(f"     🔗 Контракты: {', '.join(tweet['contracts'][:2])}")
+                    # Проверяем что tweet это словарь
+                    if isinstance(tweet, dict):
+                        logger.info(f"  {i}. [{tweet.get('date', 'N/A')}] {tweet.get('text', '')[:100]}...")
+                        logger.info(f"     🔗 Контракты: {', '.join(tweet.get('contracts', [])[:2])}")
+                    else:
+                        logger.info(f"  {i}. Твит неправильного формата (тип: {type(tweet)})")
         else:
             logger.info(f"❌ Профиль @{test_username}: не удалось загрузить")
 

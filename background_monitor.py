@@ -518,11 +518,22 @@ class BackgroundTokenMonitor:
             # Убираем параметр since - ищем по всем твитам без временных ограничений
             # Делаем только один запрос с кавычками и пагинацией для точного поиска
             quoted_contract = quote(f'"{token.mint}"')  # URL-кодируем кавычки для правильной обработки
-            base_url = f"https://nitter.tiekoetter.com/search?f=tweets&q={quoted_contract}&since=&until=&near="
+            # Используем динамический выбор домена
+            try:
+                from duplicate_groups_manager import get_nitter_domain_and_url, add_host_header_if_needed
+                current_domain, nitter_base = get_nitter_domain_and_url()
+            except ImportError:
+                # Fallback на IP-адрес если не удается импортировать
+                current_domain = "185.207.1.206:8085"
+                nitter_base = "http://185.207.1.206:8085"
+            base_url = f"{nitter_base}/search?f=tweets&q={quoted_contract}&since=&until=&near="
             urls_to_process = [base_url]
             
             headers_with_cookie = self.headers.copy()
             headers_with_cookie['Cookie'] = cycle_cookie
+            
+            # Добавляем заголовок Host для специальных IP-адресов
+            add_host_header_if_needed(headers_with_cookie, current_domain)
             
             all_authors = []
             tweets_count = 0
@@ -699,9 +710,9 @@ class BackgroundTokenMonitor:
                                             next_page_url = link['href']
                                             # Формируем полный URL
                                             if next_page_url.startswith('?'):
-                                                current_url = f"https://nitter.tiekoetter.com/search{next_page_url}"
+                                                current_url = f"{nitter_base}/search{next_page_url}"
                                             elif next_page_url.startswith('/search'):
-                                                current_url = f"https://nitter.tiekoetter.com{next_page_url}"
+                                                current_url = f"{nitter_base}{next_page_url}"
                                             else:
                                                 current_url = next_page_url
                                             
@@ -719,10 +730,23 @@ class BackgroundTokenMonitor:
                                 
                             elif response.status == 429:
                                 logger.warning(f"🚫 ФОНОВЫЙ МОНИТОРИНГ: 429 ОШИБКА для {token.symbol} на странице {page_count}")
-                                logger.warning(f"📋 ПРИЧИНА: слишком много запросов к Nitter серверу")
-                                logger.warning(f"🔧 ДЕЙСТВИЕ: останавливаем пагинацию")
-                                self.consecutive_errors += 1
-                                break  # Прерываем цикл пагинации
+                                logger.warning(f"📋 ПРИЧИНА: слишком много запросов к Nitter серверу (проблема домена, а не прокси)")
+                                
+                                # При 429 переключаемся на следующий домен Nitter, а не меняем прокси
+                                from nitter_domain_rotator import get_next_nitter_domain
+                                new_domain = get_next_nitter_domain()
+                                
+                                # Формируем новый URL с новым доменом
+                                from urllib.parse import urlparse
+                                parsed_url = urlparse(current_url)
+                                new_base_url = f"http://{new_domain}" if new_domain.count('.') >= 3 else f"https://{new_domain}"
+                                current_url = f"{new_base_url}{parsed_url.path}"
+                                if parsed_url.query:
+                                    current_url += f"?{parsed_url.query}"
+                                
+                                logger.warning(f"🔧 ДЕЙСТВИЕ: переключились на новый домен {new_domain} - продолжаем пагинацию")
+                                # НЕ увеличиваем consecutive_errors и НЕ прерываем цикл - продолжаем с новым доменом
+                                continue
                             else:
                                 logger.warning(f"⚠️ Статус {response.status} для {token.symbol} на странице {page_count}")
                                 self.consecutive_errors += 1

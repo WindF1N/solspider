@@ -157,23 +157,39 @@ class VipTwitterMonitor:
             return None
     
     def extract_contracts_from_text(self, text: str) -> List[str]:
-        """Извлекает Solana контракты из текста твита"""
+        """Извлекает Solana контракты и Ethereum адреса из текста твита"""
         if not text:
             return []
         
-        # Ищем адреса Solana (32-44 символа, буквы и цифры)
-        contracts = re.findall(r'\b[A-Za-z0-9]{32,44}\b', text)
+        all_contracts = []
+        
+        # 1. Ищем Ethereum адреса (0x + 40 hex символов)
+        eth_addresses = re.findall(r'\b0x[A-Fa-f0-9]{40}\b', text)
+        all_contracts.extend(eth_addresses)
+        
+        # 2. Ищем Solana адреса (32-44 символа, буквы и цифры)
+        solana_contracts = re.findall(r'\b[A-Za-z0-9]{32,44}\b', text)
+        all_contracts.extend(solana_contracts)
         
         # Фильтруем и очищаем
         clean_contracts = []
-        for contract in contracts:
-            # Убираем "pump" с конца если есть
-            if contract.endswith('pump'):
-                contract = contract[:-4]
+        for contract in all_contracts:
+            # Убираем "pump" с конца если есть (только для Solana)
+            clean_contract = contract
+            if contract.endswith('pump') and not contract.startswith('0x'):
+                clean_contract = contract[:-4]
             
-            # Проверяем что это похоже на Solana адрес
-            if 32 <= len(contract) <= 44 and contract.isalnum():
-                clean_contracts.append(contract)
+            # Проверяем тип адреса
+            is_eth_address = clean_contract.startswith('0x') and len(clean_contract) == 42 and re.match(r'0x[A-Fa-f0-9]{40}', clean_contract)
+            is_solana_address = 32 <= len(clean_contract) <= 44 and clean_contract.isalnum() and not clean_contract.startswith('0x')
+            
+            if is_eth_address:
+                # Ethereum адрес - добавляем если не нулевой
+                if not clean_contract.lower() in ['0x0000000000000000000000000000000000000000']:
+                    clean_contracts.append(clean_contract)
+            elif is_solana_address:
+                # Solana адрес - применяем существующую логику
+                clean_contracts.append(clean_contract)
         
         return list(set(clean_contracts))  # Убираем дубликаты
     
@@ -483,8 +499,14 @@ class VipTwitterMonitor:
             
             logger.info(f"🌟 Проверяем VIP аккаунт @{username}... (прокси: {'✅' if proxy_url else '❌'})")
             
-            # URL профиля на Nitter
-            url = f"https://nitter.tiekoetter.com/{username}"
+            # URL профиля на Nitter - используем динамический выбор домена
+            try:
+                from duplicate_groups_manager import get_nitter_domain_and_url
+                current_domain, nitter_base = get_nitter_domain_and_url()
+            except ImportError:
+                current_domain = "185.207.1.206:8085"
+                nitter_base = "http://185.207.1.206:8085"
+            url = f"{nitter_base}/{username}"
             timeout = self.monitor_settings['request_timeout']
             
             # Создаем коннектор с прокси (если нужен)
@@ -499,7 +521,8 @@ class VipTwitterMonitor:
                 # Получаем динамические cookies через новую систему
                 dynamic_proxy, cookies_string = await self.get_next_cookie_async(session)
                 
-                if not cookies_string:
+                # Для IP-адресов Nitter cookies не нужны (пустая строка - это нормально)
+                if cookies_string is None:
                     logger.error(f"❌ Не удалось получить cookies для @{username}")
                     return contracts_found
                 
@@ -524,6 +547,10 @@ class VipTwitterMonitor:
                     'Connection': 'keep-alive',
                     'Upgrade-Insecure-Requests': '1'
                 }
+                
+                # Добавляем заголовок Host для специальных IP-адресов
+                from duplicate_groups_manager import add_host_header_if_needed
+                add_host_header_if_needed(headers, current_domain)
                 
                 # Параметры для запроса
                 request_kwargs = {
