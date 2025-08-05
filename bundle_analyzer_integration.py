@@ -36,8 +36,6 @@ class JupiterTokenListener:
             # Правильный URL Jupiter WebSocket из pump_bot.py
             jupiter_ws_url = "wss://trench-stream.jup.ag/ws"
             
-            logger.info("🔗 Подключаемся к Jupiter WebSocket...")
-            
             # Создаем SSL контекст для Jupiter (как в pump_bot.py)
             ssl_context = ssl.create_default_context()
             ssl_context.check_hostname = False
@@ -53,14 +51,13 @@ class JupiterTokenListener:
             # Определяем параметры подключения в зависимости от версии websockets
             import websockets
             websockets_version = websockets.__version__
-            logger.info(f"🔧 Используется websockets версия: {websockets_version}")
             
-            # Универсальные параметры подключения
+            # Универсальные параметры подключения с улучшенными настройками
             connect_params = {
                 "ssl": ssl_context,
                 "close_timeout": 15,
                 "max_size": 10**7,
-                "max_queue": 32
+                "max_queue": 32,
             }
             
             # Добавляем заголовки в зависимости от версии
@@ -74,12 +71,10 @@ class JupiterTokenListener:
             # Подключаемся к Jupiter
             self.websocket = await websockets.connect(jupiter_ws_url, **connect_params)
             
-            logger.info("✅ Успешно подключились к Jupiter")
-            
             # Подписываемся на recent обновления (как в pump_bot.py)
             recent_msg = {"type": "subscribe:recent"}
             await self.websocket.send(json.dumps(recent_msg))
-            logger.info("✅ Подписались на recent обновления")
+            logger.debug("✅ Подписались на recent обновления")
             
             await asyncio.sleep(1)
             
@@ -92,18 +87,24 @@ class JupiterTokenListener:
                 ]
             }
             await self.websocket.send(json.dumps(pools_msg_1))
-            logger.info("✅ Подписались на первую группу пулов")
+            logger.debug("✅ Подписались на первую группу пулов")
             
             return True
             
         except Exception as e:
-            logger.error(f"❌ Ошибка подключения к Jupiter: {e}")
+            logger.debug(f"❌ Ошибка подключения к Jupiter: {e}")
+            if hasattr(self, 'websocket') and self.websocket:
+                try:
+                    await self.websocket.close()
+                except:
+                    pass
+                self.websocket = None
             return False
     
     async def listen_for_new_tokens(self):
         """Слушаем новые токены из Jupiter"""
         try:
-            while self.running:
+            while self.running and self.websocket:
                 try:
                     # Получаем сообщение от Jupiter WebSocket
                     message = await asyncio.wait_for(self.websocket.recv(), timeout=30)
@@ -121,11 +122,27 @@ class JupiterTokenListener:
                 except websockets.exceptions.ConnectionClosed:
                     logger.warning("🔌 Jupiter WebSocket соединение закрыто")
                     break
+                except websockets.exceptions.InvalidURI:
+                    logger.error("❌ Неверный URI Jupiter WebSocket")
+                    break
+                except websockets.exceptions.InvalidHandshake:
+                    logger.error("❌ Ошибка handshake с Jupiter WebSocket")
+                    break
                 except Exception as e:
                     logger.error(f"❌ Ошибка обработки сообщения Jupiter: {e}")
+                    # При неизвестной ошибке тоже прерываем цикл для переподключения
+                    break
                     
         except Exception as e:
-            logger.error(f"❌ Ошибка в основном цикле Jupiter: {e}")
+            logger.error(f"❌ Критическая ошибка в основном цикле Jupiter: {e}")
+        finally:
+            # Закрываем соединение при выходе из цикла
+            if hasattr(self, 'websocket') and self.websocket:
+                try:
+                    await self.websocket.close()
+                except:
+                    pass
+                self.websocket = None
     
     async def parse_jupiter_message(self, message: str) -> Optional[dict]:
         """Парсим сообщение от Jupiter (логика из pump_bot.py)"""
@@ -155,7 +172,7 @@ class JupiterTokenListener:
                             'dex_source': pool_data.get('dex', 'Jupiter'),
                             'pool_type': pool_data.get('type', 'Unknown'),
                             'market_cap': base_asset.get('marketCap', 0),
-                            'created_timestamp': pool_data.get('createdTimestamp'),
+                            'created_timestamp': pool_data.get('createdAt'),
                             'address': base_asset.get('id')  # Дублируем для совместимости
                         }
 
@@ -176,17 +193,51 @@ class JupiterTokenListener:
             return None
     
     async def start(self):
-        """Запускаем слушатель Jupiter"""
+        """Запускаем слушатель Jupiter с автоматическим переподключением"""
         self.running = True
         
-        if await self.connect_to_jupiter():
-            await self.listen_for_new_tokens()
+        retry_count = 0
+        max_retries = float('inf')  # Бесконечные попытки переподключения
+        
+        while self.running:
+            try:
+                retry_count += 1
+                logger.info(f"🔗 Подключаемся к Jupiter WebSocket (попытка {retry_count})...")
+                
+                if await self.connect_to_jupiter():
+                    logger.info("✅ Успешно подключились к Jupiter")
+                    retry_count = 0  # Сбрасываем счетчик при успешном подключении
+                    
+                    await self.listen_for_new_tokens()
+                    
+                    # Если мы здесь, значит соединение было разорвано
+                    logger.warning("🔌 Jupiter WebSocket соединение разорвано, переподключаемся...")
+                    
+                else:
+                    logger.error("❌ Не удалось подключиться к Jupiter")
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка подключения к Jupiter: {e}")
+            
+            if self.running:
+                # Фиксированная задержка перед переподключением
+                wait_time = 5  # 5 секунд между попытками
+                logger.info(f"⏱️ Ждем {wait_time} секунд перед переподключением...")
+                await asyncio.sleep(wait_time)
     
     async def stop(self):
         """Останавливаем слушатель Jupiter"""
+        logger.info("🛑 Останавливаем Jupiter WebSocket слушатель...")
         self.running = False
-        if self.websocket:
-            await self.websocket.close()
+        
+        if hasattr(self, 'websocket') and self.websocket:
+            try:
+                await self.websocket.close()
+                logger.info("✅ Jupiter WebSocket соединение закрыто")
+            except Exception as e:
+                logger.debug(f"Ошибка при закрытии WebSocket: {e}")
+            finally:
+                self.websocket = None
 
 class PumpFunTokenListener:
     """Альтернативный слушатель для pump.fun (если Jupiter недоступен)"""

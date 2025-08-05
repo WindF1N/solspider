@@ -73,7 +73,7 @@ def save_results(contracts, output_file):
 
 def main():
     log_file = 'bundle_analyzer.log'
-    output_file = 'output.txt'
+    output_file = 'output2.txt'
     
     print("🔍 Анализируем лог-файл...")
     active_contracts = analyze_log(log_file)

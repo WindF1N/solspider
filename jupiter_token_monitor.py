@@ -543,7 +543,7 @@ async def main():
                 logger.error(f"❌ Ошибка подключения (попытка {retry_count}): {e}")
                 
                 if retry_count < max_retries:
-                    wait_time = min(2 ** retry_count, 60)  # Экспоненциальная задержка
+                    wait_time = 5  # Фиксированная задержка 5 секунд
                     logger.info(f"⏱️ Ждем {wait_time} секунд перед переподключением...")
                     await asyncio.sleep(wait_time)
                 else:
