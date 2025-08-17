@@ -173,7 +173,8 @@ class JupiterTokenListener:
                             'pool_type': pool_data.get('type', 'Unknown'),
                             'market_cap': base_asset.get('marketCap', 0),
                             'created_timestamp': pool_data.get('createdAt'),
-                            'address': base_asset.get('id')  # Дублируем для совместимости
+                            'address': base_asset.get('id'),  # Дублируем для совместимости
+                            'dev_address': base_asset.get('dev')  # Сохраняем адрес разработчика
                         }
 
                         logger.info(f"Дата сет токена Jupiter: {update}")

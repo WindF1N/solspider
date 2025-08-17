@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
 """
-Скрипт для анализа логов bundle_analyzer и выявления активных контрактов
+Скрипт для анализа логов из папки tokens_logs и выявления активных контрактов
 """
 
 import re
+import os
 from collections import defaultdict
 import ast
 
 def extract_contract_from_jupiter(line):
     """Извлекает адрес контракта из записи о Jupiter"""
     try:
-        # Находим словарь Python в строке после 'Дата сет токена Jupiter: '
-        dict_str = line.split('Дата сет токена Jupiter: ')[1].strip()
-        # Используем ast.literal_eval для безопасного преобразования строки в словарь
-        data = ast.literal_eval(dict_str)
         
-        if data['type'] == 'new' and 'pool' in data:
-            return data['pool']['baseAsset']['id']
+        return line.split('/')[-2].strip()
     except Exception as e:
         print(f"Ошибка при обработке строки Jupiter: {e}")
     return None
@@ -36,7 +32,7 @@ def analyze_log(log_file):
     with open(log_file, 'r', encoding='utf-8') as f:
         for line in f:
             # Проверяем записи Jupiter
-            if 'Дата сет токена Jupiter:' in line:
+            if '📡 Top holders путь: /holders/chains/SOLANA/tokenAddress/' in line:
                 contract = extract_contract_from_jupiter(line)
                 if contract:
                     short_id = contract[:8]
@@ -71,27 +67,65 @@ def save_results(contracts, output_file):
             f.write(f"{contract} (метрик: {count})\n")
             f.write(f"Axiom: {axiom_link}\n\n")
 
+def process_logs_directory():
+    """Обрабатывает все лог-файлы в директории tokens_logs"""
+    logs_dir = 'tokens_logs'
+    combined_contracts = {}
+    
+    # Проверяем существование директории
+    if not os.path.exists(logs_dir):
+        print(f"❌ Директория {logs_dir} не найдена")
+        return
+    
+    # Получаем список всех файлов .log в директории
+    log_files = [f for f in os.listdir(logs_dir) if f.endswith('.log')]
+    
+    if not log_files:
+        print(f"❌ Лог-файлы не найдены в директории {logs_dir}")
+        return
+    
+    print(f"🔍 Найдено {len(log_files)} лог-файлов для анализа")
+    
+    # Обрабатываем каждый файл
+    for log_file in log_files:
+        full_path = os.path.join(logs_dir, log_file)
+        print(f"\nАнализируем файл: {log_file}")
+        
+        file_contracts = analyze_log(full_path)
+        
+        # Объединяем результаты
+        for contract, data in file_contracts.items():
+            if contract not in combined_contracts:
+                combined_contracts[contract] = data
+            else:
+                # Если контракт уже существует, суммируем количество метрик
+                combined_contracts[contract]['count'] += data['count']
+    
+    return combined_contracts
+
 def main():
-    log_file = 'bundle_analyzer.log'
     output_file = 'output2.txt'
     
-    print("🔍 Анализируем лог-файл...")
-    active_contracts = analyze_log(log_file)
+    print("🔍 Начинаем анализ лог-файлов...")
+    active_contracts = process_logs_directory()
+    
+    if not active_contracts:
+        print("❌ Нет данных для сохранения")
+        return
     
     print(f"✅ Найдено {len(active_contracts)} активных контрактов")
     save_results(active_contracts, output_file)
     print(f"💾 Результаты сохранены в {output_file}")
     
     # Выводим статистику
-    if active_contracts:
-        counts = [data['count'] for data in active_contracts.values()]
-        max_metrics = max(counts)
-        min_metrics = min(counts)
-        avg_metrics = sum(counts) / len(counts)
-        print(f"\n📊 Статистика:")
-        print(f"  Максимум метрик: {max_metrics}")
-        print(f"  Минимум метрик: {min_metrics}")
-        print(f"  Среднее метрик: {avg_metrics:.1f}")
+    counts = [data['count'] for data in active_contracts.values()]
+    max_metrics = max(counts)
+    min_metrics = min(counts)
+    avg_metrics = sum(counts) / len(counts)
+    print(f"\n📊 Статистика:")
+    print(f"  Максимум метрик: {max_metrics}")
+    print(f"  Минимум метрик: {min_metrics}")
+    print(f"  Среднее метрик: {avg_metrics:.1f}")
 
 if __name__ == "__main__":
     main() 

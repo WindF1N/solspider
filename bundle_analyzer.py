@@ -27,6 +27,33 @@ from dotenv import load_dotenv
 # Загружаем переменные окружения из .env файла
 load_dotenv()
 
+# Глобальный черный список для токенов, помеченных как "гениальные раги"
+GENIUS_RUG_BLACKLIST = set()
+BLACKLIST_FILE = "genius_rug_blacklist.txt"
+
+def load_blacklist():
+    """Загружает черный список из файла"""
+    global GENIUS_RUG_BLACKLIST
+    try:
+        if os.path.exists(BLACKLIST_FILE):
+            with open(BLACKLIST_FILE, 'r') as f:
+                GENIUS_RUG_BLACKLIST = set(line.strip() for line in f if line.strip())
+            print(f"📥 Загружен черный список: {len(GENIUS_RUG_BLACKLIST)} токенов")
+    except Exception as e:
+        print(f"❌ Ошибка загрузки черного списка: {e}")
+
+def save_blacklist():
+    """Сохраняет черный список в файл"""
+    try:
+        with open(BLACKLIST_FILE, 'w') as f:
+            for token in sorted(GENIUS_RUG_BLACKLIST):
+                f.write(f"{token}\n")
+    except Exception as e:
+        print(f"❌ Ошибка сохранения черного списка: {e}")
+
+# Загружаем черный список при запуске
+load_blacklist()
+
 # Добавляем путь к pump_bot для импорта функций
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -546,6 +573,7 @@ class TokenMetrics:
         self.dev_exit_time = None
         self.last_notification_time = 0
         self.last_notification_type = None  # Тип последнего уведомления
+        self.holder_percentages_history = []  # История процентов холдеров для анализа паттернов
         
         # Создаем индивидуальный логгер для этого токена
         self.logger = get_token_logger(token_address)
@@ -618,6 +646,54 @@ class TokenMetrics:
         if total_holders > self.max_holders:
             self.max_holders = total_holders
             self.logger.info(f"📈 Новый максимум холдеров: {total_holders}")
+        
+        # Сохраняем историю процентов холдеров для анализа паттернов
+        top10holders = metrics.get("top10holders", {})
+        if top10holders and len(top10holders) >= 3:
+            # Сортируем холдеров по убыванию процента
+            sorted_holders = sorted(
+                top10holders.items(),
+                key=lambda item: item[1]['pcnt'],
+                reverse=True
+            )
+            
+            # Получаем адрес разработчика для исключения
+            dev_address = None
+            base_token_audit = metrics.get('baseTokenAudit', {})
+            if base_token_audit:
+                dev_address = base_token_audit.get('deployerAddress')
+            
+            # Извлекаем проценты только чистых холдеров (не пулы, не бандлеры, не инсайдеры, не дев)
+            # И считаем сколько среди топ-3 снайперов
+            current_percentages = []
+            top3_snipers_count = 0
+            
+            for wallet, value in sorted_holders:
+                is_dev = dev_address and wallet == dev_address
+                if (not value.get('isPool', False) and 
+                    not value.get('isBundler', False) and 
+                    not value.get('insider', False) and 
+                    not is_dev):
+                    current_percentages.append(value['pcnt'])
+                    
+                    # Считаем снайперов в топ-3
+                    if len(current_percentages) <= 3 and value.get('isSniper', False):
+                        top3_snipers_count += 1
+                    
+                    if len(current_percentages) >= 10:  # Берем топ-10
+                        break
+            
+            if len(current_percentages) >= 3:
+                # Сохраняем проценты + информацию о снайперах в топ-3
+                snapshot_data = {
+                    'percentages': current_percentages,
+                    'top3_snipers': top3_snipers_count,
+                    'total_snipers_percent': float(metrics.get('snipersHoldingPcnt', 0) or 0)
+                }
+                self.holder_percentages_history.append(snapshot_data)
+                # Ограничиваем историю последними 1000 снапшотами
+                if len(self.holder_percentages_history) > 1000:
+                    self.holder_percentages_history = self.holder_percentages_history[-1000:]
         
         # Добавляем новые метрики
         self.metrics_history.append(metrics.copy())  # Используем copy() чтобы избежать ссылок
@@ -695,12 +771,12 @@ class TokenMetrics:
         # Получаем последнее значение снайперов
         curr_snipers = float(self.metrics_history[-1].get('snipersHoldingPcnt', 0) or 0)
         
-        # Если снайперы вышли (<=3.5%) - это хороший признак
-        if curr_snipers <= 3.5 or curr_snipers <= 8.0 and self.check_rapid_exit('snipersHoldingPcnt', ratio=2.5, max_seconds=120):
+        # Если снайперы вышли (<=1.5%) - это хороший признак
+        if curr_snipers <= 3.5 or curr_snipers <= 5.0 and self.check_rapid_exit('snipersHoldingPcnt', ratio=3, max_seconds=120):
             self.logger.info("✅ Снайперы вышли, но бандлеры остались - бандлеры не являются снайперами")
             return True
             
-        # Если снайперы еще не вышли (>3.5%), проверяем корреляцию
+        # Если снайперы еще не вышли (>1.5%), проверяем корреляцию
         bundlers_changes = []
         snipers_changes = []
         
@@ -752,7 +828,7 @@ class TokenMetrics:
             return True
             
         curr_snipers = float(self.metrics_history[-1].get('snipersHoldingPcnt', 0) or 0)
-        if curr_snipers <= 3.5 or curr_snipers <= 8.0 and self.check_rapid_exit('snipersHoldingPcnt', ratio=2.5, max_seconds=120):
+        if curr_snipers <= 3.5 or curr_snipers <= 5.0 and self.check_rapid_exit('snipersHoldingPcnt', ratio=3, max_seconds=120):
             self.logger.info("✅ Снайперы вышли, но инсайдеры остались")
             return True
             
@@ -796,7 +872,7 @@ class TokenMetrics:
             return True
             
         curr_snipers = float(self.metrics_history[-1].get('snipersHoldingPcnt', 0) or 0)
-        if curr_snipers <= 3.5 or curr_snipers <= 8.0 and self.check_rapid_exit('snipersHoldingPcnt', ratio=2.5, max_seconds=120):
+        if curr_snipers <= 3.5 or curr_snipers <= 5.0 and self.check_rapid_exit('snipersHoldingPcnt', ratio=3, max_seconds=120):
             self.logger.info("✅ Снайперы вышли, но бандлеры остались")
             return True
             
@@ -848,9 +924,9 @@ class TokenMetrics:
             return True
         
         # Лимитируем количество данных для анализа
-        if len(self.metrics_history) > 50:
-            self.logger.debug("📊 Лимитируем анализ последними 50 метриками")
-            metrics_to_analyze = self.metrics_history[-50:]
+        if len(self.metrics_history) > 1000:
+            self.logger.debug("📊 Лимитируем анализ последними 1000 метриками")
+            metrics_to_analyze = self.metrics_history[-1000:]
         else:
             metrics_to_analyze = self.metrics_history
         
@@ -861,20 +937,32 @@ class TokenMetrics:
         wallet_entry_times = {}  # {wallet: first_seen_timestamp}
         wallet_holdings_history = {}  # {wallet: [(timestamp, pcnt), ...]}
         
+        # Получаем адрес разработчика для исключения
+        dev_address = None
+        if len(metrics_to_analyze) > 0:
+            first_metrics = metrics_to_analyze[0]
+            base_token_audit = first_metrics.get('baseTokenAudit', {})
+            if base_token_audit:
+                dev_address = base_token_audit.get('deployerAddress')
+        
         # Собираем все кошельки за ограниченный период и отслеживаем время входа
         for i, metrics in enumerate(metrics_to_analyze):
             timestamp = metrics.get('timestamp', int(time.time()))
             top10holders = metrics.get('top10holders', {})
             
             for wallet, holder_info in top10holders.items():
-                # Исключаем пулы, бандлеров и инсайдеров
-                if not holder_info.get('isPool', False) and not holder_info.get('isBundler', False) and not holder_info.get('insider', False):
+                # Исключаем пулы, бандлеров, инсайдеров и разработчика
+                is_dev = dev_address and wallet == dev_address
+                if (not holder_info.get('isPool', False) and 
+                    not holder_info.get('isBundler', False) and 
+                    not holder_info.get('insider', False) and 
+                    not is_dev):
                     all_wallets.add(wallet)
                     
                     # Записываем время первого появления
                     if wallet not in wallet_entry_times:
                         wallet_entry_times[wallet] = timestamp
-                        self.logger.debug(f"🕐 Первое появление кошелька {wallet[:8]}... с {holder_info.get('pcnt', 0):.3f}%")
+                        self.logger.debug(f"🕐 Первое появление чистого кошелька {wallet[:8]}... с {holder_info.get('pcnt', 0):.3f}%")
                     
                     # Ведем историю владения
                     if wallet not in wallet_holdings_history:
@@ -1065,10 +1153,10 @@ class TokenMetrics:
             self.logger.warning(f"({self.token_address[:8]}...) 🔴 ВЫСОКИЙ РИСК: Ранние холдеры коррелируют и есть массовые продажи!")
         
         # СРЕДНИЙ уровень - только массовые продажи или только коррелированные ранние холдеры или высокий % ранних холдеров
-        elif total_mass_sell_events >= 3 or total_early_holder_patterns >= 2 or early_holders_total_percent > 10:
+        elif total_mass_sell_events >= 3 or total_early_holder_patterns >= 2 or early_holders_total_percent > 30:
             is_suspicious = True
             risk_level = "СРЕДНИЙ"
-            if early_holders_total_percent > 10:
+            if early_holders_total_percent > 30:
                 self.logger.warning(f"({self.token_address[:8]}...) 🟡 СРЕДНИЙ РИСК: Ранние холдеры держат слишком много ({early_holders_total_percent:.2f}% > 10%)")
             else:
                 self.logger.warning(f"({self.token_address[:8]}...) 🟡 СРЕДНИЙ РИСК: Много массовых продаж или коррелированных ранних холдеров")
@@ -1366,7 +1454,7 @@ class PadreWebSocketClient:
         """Отправляем аутентификационное сообщение"""
         try:
             # Декодируем первое сообщение от клиента для аутентификации
-            auth_message_b64 = "kwHaAyZleUpoYkdjaU9pSlNVekkxTmlJc0ltdHBaQ0k2SWprMU1XUmtaVGt6TW1WaVlXTmtPRGhoWm1Jd01ETTNZbVpsWkRobU5qSmlNRGRtTURnMk5tSWlMQ0owZVhBaU9pSktWMVFpZlEuZXlKdVlXMWxJam9pZDI5eWEyVnlNVEF3TUhnaUxDSm9ZWFYwYUNJNmRISjFaU3dpYVhOeklqb2lhSFIwY0hNNkx5OXpaV04xY21WMGIydGxiaTVuYjI5bmJHVXVZMjl0TDNCaFpISmxMVFF4TnpBeU1DSXNJbUYxWkNJNkluQmhaSEpsTFRReE56QXlNQ0lzSW1GMWRHaGZkR2x0WlNJNk1UYzFNems1TkRNNU1Dd2lkWE5sY2w5cFpDSTZJblJuWHpjNE9URTFNalF5TkRRaUxDSnpkV0lpT2lKMFoxODNPRGt4TlRJME1qUTBJaXdpYVdGMElqb3hOelUwTXpneE56VXhMQ0psZUhBaU9qRTNOVFF6T0RVek5URXNJbVpwY21WaVlYTmxJanA3SW1sa1pXNTBhWFJwWlhNaU9udDlMQ0p6YVdkdVgybHVYM0J5YjNacFpHVnlJam9pWTNWemRHOXRJbjE5LmFaZGcyeTZGN2VkWm5ydTBrZnZBMHlqdmhoZWk5cU9JUl9XX2JicU9tUnRzc1FJWGZ2WjF3cVNfQnNrNHBJUGtLQWFLYzJBRlNEYlMxUHpza0xodk1Ic2RQWllwajJRSHhybUN5NDZlbTYyR0dtemQ1LUFPQVdtTW5sWllQUVJPMkh5a24wVkpsSFJZcE00N3IxbmR4Q0cySXF5RlE1cm5vSWhzdlpvRWM3Qk91bWlOMjhrNEFscy12YzZUUFVVM3pqOW9MaG5DODhhVjF1SWVDNkpXeC1WSUZRNF9rTUctaWV2b3NMckJwWGJUb2d5QkdLSDFZeFlTUm93VjZmZ2pLSzNiX1BQeXVqU1NuRDgwSVNENEJzblgyNEdjQ195dzlEWlFjSFNsWnNWcWpFWDVtNXNmQ0VldlFBQ29VR2VQeUNkWWV0SVQ2SkNNb0pIV3BkT0ZKUa05MjNhMzU4MC05NjBl"
+            auth_message_b64 = "kwHaAyZleUpoYkdjaU9pSlNVekkxTmlJc0ltdHBaQ0k2SWpVM1ltWmlNbUV4TVdSa1ptWmpNR0ZrTW1VMk9ERTBZelk0TnpZellqaGpOamczTlRneFpEZ2lMQ0owZVhBaU9pSktWMVFpZlEuZXlKdVlXMWxJam9pZDI5eWEyVnlNVEF3TUhnaUxDSm9ZWFYwYUNJNmRISjFaU3dpYVhOeklqb2lhSFIwY0hNNkx5OXpaV04xY21WMGIydGxiaTVuYjI5bmJHVXVZMjl0TDNCaFpISmxMVFF4TnpBeU1DSXNJbUYxWkNJNkluQmhaSEpsTFRReE56QXlNQ0lzSW1GMWRHaGZkR2x0WlNJNk1UYzFNems1TkRNNU1Dd2lkWE5sY2w5cFpDSTZJblJuWHpjNE9URTFNalF5TkRRaUxDSnpkV0lpT2lKMFoxODNPRGt4TlRJME1qUTBJaXdpYVdGMElqb3hOelUxTkRJNU1EVTFMQ0psZUhBaU9qRTNOVFUwTXpJMk5UVXNJbVpwY21WaVlYTmxJanA3SW1sa1pXNTBhWFJwWlhNaU9udDlMQ0p6YVdkdVgybHVYM0J5YjNacFpHVnlJam9pWTNWemRHOXRJbjE5LlRXbU5KRTNYTHdoSTlVNjR0UU92ZzI0LXFnb0pOWnZYWGY1cUFCQ0F0akkzOTNRbVpHdXVlRk9pYzlESF9DNERCQkZ2VXJlTC1Vb25BOWFqcGotek5IS0NWLVpsbzRCUEdnSlBkOHJ1dUMwTmI5OXpIazNsaWJOTXhaZWlqVXFZbng3LXlfMzN3V1hoaFp4TGtmR3Uxb3dJanJpUWZPTkM1QWpmTklvMk52Y0RndGxCX1B0ZE02N2JtNkZybU1CZmhnWkZvMjZjVjlFVXA2V2pCRHVSNU5faXU5RUZRYm1LdjFSWi1uZW03d1FNSDNaZUJ3YjFQQTNoanpjR1l2dF9raVRDOENEZ3NqNkFPcXBKZ2hqZlhhdFFDY1dhVzdhbUQ5QTBZb0hVTGtXd211Nnl1cnBZRXJtYlpTS3hHd2pFRlh2cmM2Z2k5NUlGN2hUdTVubEd3d61hY2U1NWFmNi01ZGYx"
             auth_bytes = base64.b64decode(auth_message_b64)
             
             # Отправляем как бинарные данные (Binary Message)
@@ -1528,8 +1616,26 @@ class PadreWebSocketClient:
                     
         except websockets.exceptions.ConnectionClosed:
             self.logger.warning("🔌 WebSocket соединение закрыто")
+        except websockets.exceptions.ConnectionClosedError as e:
+            self.logger.warning(f"🔌 WebSocket соединение неожиданно закрыто: {e}")
+        except websockets.exceptions.ConnectionClosedOK:
+            self.logger.info("✅ WebSocket соединение корректно закрыто")
+        except AttributeError as e:
+            if "'NoneType' object has no attribute 'resume_reading'" in str(e):
+                self.logger.warning("🔄 Проблема с SSL транспортом - переподключаемся")
+                # Закрываем текущее соединение
+                if self.websocket:
+                    try:
+                        await self.websocket.close()
+                    except:
+                        pass
+                    self.websocket = None
+            else:
+                self.logger.error(f"❌ AttributeError: {e}")
         except Exception as e:
-            self.logger.error(f"❌ Ошибка при получении данных: {e}")
+            self.logger.error(f"❌ Неожиданная ошибка при получении данных: {e}")
+            import traceback
+            self.logger.error(f"📋 Traceback: {traceback.format_exc()}")
     
     def is_markets_per_token_response(self, data: dict) -> bool:
         """Проверяет, является ли сообщение ответом markets-per-token"""
@@ -1638,6 +1744,91 @@ class PadreWebSocketClient:
         except (ValueError, TypeError):
             return f"{default:{format_spec}}"
     
+    def format_top_holders_for_log(self, top10holders: dict, max_holders: int = 10) -> str:
+        """Форматирует список топ-холдеров для отображения в логах"""
+        try:
+            if not top10holders:
+                return "Данные недоступны"
+            
+            # Получаем адрес разработчика
+            dev_address = None
+            if hasattr(self, 'initial_token_data') and self.initial_token_data:
+                dev_address = self.initial_token_data.get('dev_address')
+            if not dev_address and hasattr(self, 'token_data_cache') and self.current_token_address in self.token_data_cache:
+                base_token_audit = self.token_data_cache[self.current_token_address].get('baseTokenAudit', {})
+                dev_address = base_token_audit.get('deployerAddress')
+            
+            # Фильтруем холдеров: исключаем девов, бандлеров, инсайдеров и пулы
+            clean_holders = {}
+            excluded_holders = {}
+            
+            for wallet_address, holder_info in top10holders.items():
+                is_bundler = holder_info.get('isBundler', False)
+                is_insider = holder_info.get('insider', False)
+                is_pool = holder_info.get('isPool', False)
+                is_dev = dev_address and wallet_address == dev_address
+                
+                if is_dev or is_bundler or is_insider or is_pool:
+                    excluded_holders[wallet_address] = holder_info
+                else:
+                    clean_holders[wallet_address] = holder_info
+            
+            # Сортируем чистых холдеров по проценту (по убыванию)
+            sorted_clean_holders = sorted(
+                clean_holders.items(), 
+                key=lambda x: x[1].get('pcnt', 0), 
+                reverse=True
+            )[:max_holders]
+            
+            # Сортируем исключенных холдеров по проценту (по убыванию)
+            sorted_excluded_holders = sorted(
+                excluded_holders.items(), 
+                key=lambda x: x[1].get('pcnt', 0), 
+                reverse=True
+            )
+            
+            result_lines = []
+            
+            # Добавляем чистых холдеров
+            if sorted_clean_holders:
+                result_lines.append("ТОП ЧИСТЫЕ ХОЛДЕРЫ:")
+                for i, (wallet_address, holder_info) in enumerate(sorted_clean_holders, 1):
+                    pcnt = holder_info.get('pcnt', 0)
+                    short_address = f"{wallet_address[:8]}...{wallet_address[-4:]}"
+                    result_lines.append(f"  {i}. {short_address} - {self.safe_format(pcnt, '.2f')}%")
+            else:
+                result_lines.append("ТОП ЧИСТЫЕ ХОЛДЕРЫ: Нет данных")
+            
+            # Добавляем исключенных холдеров для информации
+            if sorted_excluded_holders:
+                result_lines.append("\nИСКЛЮЧЕНЫ (DEV/BUNDLER/INSIDER/POOL):")
+                for i, (wallet_address, holder_info) in enumerate(sorted_excluded_holders[:5], 1):  # Показываем только первых 5
+                    pcnt = holder_info.get('pcnt', 0)
+                    is_bundler = holder_info.get('isBundler', False)
+                    is_insider = holder_info.get('insider', False)
+                    is_pool = holder_info.get('isPool', False)
+                    is_dev = dev_address and wallet_address == dev_address
+                    
+                    tags = []
+                    if is_dev:
+                        tags.append("DEV")
+                    if is_pool:
+                        tags.append("Pool")
+                    if is_bundler:
+                        tags.append("Bundler")
+                    if is_insider:
+                        tags.append("Insider")
+                    
+                    tag_str = f" [{', '.join(tags)}]"
+                    short_address = f"{wallet_address[:8]}...{wallet_address[-4:]}"
+                    result_lines.append(f"  {i}. {short_address} - {self.safe_format(pcnt, '.2f')}%{tag_str}")
+            
+            return "\n".join(result_lines)
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка форматирования списка холдеров для лога: {e}")
+            return "Ошибка загрузки данных"
+    
     async def process_fast_stats_data(self, data: dict):
         """Обрабатываем данные fast-stats для извлечения информации о бандлерах"""
         try:
@@ -1680,6 +1871,27 @@ class PadreWebSocketClient:
                             self.logger.warning(f"⭐️ Токен {token_address[:8]} прошёл миграцию")
                             return
 
+                        # Получаем dev_address из Jupiter данных
+                        dev_address_from_jupiter = None
+                        if hasattr(self, 'initial_token_data') and self.initial_token_data:
+                            dev_address_from_jupiter = self.initial_token_data.get('dev_address')
+                        
+                        # Создаем baseTokenAudit только с адресом разработчика из Jupiter
+                        base_audit = {
+                            'chain': 'SOLANA',
+                            'tokenAddress': token_address
+                        }
+                        if dev_address_from_jupiter:
+                            base_audit['deployerAddress'] = dev_address_from_jupiter
+                            self.logger.info(f"📊 Установлен адрес разработчика из Jupiter: {dev_address_from_jupiter[:8]}...")
+                        
+                        # Дополняем данными из snapshot если есть, но без deployerAddress
+                        snapshot_audit = snapshot.get('baseTokenAudit')
+                        if snapshot_audit and isinstance(snapshot_audit, dict):
+                            for key, value in snapshot_audit.items():
+                                if key != 'deployerAddress':  # Исключаем deployerAddress из snapshot
+                                    base_audit[key] = value
+                        
                         # Сохраняем базовые данные из snapshot
                         self.token_data_cache[token_address] = {
                             'timestamp': int(time.time()),  # Добавляем timestamp
@@ -1702,13 +1914,27 @@ class PadreWebSocketClient:
                             'totalTokenBoughtInBundles': 0,
                             'totalSolFees': 0,
                             'snipersHoldingPcnt': 0,
-                            'baseTokenAudit': snapshot.get('baseTokenAudit', {})  # Сохраняем аудит токена
+                            'baseTokenAudit': base_audit  # Сохраняем аудит токена с адресом разработчика
                         }
                         
-                        # Если есть baseTokenAudit в snapshot, обновляем его
+
+                        
+                        # Если есть baseTokenAudit в snapshot, обновляем только нужные поля, сохраняя адрес разработчика из Jupiter
                         if 'baseTokenAudit' in snapshot:
-                            self.token_data_cache[token_address]['baseTokenAudit'] = snapshot['baseTokenAudit']
-                            self.logger.info(f"📊 Сохранен аудит токена: {snapshot['baseTokenAudit']}")
+                            snapshot_audit = snapshot['baseTokenAudit']
+                            if snapshot_audit and isinstance(snapshot_audit, dict):
+                                existing_dev_address = self.token_data_cache[token_address]['baseTokenAudit'].get('deployerAddress')
+                                
+                                # Обновляем только поля из snapshot, исключая deployerAddress
+                                for key, value in snapshot_audit.items():
+                                    if key != 'deployerAddress':  # Не перезаписываем deployerAddress из snapshot
+                                        self.token_data_cache[token_address]['baseTokenAudit'][key] = value
+                                
+                                # Убеждаемся что адрес разработчика из Jupiter сохранён
+                                if existing_dev_address:
+                                    self.token_data_cache[token_address]['baseTokenAudit']['deployerAddress'] = existing_dev_address
+                                
+                                self.logger.info(f"📊 Обновлен аудит токена (кроме deployerAddress): {snapshot_audit}")
                         
                         # Обрабатываем метрики для раннего обнаружения
                         await self.process_token_metrics(self.token_data_cache[token_address])
@@ -1722,11 +1948,23 @@ class PadreWebSocketClient:
                         # Добавляем timestamp в update данные
                         update_data['timestamp'] = int(time.time())
                         
-                        # Если есть baseTokenAudit в update, обновляем его
+                        # Если есть baseTokenAudit в update, обновляем только нужные поля, сохраняя адрес разработчика из Jupiter
                         if 'baseTokenAudit' in update_data:
                             if self.current_token_address in self.token_data_cache:
-                                self.token_data_cache[self.current_token_address]['baseTokenAudit'] = update_data['baseTokenAudit']
-                                self.logger.info(f"📊 Обновлен аудит токена: {update_data['baseTokenAudit']}")
+                                update_audit = update_data['baseTokenAudit']
+                                if update_audit and isinstance(update_audit, dict):
+                                    existing_dev_address = self.token_data_cache[self.current_token_address]['baseTokenAudit'].get('deployerAddress')
+                                    
+                                    # Обновляем только поля из update, исключая deployerAddress
+                                    for key, value in update_audit.items():
+                                        if key != 'deployerAddress':  # Не перезаписываем deployerAddress из update
+                                            self.token_data_cache[self.current_token_address]['baseTokenAudit'][key] = value
+                                    
+                                    # Убеждаемся что адрес разработчика из Jupiter сохранён
+                                    if existing_dev_address:
+                                        self.token_data_cache[self.current_token_address]['baseTokenAudit']['deployerAddress'] = existing_dev_address
+                                    
+                                    self.logger.info(f"📊 Обновлен аудит токена (кроме deployerAddress): {update_audit}")
                         
                         if self.current_token_address in self.token_data_cache:
                             # Обновляем существующие данные
@@ -1877,12 +2115,23 @@ class PadreWebSocketClient:
                                 if 'top10holders' in self.token_data_cache[self.current_token_address]:
                                     self.token_data_cache[self.current_token_address]['top10holders'].update(top10holders_pcnt)
                                     self.logger.info(f"📊 Удалены top10holders токена: {update_data['deleted']}")
+                                    updated_holders = self.token_data_cache[self.current_token_address]['top10holders']
+                                    holders_log = self.format_top_holders_for_log(updated_holders)
+                                    self.logger.info(f"📋 {holders_log}")
                                 else:
                                     self.token_data_cache[self.current_token_address]['top10holders'] = top10holders_pcnt
                                     self.logger.info(f"📊 Удалены top10holders токена: {update_data['deleted']}")
+                                    holders_log = self.format_top_holders_for_log(top10holders_pcnt)
+                                    self.logger.info(f"📋 {holders_log}")
 
                         if 'updated' in update_data:
                             if self.current_token_address in self.token_data_cache:
+                                # Получаем адрес разработчика из baseTokenAudit
+                                dev_address = None
+                                base_token_audit = self.token_data_cache[self.current_token_address].get('baseTokenAudit', {})
+                                if base_token_audit:
+                                    dev_address = base_token_audit.get('deployerAddress')
+                                
                                 # Переопределяем пул ликвидности с учетом обновлений
                                 liquidityPoolAddress = self._find_liquidity_pool_from_updates(update_data['updated'], totalSupply, self.current_token_address)
                                 if liquidityPoolAddress:
@@ -1907,22 +2156,31 @@ class PadreWebSocketClient:
                                             self.token_data_cache[self.current_token_address]['liquidityPoolPcnt'] = 0
                                     
                                 for update in update_data['updated']:
+                                    wallet_address = update[1]
+                                    
+                                    # Исключаем кошелек разработчика
+                                    if dev_address and wallet_address == dev_address:
+                                        self.logger.info(f"🚫 Исключен кошелек разработчика из топов: {wallet_address[:8]}...")
+                                        continue
+                                    
                                     # Безопасное преобразование update[2] в число
                                     try:
                                         amount = float(update[2]) if update[2] is not None else 0
                                         pcnt = amount / int(totalSupply) * 100 if amount > 0 else 0
                                     except (ValueError, TypeError, ZeroDivisionError):
-                                        self.logger.warning(f"⚠️ Ошибка преобразования amount={update[2]} для кошелька {update[1]}")
+                                        self.logger.warning(f"⚠️ Ошибка преобразования amount={update[2]} для кошелька {wallet_address}")
                                         pcnt = 0
                                     
-                                    top10holders_pcnt[update[1]] = {
+                                    top10holders_pcnt[wallet_address] = {
                                         'pcnt': pcnt,
                                         'insider': update[4],
                                         'isBundler': update[15],
-                                        'isPool': update[1] in self.LIQUIDITY_POOL_ADDRESSES
+                                        'isPool': wallet_address in self.LIQUIDITY_POOL_ADDRESSES
                                     }
                                 self.token_data_cache[self.current_token_address]['top10holders'] = top10holders_pcnt
-                                self.logger.info(f"📊 Обновлен top10holders токена: {update_data['updated']}")
+                                self.logger.info(f"📊 Обновлен top10holders токена: {len(update_data['updated'])} записей")
+                                holders_log = self.format_top_holders_for_log(top10holders_pcnt)
+                                self.logger.info(f"📋 {holders_log}")
                         
                         if self.current_token_address in self.token_data_cache:
                             # Обновляем существующие данные
@@ -1964,23 +2222,38 @@ class PadreWebSocketClient:
                                     self.token_data_cache[self.current_token_address]['liquidityPoolAddress'] = liquidityPoolAddress
                                 else:
                                     self.logger.warning("⚠️ Пул ликвидности не найден среди холдеров")
+                            # Получаем адрес разработчика из baseTokenAudit
+                            dev_address = None
+                            base_token_audit = self.token_data_cache[self.current_token_address].get('baseTokenAudit', {})
+                            if base_token_audit:
+                                dev_address = base_token_audit.get('deployerAddress')
+                            
                             for entry in snapshot_data['allEntries']:
+                                wallet_address = entry[1]
+                                
+                                # Исключаем кошелек разработчика
+                                if dev_address and wallet_address == dev_address:
+                                    self.logger.info(f"🚫 Исключен кошелек разработчика из топов: {wallet_address[:8]}...")
+                                    continue
+                                
                                 # Безопасное преобразование entry[2] в число
                                 try:
                                     amount = float(entry[2]) if entry[2] is not None else 0
                                     pcnt = amount / int(totalSupply) * 100 if amount > 0 else 0
                                 except (ValueError, TypeError, ZeroDivisionError):
-                                    self.logger.warning(f"⚠️ Ошибка преобразования amount={entry[2]} для кошелька {entry[1]}")
+                                    self.logger.warning(f"⚠️ Ошибка преобразования amount={entry[2]} для кошелька {wallet_address}")
                                     pcnt = 0
                                 
-                                top10holders_pcnt[entry[1]] = {
+                                top10holders_pcnt[wallet_address] = {
                                     'pcnt': pcnt,
                                     'insider': entry[4],
                                     'isBundler': entry[15],
-                                    'isPool': entry[1] in self.LIQUIDITY_POOL_ADDRESSES
+                                    'isPool': wallet_address in self.LIQUIDITY_POOL_ADDRESSES
                                 }
                             self.token_data_cache[self.current_token_address]['top10holders'] = top10holders_pcnt
-                            self.logger.info(f"📊 Создан top10holders токена: {snapshot_data['allEntries']}")
+                            self.logger.info(f"📊 Создан top10holders токена: {len(snapshot_data['allEntries'])} записей")
+                            holders_log = self.format_top_holders_for_log(top10holders_pcnt)
+                            self.logger.info(f"📋 {holders_log}")
                     
                     if self.current_token_address in self.token_data_cache:
                         # Обновляем существующие данные
@@ -2496,25 +2769,51 @@ class PadreWebSocketClient:
             return False
     
     async def start(self):
-        """Запускает клиент"""
+        """Запускает клиент с автоматическим переподключением"""
         self.running = True
         self.start_time = asyncio.get_event_loop().time()  # Записываем время начала
+        max_retries = 3
+        retry_delay = 5
         
         self.logger.info(f"🔗 Запускаем Padre соединение {self.connection_id} для токена {self.token_address[:8]} (макс. {self.max_duration // 60} мин)")
         
-        try:
-            if await self.connect():
-                # Подписываемся на данные токена сразу после аутентификации
-                await self.subscribe_to_token_data(self.token_address)
-                # Начинаем слушать данные
-                await self.listen_for_bundler_data()
-            else:
-                self.logger.error(f"❌ Не удалось подключиться для токена {self.token_address[:8]}")
-        except Exception as e:
-            self.logger.error(f"❌ Ошибка запуска клиента для {self.token_address[:8]}: {e}")
-            if self.websocket:
-                await self.websocket.close()
-                self.websocket = None
+        for attempt in range(max_retries):
+            try:
+                if await self.connect():
+                    # Подписываемся на данные токена сразу после аутентификации
+                    await self.subscribe_to_token_data(self.token_address)
+                    # Начинаем слушать данные
+                    await self.listen_for_bundler_data()
+                    
+                    # Если мы здесь, значит соединение закрылось - пробуем переподключиться
+                    if self.running and not self.is_time_expired():
+                        self.logger.warning(f"🔄 Переподключение {attempt + 1}/{max_retries} для токена {self.token_address[:8]}")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        break  # Время истекло или остановлены вручную
+                else:
+                    self.logger.error(f"❌ Не удалось подключиться для токена {self.token_address[:8]} (попытка {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay)
+                    
+            except Exception as e:
+                self.logger.error(f"❌ Ошибка запуска клиента для {self.token_address[:8]} (попытка {attempt + 1}/{max_retries}): {e}")
+                if self.websocket:
+                    try:
+                        await self.websocket.close()
+                    except:
+                        pass
+                    self.websocket = None
+                
+                if attempt < max_retries - 1 and self.running and not self.is_time_expired():
+                    await asyncio.sleep(retry_delay)
+                else:
+                    break
+        
+        self.logger.info(f"🔚 Завершение работы клиента для токена {self.token_address[:8]}")
+    
+    def is_time_expired(self) -> bool:
         """Проверяет истекло ли время соединения"""
         if not self.start_time:
             return False
@@ -2531,6 +2830,242 @@ class PadreWebSocketClient:
         current_time = asyncio.get_event_loop().time()
         elapsed = current_time - self.start_time
         return max(0, self.max_duration - elapsed)
+
+    def analyze_holder_stability(self, percentages_history):
+        """Анализирует паттерны холдеров с учетом типа холдеров (снайперы vs обычные)"""
+        if len(percentages_history) < 20:
+            return False, []
+        
+        suspicious_points = []
+        
+        # Анализируем разные типы подозрительности
+        large_changes = 0  # Большие резкие изменения (>2%)
+        whale_rotations = 0  # Полные замены в топ-3
+        pump_dump_cycles = 0  # Циклы накачки-сброса
+        stable_sniper_periods = 0  # Периоды стабильных топ-снайперов (ПЛОХО!)
+        high_sniper_top3_count = 0  # Много снайперов в топ-3
+        
+        # НОВЫЙ КРИТЕРИЙ: Анализ ранних vs текущих топ-холдеров
+        early_holders_still_dominant = False
+        early_vs_current_analysis = self.analyze_early_vs_current_holders(percentages_history)
+        
+        for i in range(1, len(percentages_history)):
+            # Обрабатываем новую структуру данных
+            prev_data = percentages_history[i-1]
+            curr_data = percentages_history[i]
+            
+            # Извлекаем проценты (совместимость со старым форматом)
+            if isinstance(prev_data, dict):
+                prev_percentages = prev_data['percentages']
+                prev_snipers = prev_data.get('top3_snipers', 0)
+            else:
+                prev_percentages = prev_data  # Старый формат
+                prev_snipers = 0
+                
+            if isinstance(curr_data, dict):
+                curr_percentages = curr_data['percentages']
+                curr_snipers = curr_data.get('top3_snipers', 0)
+            else:
+                curr_percentages = curr_data  # Старый формат
+                curr_snipers = 0
+            
+            if len(prev_percentages) < 3 or len(curr_percentages) < 3:
+                continue
+                
+            prev_top3 = prev_percentages[:3]
+            curr_top3 = curr_percentages[:3]
+            
+            try:
+                prev_values = [float(x) for x in prev_top3]
+                curr_values = [float(x) for x in curr_top3]
+                
+                # 1. БОЛЬШИЕ РЕЗКИЕ ИЗМЕНЕНИЯ (>2% за снапшот)
+                max_change = 0
+                for j in range(min(len(prev_values), len(curr_values))):
+                    change = abs(prev_values[j] - curr_values[j])
+                    max_change = max(max_change, change)
+                    
+                if max_change > 2.0:
+                    large_changes += 1
+                
+                # 2. ПОЛНАЯ РОТАЦИЯ ТОП-3
+                positions_kept = 0
+                for j in range(min(len(prev_values), len(curr_values))):
+                    if abs(prev_values[j] - curr_values[j]) < 0.5:
+                        positions_kept += 1
+                        
+                if positions_kept == 0 and len(prev_values) >= 3:
+                    whale_rotations += 1
+                
+                # 3. PUMP-DUMP ЦИКЛЫ
+                if i >= 2:
+                    prev_prev_data = percentages_history[i-2]
+                    if isinstance(prev_prev_data, dict):
+                        prev_prev_percentages = prev_prev_data['percentages']
+                    else:
+                        prev_prev_percentages = prev_prev_data
+                        
+                    if len(prev_prev_percentages) >= 1:
+                        prev_prev = [float(x) for x in prev_prev_percentages[:3]]
+                        
+                        if len(prev_prev) >= 1 and len(prev_values) >= 1 and len(curr_values) >= 1:
+                            change1 = prev_values[0] - prev_prev[0]
+                            change2 = curr_values[0] - prev_values[0]
+                            
+                            if change1 > 1.5 and change2 < -1.5:
+                                pump_dump_cycles += 1
+                
+                # 4. НОВЫЙ КРИТЕРИЙ: Стабильные топ-снайперы (ПЛОХО!)
+                # Если 2+ снайперов в топ-3 и проценты стабильны = подозрительно
+                if curr_snipers >= 2:
+                    high_sniper_top3_count += 1
+                    
+                    # Если еще и стабильность при этом - очень плохо
+                    if max_change < 0.3:  # Очень стабильные проценты
+                        stable_sniper_periods += 1
+                            
+            except (ValueError, IndexError):
+                continue
+        
+        # ОБНОВЛЕННАЯ ЛОГИКА с учетом снайперов (ослабленная для обычных холдеров)
+        is_suspicious = False
+        
+        # # Критерий 1: Резкие изменения (ослаблено: 20% -> 25%)
+        # large_changes_threshold = len(percentages_history) * 0.25
+        # if large_changes > large_changes_threshold:
+        #     suspicious_points.append(f"Резкие изменения >2%: {large_changes} случаев (>{large_changes_threshold:.0f})")
+        #     is_suspicious = True
+        
+        # # Критерий 2: Ротация топ-3 (ослаблено: 8% -> 15%)
+        # rotation_threshold = len(percentages_history) * 0.15
+        # if whale_rotations > rotation_threshold:
+        #     suspicious_points.append(f"Полная ротация топ-3: {whale_rotations} раз (>{rotation_threshold:.0f})")
+        #     is_suspicious = True
+        
+        # Критерий 3: Pump-dump циклы (ослаблено: 5% -> 10%)
+        pump_dump_threshold = len(percentages_history) * 0.10
+        if pump_dump_cycles > pump_dump_threshold:
+            suspicious_points.append(f"Pump-dump циклы: {pump_dump_cycles} раз (>{pump_dump_threshold:.0f})")
+            is_suspicious = True
+        
+        # Критерий 4: СТРОГИЙ - Стабильные топ-снайперы (оставляем 25% - это важно!)
+        stable_sniper_threshold = len(percentages_history) * 0.25
+        if stable_sniper_periods > stable_sniper_threshold:
+            suspicious_points.append(f"Стабильные топ-снайперы: {stable_sniper_periods} периодов (>{stable_sniper_threshold:.0f})")
+            is_suspicious = True
+            
+        # Критерий 5: СТРОГИЙ - Слишком много снайперов в топ-3 (оставляем 60% - это важно!)
+        high_sniper_threshold = len(percentages_history) * 0.6
+        if high_sniper_top3_count > high_sniper_threshold:
+            suspicious_points.append(f"Много снайперов в топ-3: {high_sniper_top3_count} случаев (>{high_sniper_threshold:.0f})")
+            is_suspicious = True
+        
+        # Критерий 6: НОВЫЙ - Ранние топ-холдеры всё ещё доминируют
+        early_suspicious, early_reasons = early_vs_current_analysis
+        if early_suspicious:
+            suspicious_points.extend(early_reasons)
+            is_suspicious = True
+        
+        return is_suspicious, suspicious_points
+
+    def analyze_early_vs_current_holders(self, percentages_history):
+        """Анализирует: сидят ли ранние топ-3 всё ещё в топе с большими долями"""
+        if len(percentages_history) < 30:
+            return False, []
+        
+        # Берем первые 10-15 снапшотов как "ранние"
+        early_snapshots = percentages_history[:15]
+        # Берем последние 10 снапшотов как "текущие"
+        current_snapshots = percentages_history[-10:]
+        
+        # Находим медианные значения ранних топ-3
+        early_top3_values = []
+        for snapshot in early_snapshots:
+            if isinstance(snapshot, dict):
+                percentages = snapshot['percentages']
+            else:
+                percentages = snapshot
+                
+            if len(percentages) >= 3:
+                try:
+                    top3 = [float(x) for x in percentages[:3]]
+                    early_top3_values.append(top3)
+                except (ValueError, IndexError):
+                    continue
+        
+        # Находим медианные значения текущих топ-3
+        current_top3_values = []
+        for snapshot in current_snapshots:
+            if isinstance(snapshot, dict):
+                percentages = snapshot['percentages']
+            else:
+                percentages = snapshot
+                
+            if len(percentages) >= 3:
+                try:
+                    top3 = [float(x) for x in percentages[:3]]
+                    current_top3_values.append(top3)
+                except (ValueError, IndexError):
+                    continue
+        
+        if not early_top3_values or not current_top3_values:
+            return False, []
+        
+        # Рассчитываем медианы для ранних топ-3
+        early_medians = []
+        for pos in range(3):
+            values = [top3[pos] for top3 in early_top3_values if len(top3) > pos]
+            if values:
+                early_medians.append(sorted(values)[len(values)//2])
+        
+        # Рассчитываем медианы для текущих топ-3
+        current_medians = []
+        for pos in range(3):
+            values = [top3[pos] for top3 in current_top3_values if len(top3) > pos]
+            if values:
+                current_medians.append(sorted(values)[len(values)//2])
+        
+        if len(early_medians) < 3 or len(current_medians) < 3:
+            return False, []
+        
+        suspicious_points = []
+        is_suspicious = False
+        
+        # Критерий 1: Ранние топ-холдеры всё ещё слишком доминируют
+        early_total = sum(early_medians)
+        current_total = sum(current_medians)
+        
+        # Если ранние топ-3 держали >12% и текущие топ-3 всё ещё держат >10%
+        if early_total > 12.0 and current_total > 10.0:
+            # И при этом снижение меньше 20%
+            reduction_percent = ((early_total - current_total) / early_total) * 100
+            if reduction_percent < 20:
+                suspicious_points.append(f"Ранние топ-холдеры доминируют: было {early_total:.1f}%, сейчас {current_total:.1f}% (снижение {reduction_percent:.1f}%)")
+                is_suspicious = True
+        
+        # Критерий 2: Первый холдер всё ещё слишком крупный
+        if early_medians[0] > 6.0 and current_medians[0] > 4.5:
+            reduction = early_medians[0] - current_medians[0]
+            if reduction < 1.5:  # Снизился меньше чем на 1.5%
+                suspicious_points.append(f"Первый холдер остался крупным: было {early_medians[0]:.1f}%, сейчас {current_medians[0]:.1f}%")
+                is_suspicious = True
+        
+        return is_suspicious, suspicious_points
+
+    def is_suspicious_pattern(self, percentages_history):
+        """Определяет подозрительные паттерны торговли (оптимизированно для производительности)"""
+        if not percentages_history or len(percentages_history) < 3:
+            return False, []
+        
+        # Анализируем только последние 1000 снапшотов для максимальной точности
+        # Используем все доступные данные для наиболее точного выявления паттернов
+        analysis_limit = 1000
+        analysis_history = percentages_history[-analysis_limit:] if len(percentages_history) > analysis_limit else percentages_history
+        
+        # Используем анализ стабильности топ-холдеров
+        suspicious, suspicious_reasons = self.analyze_holder_stability(analysis_history)
+        
+        return suspicious, suspicious_reasons
     
     # Известные адреса пулов ликвидности Solana
     LIQUIDITY_POOL_ADDRESSES = {
@@ -2743,6 +3278,12 @@ class PadreWebSocketClient:
                             self.token_data_cache[self.current_token_address]['top10holders'][biggest_holder[0]]['isPool'] = True
                         self.token_data_cache[self.current_token_address]['liquidityPoolAddress'] = biggest_holder[0]
             
+            # Получаем адрес разработчика для исключения
+            dev_address = None
+            base_token_audit = metrics.get('baseTokenAudit', {})
+            if base_token_audit:
+                dev_address = base_token_audit.get('deployerAddress')
+            
             for wallet, value in sorted_holders:
                 if value['isPool']:
                     self.logger.debug(f"🔎 Обнаружена незаполненная ликвидность {wallet} на {value['pcnt']}%")
@@ -2754,6 +3295,9 @@ class PadreWebSocketClient:
                     continue
                 if value['insider']:
                     self.logger.debug(f"⚠️ Обнаружен инсайдер {wallet} среди холдлеров имеющий {value['pcnt']}%")
+                    continue
+                if dev_address and wallet == dev_address:
+                    self.logger.debug(f"🚫 Обнаружен разработчик {wallet} среди холдеров имеющий {value['pcnt']}%")
                     continue
                 if value['pcnt'] > max_holders_pcnt:
                     max_holders_pcnt = value['pcnt']
@@ -2800,19 +3344,20 @@ class PadreWebSocketClient:
             self.logger.info(f"💰 Цена: +${growth['price_growth']:.8f}/мин")
             
             activity_conditions = {
-                'time_ok': (int(time.time()) - metrics.get('marketCreatedAt', 0)) < 240,
+                # 'time_ok': (int(time.time()) - metrics.get('marketCreatedAt', 0)) < 300,
                 # Базовые условия по холдерам
                 'holders_min': total_holders >= 30,  # Минимум 30 холдеров
-                'holders_max': total_holders <= 100,  # Максимум 100 холдеров
-                'available_liquidity': available_liquidity < 65,
-                'max_top_10_holders_pcnt_before_dev_exit': self.token_metrics.max_top_10_holders_pcnt_before_dev_exit <= 40,
+                'holders_max': total_holders <= 80,  # Максимум 80 холдеров
+                'available_liquidity': available_liquidity < 70,
+                # 'max_top_10_holders_pcnt_before_dev_exit': self.token_metrics.max_top_10_holders_pcnt_before_dev_exit <= 40,
                 'holders_never_dumped': (
-                    self.token_metrics.max_holders <= 140  # Никогда не было больше 140 холдеров
+                    self.token_metrics.max_holders <= 100  # Никогда не было больше 100 холдеров
                 ),
-                'max_holders_pcnt': 0 < max_holders_pcnt <= 7,
+                'max_holders_pcnt': 3 < max_holders_pcnt <= 7,
                 # Условия по бандлерам
                 'bundlers_ok': (
-                    self.token_metrics.max_bundlers_after_dev_exit >= 5
+                    self.token_metrics.max_bundlers_after_dev_exit >= 5 and
+                    bundles_percent >= 3 # % бандлеров >= 3%
                 ),
                 'bundlers_before_dev_ok': (
                     self.token_metrics.max_bundlers_before_dev_exit <= 60  # Максимум 60% бандлеров до выхода дева
@@ -2821,24 +3366,28 @@ class PadreWebSocketClient:
                 'dev_percent_ok': (
                     dev_percent <= 2  # Текущий процент дева <= 2%
                 ),
-                'average_holders_pcnt_ok': (
-                    average_holders_pcnt <= 1
+                # 'average_holders_pcnt_ok': (
+                #     average_holders_pcnt > 1
+                # ),
+                'average_top_10_holders_pcnt': (
+                    average_top_10_holders_pcnt >= 2
                 ),
                 
                 # Условия по снайперам
                 'snipers_ok': (
                     snipers_count <= 20 and  # Не более 20 снайперов
                     (
-                        snipers_percent <= 3.5 or  # Либо текущий процент <= 3.5%
+                        snipers_percent <= 3.5 or # Либо текущий процент <= 3.5%
                         (
                             any(float(m.get('snipersHoldingPcnt', 0) or 0) > 0 for m in self.token_metrics.metrics_history) and
                             max(float(m.get('snipersHoldingPcnt', 0) or 0) 
                                 for m in self.token_metrics.metrics_history 
                                 if float(m.get('snipersHoldingPcnt', 0) or 0) > 0) > snipers_percent and
-                            snipers_percent <= 8.0 and  # Но не больше 8% в текущий момент
-                            self.token_metrics.check_rapid_exit('snipersHoldingPcnt', ratio=2.5, max_seconds=120)  # Более строгий rapid exit
+                            snipers_percent <= 5.0 and  # Но не больше 5% в текущий момент
+                            self.token_metrics.check_rapid_exit('snipersHoldingPcnt', ratio=3, max_seconds=120)  # Более строгий rapid exit
                         )
-                    )
+                    ) and
+                    (snipers_percent > 0.01 or snipers_percent == 0) # Снайперы не должны быть меньше 0.01%
                 ),
                 'snipers_not_bundlers': self.token_metrics.check_snipers_bundlers_correlation(),  # Проверка что снайперы не являются бандлерами
 
@@ -2851,13 +3400,13 @@ class PadreWebSocketClient:
                             for m in self.token_metrics.metrics_history 
                             if float(m.get('insidersHoldingPcnt', 0) or 0) > 0) > insiders_percent and
                         insiders_percent <= 22.0 and  # Но не больше 22% в текущий момент
-                        self.token_metrics.check_rapid_exit('insidersHoldingPcnt', ratio=2.5, max_seconds=120)  # Более строгий rapid exit
+                        self.token_metrics.check_rapid_exit('insidersHoldingPcnt', ratio=3, max_seconds=120)  # Более строгий rapid exit
                     )
                 ),
 
                 # Условия по ликвидности и росту
                 'min_liquidity': liquidity >= 10000,
-                'holders_growth': growth['holders_growth'] >= 2900,  # Рост холдеров ≥2900/мин
+                # 'holders_growth': growth['holders_growth'] >= 2900,  # Рост холдеров ≥2900/мин
 
                 # Проверка возможности уведомления
                 'can_notify': self.token_metrics.can_send_notification('active'),
@@ -2867,11 +3416,51 @@ class PadreWebSocketClient:
                 'holders_not_correlated': await self.token_metrics.check_holders_correlation(),  # Проверка корреляции обычных холдеров
             }
 
+            # Проверяем черный список "гениальных рагов" перед любой обработкой
+            if self.token_address in GENIUS_RUG_BLACKLIST:
+                self.logger.info(f"({self.token_address[:8]}...) 🚫 Токен в черном списке - пропускаем обработку")
+                return
+
             if all(activity_conditions.values()):
+                # Дополнительная проверка: анализируем паттерны холдеров для выявления "гениальных рагов"
+                self.logger.info(f"({self.token_address[:8]}...) 📊 ОБЩИЙ % ВЛАДЕНИЯ РАННИХ ХОЛДЕРОВ: {top_10_holders_total_pcnt:.2f}%")
+                
+                # Получаем историю процентов холдеров из TokenMetrics
+                holder_percentages_history = self.token_metrics.holder_percentages_history if hasattr(self.token_metrics, 'holder_percentages_history') else []
+                
+                # Анализируем паттерны холдеров (синхронно, используем все доступные снапшоты до 1000)
+                is_suspicious, suspicious_reasons = self.is_suspicious_pattern(holder_percentages_history)
+                
+                self.logger.info(f"({self.token_address[:8]}...) 📈 АНАЛИЗ СТАБИЛЬНОСТИ ТОП-ХОЛДЕРОВ:")
+                analysis_limit = 1000
+                analyzed_count = min(len(holder_percentages_history), analysis_limit)
+                self.logger.info(f"({self.token_address[:8]}...)    📊 Всего снапшотов: {len(holder_percentages_history)}, анализируется: {analyzed_count}")
+                
+                if is_suspicious:
+                    self.logger.info(f"({self.token_address[:8]}...) 🚨 МАНИПУЛЯТИВНЫЕ ПАТТЕРНЫ ХОЛДЕРОВ ОБНАРУЖЕНЫ:")
+                    for reason in suspicious_reasons:
+                        self.logger.info(f"({self.token_address[:8]}...)    ⚠️ {reason}")
+                    self.logger.info(f"({self.token_address[:8]}...) ❌ Токен отклонен как манипулятивный проект")
+                    
+                    # Добавляем токен в глобальный черный список навсегда
+                    GENIUS_RUG_BLACKLIST.add(self.token_address)
+                    save_blacklist()  # Сохраняем в файл
+                    self.logger.info(f"({self.token_address[:8]}...) 🚫 Токен добавлен в черный список (размер: {len(GENIUS_RUG_BLACKLIST)})")
+                    
+                    # НЕ отправляем уведомление для подозрительных токенов
+                    return
+                else:
+                    self.logger.info(f"({self.token_address[:8]}...) ✅ Паттерны холдеров здоровые")
+                    self.logger.info(f"({self.token_address[:8]}...)    ✓ Топ-холдеры стабильны")
+                    self.logger.info(f"({self.token_address[:8]}...)    ✓ Нет признаков манипуляций")
+                
                 self.logger.info(f"🚀 АКТИВНОСТЬ ТОКЕНА НАЙДЕНА: {self.token_address[:8]}")
                 self.logger.info("✅ Все условия выполнены:")
                 for condition, value in activity_conditions.items():
                     self.logger.info(f"  • {condition}: {value}")
+                    
+                # Отправляем уведомление только для здоровых токенов
+                self.logger.info(f"📢 Отправлено уведомление о начале активности для {self.token_address[:8]}")
                 await self.send_activity_notification(metrics, growth)
             else:
                 self.logger.info("❌ Не соответствует условиям активности:")
@@ -2904,7 +3493,7 @@ class PadreWebSocketClient:
                 for condition, value in pump_conditions.items():
                     if not value:
                         self.logger.info(f"  • {condition}: {value}")
-            
+
             # 3. Специальный паттерн с быстрым ростом и бандлерами
             # Рассчитываем возраст токена в секундах
             age = int(time.time()) - metrics.get('marketCreatedAt', 0)
@@ -3164,7 +3753,7 @@ class MultiplePadreManager:
         except Exception as e:
             logger.error(f"❌ Ошибка в задаче очистки соединений: {e}")
     
-    async def add_token(self, token_address: str) -> Optional[PadreWebSocketClient]:
+    async def add_token(self, token_address: str, token_data: dict = None) -> Optional[PadreWebSocketClient]:
         """Добавляет новый токен для отслеживания"""
         try:
             # Проверяем, нет ли уже соединения для этого токена
@@ -3175,6 +3764,10 @@ class MultiplePadreManager:
             
             # Создаем новое соединение
             client = PadreWebSocketClient(token_address=token_address)
+            
+            # Сохраняем данные токена в клиенте для дальнейшего использования
+            if token_data:
+                client.initial_token_data = token_data
             
             # Запускаем клиент в отдельной задаче
             task = asyncio.create_task(client.start())
@@ -3223,8 +3816,8 @@ class TokenMonitor:
             symbol = token_data.get('symbol', 'UNK')
             logger.info(f"🔍 Добавляем токен {symbol} ({contract_address[:8]}) для анализа бандлеров")
             
-            # Создаем новое соединение для токена
-            client = await self.padre_manager.add_token(contract_address)
+            # Создаем новое соединение для токена с передачей данных
+            client = await self.padre_manager.add_token(contract_address, token_data)
             
             if client:
                 # Подписываемся на данные токена
