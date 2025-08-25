@@ -300,9 +300,9 @@ def log_token_result(result: Dict):
         reason = result.get('reason', 'Нет причины')
         notification_type = result.get('notification_type', 'NONE')
         
-        # ФИЛЬТР: не логируем токены которые даже 30 холдеров не набрали
+        # ФИЛЬТР: не логируем токены которые даже 60 холдеров не набрали
         holders = result.get('holders', 0)
-        if decision == 'WOULD_REJECT' and holders < 30:
+        if decision == 'WOULD_REJECT' and holders < 60:
             global filtered_low_holders_count
             filtered_low_holders_count += 1
             return  # Молча пропускаем - это просто неразвитые токены
@@ -2794,7 +2794,7 @@ async def main():
     try:
         # Загружаем черный список
         global GENIUS_RUG_BLACKLIST
-        GENIUS_RUG_BLACKLIST = load_blacklist()
+        GENIUS_RUG_BLACKLIST = None # load_blacklist()
         
         # Проверяем что черный список загружен корректно
         if GENIUS_RUG_BLACKLIST is None:
@@ -2809,155 +2809,155 @@ async def main():
         logger.info("🔥 ДВУХЭТАПНАЯ ОБРАБОТКА - МАКСИМАЛЬНАЯ СКОРОСТЬ!")
         deleted_count, kept_count = await prefilter_tokens_by_holders(tokens_logs_dir, min_holders=30)
         
-        if kept_count == 0:
-            logger.warning("⚠️ После фильтрации не осталось токенов для анализа!")
-            return
+        # if kept_count == 0:
+        #     logger.warning("⚠️ После фильтрации не осталось токенов для анализа!")
+        #     return
         
-        # ===== ЭТАП 2: ОСНОВНАЯ ОБРАБОТКА =====
-        logger.info(f"🎯 ЭТАП 2: ОСНОВНАЯ ОБРАБОТКА {kept_count} ТОКЕНОВ")
+        # # ===== ЭТАП 2: ОСНОВНАЯ ОБРАБОТКА =====
+        # logger.info(f"🎯 ЭТАП 2: ОСНОВНАЯ ОБРАБОТКА {kept_count} ТОКЕНОВ")
         
-        tester = TokenFilterTester()
+        # tester = TokenFilterTester()
         
-        # Записываем заголовок в файл лога
-        file_logger.info("="*100)
-        file_logger.info("🚀 ДВУХЭТАПНАЯ ТУРБО-ОБРАБОТКА - ЭТАП 2")
-        file_logger.info(f"📊 Предварительная фильтрация: удалено {deleted_count}, осталось {kept_count}")
-        file_logger.info("="*100)
-        file_logger.info("📊 КРИТЕРИИ ACTIVITY ФИЛЬТРАЦИИ:")
-        file_logger.info("   • Холдеры: 30-130 (максимум когда-либо ≤150)")
-        file_logger.info("   • Ликвидность: ≥$10,000)")
-        file_logger.info("   • Рост холдеров: ≥2900/мин")
-        file_logger.info("   • Dev процент: ≤2%")
-        file_logger.info("   • Снайперы: ≤20 штук и ≤3.5% (или ≤5% с rapid exit)")
-        file_logger.info("   • Инсайдеры: ≤15% (или ≤22% с rapid exit)")
-        file_logger.info("   • Проверка подозрительных паттернов холдеров")
-        file_logger.info("🔧 ФИЛЬТРАЦИЯ ЛОГОВ:")
-        file_logger.info("   • Токены с <30 холдерами НЕ логируются (уменьшение шума)")
-        file_logger.info("="*100)
+        # # Записываем заголовок в файл лога
+        # file_logger.info("="*100)
+        # file_logger.info("🚀 ДВУХЭТАПНАЯ ТУРБО-ОБРАБОТКА - ЭТАП 2")
+        # file_logger.info(f"📊 Предварительная фильтрация: удалено {deleted_count}, осталось {kept_count}")
+        # file_logger.info("="*100)
+        # file_logger.info("📊 КРИТЕРИИ ACTIVITY ФИЛЬТРАЦИИ:")
+        # file_logger.info("   • Холдеры: 30-130 (максимум когда-либо ≤150)")
+        # file_logger.info("   • Ликвидность: ≥$10,000)")
+        # file_logger.info("   • Рост холдеров: ≥2900/мин")
+        # file_logger.info("   • Dev процент: ≤2%")
+        # file_logger.info("   • Снайперы: ≤20 штук и ≤3.5% (или ≤5% с rapid exit)")
+        # file_logger.info("   • Инсайдеры: ≤15% (или ≤22% с rapid exit)")
+        # file_logger.info("   • Проверка подозрительных паттернов холдеров")
+        # file_logger.info("🔧 ФИЛЬТРАЦИЯ ЛОГОВ:")
+        # file_logger.info("   • Токены с <30 холдерами НЕ логируются (уменьшение шума)")
+        # file_logger.info("="*100)
         
-        start_time = time.time()
+        # start_time = time.time()
         
-        # Анализируем все токены с полными критериями
-        results = await tester.analyze_all_tokens_with_full_criteria(tokens_logs_dir)
+        # # Анализируем все токены с полными критериями
+        # results = await tester.analyze_all_tokens_with_full_criteria(tokens_logs_dir)
         
-        if not results:
-            logger.error("❌ Нет результатов для анализа")
-            return
+        # if not results:
+        #     logger.error("❌ Нет результатов для анализа")
+        #     return
         
-        # Сортируем по количеству метрик (от большего к меньшему)
-        results.sort(key=lambda x: x.get('metrics_count', 0), reverse=True)
+        # # Сортируем по количеству метрик (от большего к меньшему)
+        # results.sort(key=lambda x: x.get('metrics_count', 0), reverse=True)
         
-        # Краткая сводка по критериям bundle_analyzer.py
-        total_tokens = len(results)
-        would_send = sum(1 for r in results if r.get('decision') == 'WOULD_SEND')
-        would_reject = sum(1 for r in results if r.get('decision') == 'WOULD_REJECT')
-        blacklisted = sum(1 for r in results if r.get('decision') == 'BLACKLISTED')
-        errors = sum(1 for r in results if r.get('decision') == 'ERROR')
-        no_data = sum(1 for r in results if r.get('decision') == 'NO_DATA')
+        # # Краткая сводка по критериям bundle_analyzer.py
+        # total_tokens = len(results)
+        # would_send = sum(1 for r in results if r.get('decision') == 'WOULD_SEND')
+        # would_reject = sum(1 for r in results if r.get('decision') == 'WOULD_REJECT')
+        # blacklisted = sum(1 for r in results if r.get('decision') == 'BLACKLISTED')
+        # errors = sum(1 for r in results if r.get('decision') == 'ERROR')
+        # no_data = sum(1 for r in results if r.get('decision') == 'NO_DATA')
         
-        # Статистика только по ACTIVITY уведомлениям
-        activity_notifications = sum(1 for r in results if r.get('notification_type') == 'ACTIVITY' and r.get('decision') == 'WOULD_SEND')
+        # # Статистика только по ACTIVITY уведомлениям
+        # activity_notifications = sum(1 for r in results if r.get('notification_type') == 'ACTIVITY' and r.get('decision') == 'WOULD_SEND')
         
-        logger.info(f"\n📊 СТАТИСТИКА ACTIVITY УВЕДОМЛЕНИЙ (bundle_analyzer.py) - {total_tokens} токенов:")
-        logger.info(f"🚀 ACTIVITY WOULD_SEND: {activity_notifications} ({activity_notifications/total_tokens*100:.1f}%)")
-        logger.info(f"❌ WOULD_REJECT: {would_reject} ({would_reject/total_tokens*100:.1f}%)")
-        logger.info(f"⚫ BLACKLISTED: {blacklisted} ({blacklisted/total_tokens*100:.1f}%)")
-        logger.info(f"💥 ERRORS: {errors} ({errors/total_tokens*100:.1f}%)")
-        logger.info(f"📊 NO_DATA: {no_data} ({no_data/total_tokens*100:.1f}%)")
+        # logger.info(f"\n📊 СТАТИСТИКА ACTIVITY УВЕДОМЛЕНИЙ (bundle_analyzer.py) - {total_tokens} токенов:")
+        # logger.info(f"🚀 ACTIVITY WOULD_SEND: {activity_notifications} ({activity_notifications/total_tokens*100:.1f}%)")
+        # logger.info(f"❌ WOULD_REJECT: {would_reject} ({would_reject/total_tokens*100:.1f}%)")
+        # logger.info(f"⚫ BLACKLISTED: {blacklisted} ({blacklisted/total_tokens*100:.1f}%)")
+        # logger.info(f"💥 ERRORS: {errors} ({errors/total_tokens*100:.1f}%)")
+        # logger.info(f"📊 NO_DATA: {no_data} ({no_data/total_tokens*100:.1f}%)")
     
-        # Статистика фильтрации
-        global filtered_low_holders_count
-        if filtered_low_holders_count > 0:
-            logger.info(f"🔇 ОТФИЛЬТРОВАНО (< 30 холдеров): {filtered_low_holders_count} (не записаны в лог)")
+        # # Статистика фильтрации
+        # global filtered_low_holders_count
+        # if filtered_low_holders_count > 0:
+        #     logger.info(f"🔇 ОТФИЛЬТРОВАНО (< 30 холдеров): {filtered_low_holders_count} (не записаны в лог)")
         
-        # Детальная таблица (сортированная по метрикам)
-        logger.info(f"\n📋 ДЕТАЛЬНАЯ СВОДКА (сортировка по метрикам):")
-        logger.info(f"{'Токен':<12} {'Метрики':<8} {'Решение':<15} {'Причина':<40} {'Держатели':<10} {'Капитализация':<15}")
-        logger.info("-" * 110)
+        # # Детальная таблица (сортированная по метрикам)
+        # logger.info(f"\n📋 ДЕТАЛЬНАЯ СВОДКА (сортировка по метрикам):")
+        # logger.info(f"{'Токен':<12} {'Метрики':<8} {'Решение':<15} {'Причина':<40} {'Держатели':<10} {'Капитализация':<15}")
+        # logger.info("-" * 110)
         
-        for result in results:
-            token_id = result['token_id'][:11]  # Обрезаем длинные ID
-            metrics = f"{result.get('metrics_count', 0)}/7"
-            decision = result.get('decision', 'UNKNOWN')[:14]
-            reason = result.get('reason', 'Нет причины')[:39]
-            holders = str(result.get('holders_count', '-'))[:9]
-            mcap = f"${result.get('mcap', 0):,.0f}" if result.get('mcap') else "-"
-            mcap = mcap[:14]
+        # for result in results:
+        #     token_id = result['token_id'][:11]  # Обрезаем длинные ID
+        #     metrics = f"{result.get('metrics_count', 0)}/7"
+        #     decision = result.get('decision', 'UNKNOWN')[:14]
+        #     reason = result.get('reason', 'Нет причины')[:39]
+        #     holders = str(result.get('holders_count', '-'))[:9]
+        #     mcap = f"${result.get('mcap', 0):,.0f}" if result.get('mcap') else "-"
+        #     mcap = mcap[:14]
             
-            # Цветовое кодирование только для ACTIVITY
-            if decision == 'WOULD_SEND':
-                status = '🚀'  # ACTIVITY
-            elif decision == 'WOULD_REJECT':
-                status = '❌'
-            elif decision == 'BLACKLISTED':
-                status = '⚫'
-            elif decision == 'ERROR':
-                status = '💥'
-            elif decision == 'NO_DATA':
-                status = '📊'
-            else:
-                status = '❓'
+        #     # Цветовое кодирование только для ACTIVITY
+        #     if decision == 'WOULD_SEND':
+        #         status = '🚀'  # ACTIVITY
+        #     elif decision == 'WOULD_REJECT':
+        #         status = '❌'
+        #     elif decision == 'BLACKLISTED':
+        #         status = '⚫'
+        #     elif decision == 'ERROR':
+        #         status = '💥'
+        #     elif decision == 'NO_DATA':
+        #         status = '📊'
+        #     else:
+        #         status = '❓'
             
-            logger.info(f"{token_id:<12} {metrics:<8} {status} {decision:<14} {reason:<40} {holders:<10} {mcap:<15}")
+        #     logger.info(f"{token_id:<12} {metrics:<8} {status} {decision:<14} {reason:<40} {holders:<10} {mcap:<15}")
         
-        # Статистика по всем причинам (как в bundle_analyzer.py)
-        all_reasons = {}
-        for result in results:
-            reason = result.get('reason', 'Неизвестная причина')
-            all_reasons[reason] = all_reasons.get(reason, 0) + 1
+        # # Статистика по всем причинам (как в bundle_analyzer.py)
+        # all_reasons = {}
+        # for result in results:
+        #     reason = result.get('reason', 'Неизвестная причина')
+        #     all_reasons[reason] = all_reasons.get(reason, 0) + 1
         
-        if all_reasons:
-            logger.info(f"\n📊 ТОП КРИТЕРИИ ФИЛЬТРАЦИИ (bundle_analyzer.py style):")
-            for reason, count in sorted(all_reasons.items(), key=lambda x: x[1], reverse=True)[:15]:
-                logger.info(f"   • {reason}: {count} токенов")
+        # if all_reasons:
+        #     logger.info(f"\n📊 ТОП КРИТЕРИИ ФИЛЬТРАЦИИ (bundle_analyzer.py style):")
+        #     for reason, count in sorted(all_reasons.items(), key=lambda x: x[1], reverse=True)[:15]:
+        #         logger.info(f"   • {reason}: {count} токенов")
         
-        # Показываем примеры токенов, которые прошли ACTIVITY фильтрацию
-        activity_examples = [r for r in results if r.get('decision') == 'WOULD_SEND' and r.get('notification_type') == 'ACTIVITY']
-        if activity_examples:
-            logger.info(f"\n🚀 ПРИМЕРЫ ТОКЕНОВ, КОТОРЫЕ ПРОШЛИ ACTIVITY ФИЛЬТРАЦИЮ:")
-            for example in activity_examples[:5]:
-                logger.info(f"   • {example['token_id']}: {example['reason']}")
+        # # Показываем примеры токенов, которые прошли ACTIVITY фильтрацию
+        # activity_examples = [r for r in results if r.get('decision') == 'WOULD_SEND' and r.get('notification_type') == 'ACTIVITY']
+        # if activity_examples:
+        #     logger.info(f"\n🚀 ПРИМЕРЫ ТОКЕНОВ, КОТОРЫЕ ПРОШЛИ ACTIVITY ФИЛЬТРАЦИЮ:")
+        #     for example in activity_examples[:5]:
+        #         logger.info(f"   • {example['token_id']}: {example['reason']}")
         
-        # Показываем примеры blacklisted токенов
-        blacklisted_examples = [r for r in results if r.get('decision') == 'BLACKLISTED']
-        if blacklisted_examples:
-            logger.info(f"\n⚫ ПРИМЕРЫ ТОКЕНОВ В ЧЕРНОМ СПИСКЕ:")
-            for example in blacklisted_examples[:3]:
-                logger.info(f"   • {example['token_id']}: {example['reason']}")
+        # # Показываем примеры blacklisted токенов
+        # blacklisted_examples = [r for r in results if r.get('decision') == 'BLACKLISTED']
+        # if blacklisted_examples:
+        #     logger.info(f"\n⚫ ПРИМЕРЫ ТОКЕНОВ В ЧЕРНОМ СПИСКЕ:")
+        #     for example in blacklisted_examples[:3]:
+        #         logger.info(f"   • {example['token_id']}: {example['reason']}")
 
-        # Записываем итоговую статистику в файл лога
-        total_time = time.time() - start_time
-        final_speed = len(results) / total_time if total_time > 0 else 0
+        # # Записываем итоговую статистику в файл лога
+        # total_time = time.time() - start_time
+        # final_speed = len(results) / total_time if total_time > 0 else 0
         
-        file_logger.info("="*100)
-        file_logger.info("📊 ИТОГОВАЯ СТАТИСТИКА АНАЛИЗА")
-        file_logger.info("="*100)
-        file_logger.info(f"⏱️ Время обработки: {total_time:.1f} секунд")
-        file_logger.info(f"⚡ Скорость: {final_speed:.1f} токенов/сек")
-        file_logger.info(f"📊 Всего токенов: {len(results)}")
-        file_logger.info(f"🚀 ACTIVITY прошли: {activity_notifications} ({activity_notifications/len(results)*100:.1f}%)")
-        file_logger.info(f"❌ Отклонены: {would_reject} ({would_reject/len(results)*100:.1f}%)")
-        file_logger.info(f"⚫ Черный список: {blacklisted} ({blacklisted/len(results)*100:.1f}%)")
-        file_logger.info(f"💥 Ошибки: {errors} ({errors/len(results)*100:.1f}%)")
-        file_logger.info(f"📊 Нет данных: {no_data} ({no_data/len(results)*100:.1f}%)")
-        file_logger.info("="*100)
+        # file_logger.info("="*100)
+        # file_logger.info("📊 ИТОГОВАЯ СТАТИСТИКА АНАЛИЗА")
+        # file_logger.info("="*100)
+        # file_logger.info(f"⏱️ Время обработки: {total_time:.1f} секунд")
+        # file_logger.info(f"⚡ Скорость: {final_speed:.1f} токенов/сек")
+        # file_logger.info(f"📊 Всего токенов: {len(results)}")
+        # file_logger.info(f"🚀 ACTIVITY прошли: {activity_notifications} ({activity_notifications/len(results)*100:.1f}%)")
+        # file_logger.info(f"❌ Отклонены: {would_reject} ({would_reject/len(results)*100:.1f}%)")
+        # file_logger.info(f"⚫ Черный список: {blacklisted} ({blacklisted/len(results)*100:.1f}%)")
+        # file_logger.info(f"💥 Ошибки: {errors} ({errors/len(results)*100:.1f}%)")
+        # file_logger.info(f"📊 Нет данных: {no_data} ({no_data/len(results)*100:.1f}%)")
+        # file_logger.info("="*100)
         
-        if activity_examples:
-            file_logger.info("🚀 ПРИМЕРЫ ТОКЕНОВ, ПРОШЕДШИХ ACTIVITY ФИЛЬТРАЦИЮ:")
-            for example in activity_examples[:10]:  # Больше примеров в файл
-                file_logger.info(f"   ✅ {example['token_id']}: {example['reason']}")
+        # if activity_examples:
+        #     file_logger.info("🚀 ПРИМЕРЫ ТОКЕНОВ, ПРОШЕДШИХ ACTIVITY ФИЛЬТРАЦИЮ:")
+        #     for example in activity_examples[:10]:  # Больше примеров в файл
+        #         file_logger.info(f"   ✅ {example['token_id']}: {example['reason']}")
         
-        if blacklisted_examples:
-            file_logger.info("⚫ ПРИМЕРЫ ТОКЕНОВ В ЧЕРНОМ СПИСКЕ:")
-            for example in blacklisted_examples[:10]:
-                file_logger.info(f"   ⚫ {example['token_id']}: {example['reason']}")
+        # if blacklisted_examples:
+        #     file_logger.info("⚫ ПРИМЕРЫ ТОКЕНОВ В ЧЕРНОМ СПИСКЕ:")
+        #     for example in blacklisted_examples[:10]:
+        #         file_logger.info(f"   ⚫ {example['token_id']}: {example['reason']}")
         
-        file_logger.info("="*100)
-        file_logger.info("✅ АНАЛИЗ ЗАВЕРШЕН! Все результаты сохранены в test_filter.log")
-        file_logger.info("="*100)
+        # file_logger.info("="*100)
+        # file_logger.info("✅ АНАЛИЗ ЗАВЕРШЕН! Все результаты сохранены в test_filter.log")
+        # file_logger.info("="*100)
     
-        logger.info(f"\n📄 Детальные результаты сохранены в: test_filter.log")
-        logger.info(f"📊 Всего записей в логе: {len(results)} токенов")
+        # logger.info(f"\n📄 Детальные результаты сохранены в: test_filter.log")
+        # logger.info(f"📊 Всего записей в логе: {len(results)} токенов")
         
     except Exception as e:
         logger.error(f"💥 Критическая ошибка в main: {e}")
