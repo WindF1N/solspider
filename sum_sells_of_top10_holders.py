@@ -3,7 +3,7 @@ import glob
 import re
 from collections import defaultdict
 
-def analyze_top10_changes_before_telegram(log_dir="tokens_logs"):
+def analyze_top10_changes_before_telegram(log_dir="tokens_logs_0"):
     """
     Анализирует ИЗМЕНЕНИЯ ТОП-10 сливов только ДО отправки в Telegram
     Уменьшения = продажи, Увеличения = покупки
@@ -27,6 +27,14 @@ def analyze_top10_changes_before_telegram(log_dir="tokens_logs"):
                     break
 
             if telegram_line_index == None:
+                # Создаем папку no_sent если ее нет
+                no_sent_dir = os.path.join(log_dir, "no_sent")
+                os.makedirs(no_sent_dir, exist_ok=True)
+                
+                # Перемещаем файл в no_sent
+                new_path = os.path.join(no_sent_dir, os.path.basename(file_path))
+                os.rename(file_path, new_path)
+                print(f"Файл {os.path.basename(file_path)} перемещен в no_sent")
                 continue
             
             # Собираем все записи ТОП-10 ДО отправки в Telegram
@@ -148,6 +156,30 @@ def analyze_top10_changes_before_telegram(log_dir="tokens_logs"):
     
     return results
 
+def is_rag_file(analysis_result):
+    """
+    Улучшенное определение рагов
+    """
+    # 1. Сильное падение от максимума к концу (>30% от пика)
+    if analysis_result['last_value'] < analysis_result['max_value'] * 0.7:
+        return True
+    
+    # 2. Очень много мелких продаж (>30)
+    if analysis_result['decreases_count'] > 30:
+        return True
+    
+    # 3. Средний размер продажи > среднего размера покупки
+    avg_sale = analysis_result['total_decrease_amount'] / analysis_result['decreases_count']
+    avg_purchase = analysis_result['total_increase_amount'] / analysis_result['increases_count']
+    if avg_sale > avg_purchase * 1.2:
+        return True
+    
+    # 4. Низкое конечное значение относительно максимума
+    if analysis_result['last_value'] < 25 and analysis_result['max_value'] > 35:
+        return True
+    
+    return False
+
 def save_analysis_to_file(results, output_file="result_analysis_before_telegram.txt"):
     """
     Сохраняет информацию об изменениях ТОП-10 ДО отправки в Telegram
@@ -190,6 +222,8 @@ def save_analysis_to_file(results, output_file="result_analysis_before_telegram.
                     f.write(f"  • {purchase}\n")
             elif result['has_sales']:
                 f.write("Покупок после первой продажи не обнаружено\n")
+
+            # f.write(f"RAG: {is_rag_file(result)}\n")
                 
             f.write("-" * 100 + "\n\n")
 

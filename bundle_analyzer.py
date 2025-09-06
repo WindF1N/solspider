@@ -25,12 +25,58 @@ import traceback
 from dotenv import load_dotenv
 import numpy as np
 from scipy.stats import linregress
+import uuid
+import random
 # Загружаем переменные окружения из .env файла
 load_dotenv()
 
 # Глобальный черный список для токенов, помеченных как "гениальные раги"
 GENIUS_RUG_BLACKLIST = set()
 BLACKLIST_FILE = "genius_rug_blacklist.txt"
+
+def j8(e=None, t=None, n=None):
+    # Если доступен встроенный randomUUID и не переданы t и e
+    if hasattr(uuid, 'uuid4') and t is None and (e is None or e == {}):
+        return str(uuid.uuid4())
+    
+    # Генерация 16 случайных байт (аналог O8())
+    if e is None:
+        e = {}
+    
+    if 'random' in e:
+        r = e['random']
+    elif 'rng' in e:
+        r = e['rng']()
+    else:
+        # Генерация 16 случайных байт (0-255)
+        r = [random.randint(0, 255) for _ in range(16)]
+    
+    # Установка версии и варианта (как в оригинальной функции)
+    r[6] = (15 & r[6]) | 64  # Устанавливаем версию 4
+    r[8] = (63 & r[8]) | 128 # Устанавливаем вариант 10 (RFC 4122)
+    
+    if t is not None:
+        # Если передан буфер t - записываем байты
+        n = n or 0
+        for i in range(16):
+            t[n + i] = r[i]
+        return t
+    
+    # Форматирование в строку UUID
+    def format_bytes(bytes_arr, offset=0):
+        hex_chars = "0123456789abcdef"
+        result = []
+        
+        for i in range(16):
+            if i in [4, 6, 8, 10]:
+                result.append('-')
+            byte_val = bytes_arr[offset + i]
+            result.append(hex_chars[byte_val >> 4])
+            result.append(hex_chars[byte_val & 0x0F])
+        
+        return ''.join(result)
+    
+    return format_bytes(r)
 
 def load_blacklist():
     """Загружает черный список из файла"""
@@ -68,6 +114,19 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Загружаем список топ eboshers из файла
+top_eboshers = []
+try:
+    with open('eboshers_v5.txt', 'r') as f:
+        top_eboshers = [line.strip() for line in f if line.strip()]
+    for ebosher in top_eboshers:
+        logger.info(f"{ebosher}")
+    logger.info(f"✅ Загружено {len(top_eboshers)} eboshers из файла")
+except Exception as e:
+    logger.error(f"❌ Ошибка загрузки eboshers: {e}")
+    top_eboshers = []
+
 
 def create_token_logger(token_address: str) -> logging.Logger:
     """Создает отдельный логгер для токена"""
@@ -1323,8 +1382,9 @@ class PadreWebSocketClient:
         self.top10_holders_sold_percent = 0
 
         self.top_10_holders_bought_more_than_they_dumped = True
+        self.top_10_holders_snapshots = {}
 
-        self.JWT_TOKEN = "eyJhbGciOiJSUzI1NiIsImtpZCI6IjkyZTg4M2NjNDY2M2E2MzMyYWRhNmJjMWU0N2YzZmY1ZTRjOGI1ZDciLCJ0eXAiOiJKV1QifQ.eyJuYW1lIjoid29ya2VyMTAwMHgiLCJoYXV0aCI6dHJ1ZSwiaXNzIjoiaHR0cHM6Ly9zZWN1cmV0b2tlbi5nb29nbGUuY29tL3BhZHJlLTQxNzAyMCIsImF1ZCI6InBhZHJlLTQxNzAyMCIsImF1dGhfdGltZSI6MTc1NTY0ODA3OCwidXNlcl9pZCI6InRnXzc4OTE1MjQyNDQiLCJzdWIiOiJ0Z183ODkxNTI0MjQ0IiwiaWF0IjoxNzU2MTM3MDExLCJleHAiOjE3NTYxNDA2MTEsImZpcmViYXNlIjp7ImlkZW50aXRpZXMiOnt9LCJzaWduX2luX3Byb3ZpZGVyIjoiY3VzdG9tIn19.sSF_eq15evaHneIAM-C2zZRbO2fSMPlWGErr_HfFViAWqmrneOf-OVd7mt9UzvdaeJnD_TGGbgLXxiRFZpj2Gmb2-ZJkC45Ef50lceaZD9GWL6bE-8g1tXHq3O5flCSKVky9XbkjBjonVbW3Bsg27u__9b_OYPMTemjlrqKbAcVUC6s8sWSD9_yzD6i2Noi08R1GE7csdvhq3oxMTonlIoPYUy7Op_rUaJtj5HI9z1sLuy8fsfAVrpzfGjW8OacW3zKrwMBeZIWXQtLw14-5wOpUCLBmBihQSAtkcF20SOkhXLjnCEfVZ-GROfxz-L0cVuwpggNTkiq19t-3EiO4eA"
+        self.JWT_TOKEN = "eyJhbGciOiJSUzI1NiIsImtpZCI6ImVmMjQ4ZjQyZjc0YWUwZjk0OTIwYWY5YTlhMDEzMTdlZjJkMzVmZTEiLCJ0eXAiOiJKV1QifQ.eyJuYW1lIjoid29ya2VyMTAwMHgiLCJoYXV0aCI6dHJ1ZSwiaXNzIjoiaHR0cHM6Ly9zZWN1cmV0b2tlbi5nb29nbGUuY29tL3BhZHJlLTQxNzAyMCIsImF1ZCI6InBhZHJlLTQxNzAyMCIsImF1dGhfdGltZSI6MTc1NTY0ODA3OCwidXNlcl9pZCI6InRnXzc4OTE1MjQyNDQiLCJzdWIiOiJ0Z183ODkxNTI0MjQ0IiwiaWF0IjoxNzU2OTA3Mjc4LCJleHAiOjE3NTY5MTA4NzgsImZpcmViYXNlIjp7ImlkZW50aXRpZXMiOnt9LCJzaWduX2luX3Byb3ZpZGVyIjoiY3VzdG9tIn19.PeB6yO94ZexRBkVAwBdbVOF-ay9VrF6z9N26qMdmXEsjwPYJSVY0ydiKUT5EYG8K6u08rQzyNHDond7ehtXJsrBatZ1QwOkXjwuvviWga4nRH00LY44VDVhNGefvkeg24EObVnr0NQce5fGRRFYa6Zr4gM67mCh6zxPCv1loumKNoH_hH19hSlqDiF7sF-eOPL-Ml08yf0j0lUAI1tsoB7f8oBwC2SSc83yPNgcddqE0BX7uDAmz5TU34LXiWd7cw036X4JrC9TWORUiYnR2OspKeE7owMwHlEp74sd-C5ANigm6a3nk-cDD0Yn32i2cl9USLKp_EzcE139A4S-7Yg"
         
     async def connect(self):
         """Подключение к WebSocket"""
@@ -1466,13 +1526,15 @@ class PadreWebSocketClient:
     async def send_auth_message(self):
         """Отправляем аутентификационное сообщение"""
         try:
-            # # Формируем auth message с текущим JWT токеном
-            # auth_message = f"\x01\x03&{self.JWT_TOKEN}\x06ba26fc8-e673"
-            # auth_bytes = auth_message.encode('utf-8')
+            # Формируем auth message в формате [1, JWT_TOKEN, suffix]
+            auth_message = [
+                1,
+                self.JWT_TOKEN,
+                j8()[:13]
+            ]
+            auth_bytes = msgpack.packb(auth_message)
 
-            # Декодируем первое сообщение от клиента для аутентификации
-            auth_message_b64 = "kwHaAyZleUpoYkdjaU9pSlNVekkxTmlJc0ltdHBaQ0k2SWpreVpUZzRNMk5qTkRZMk0yRTJNek15WVdSaE5tSmpNV1UwTjJZelptWTFaVFJqT0dJMVpEY2lMQ0owZVhBaU9pSktWMVFpZlEuZXlKdVlXMWxJam9pZDI5eWEyVnlNVEF3TUhnaUxDSm9ZWFYwYUNJNmRISjFaU3dpYVhOeklqb2lhSFIwY0hNNkx5OXpaV04xY21WMGIydGxiaTVuYjI5bmJHVXVZMjl0TDNCaFpISmxMVFF4TnpBeU1DSXNJbUYxWkNJNkluQmhaSEpsTFRReE56QXlNQ0lzSW1GMWRHaGZkR2x0WlNJNk1UYzFOVFkwT0RBM09Dd2lkWE5sY2w5cFpDSTZJblJuWHpjNE9URTFNalF5TkRRaUxDSnpkV0lpT2lKMFoxODNPRGt4TlRJME1qUTBJaXdpYVdGMElqb3hOelUyTVRNM01ERXhMQ0psZUhBaU9qRTNOVFl4TkRBMk1URXNJbVpwY21WaVlYTmxJanA3SW1sa1pXNTBhWFJwWlhNaU9udDlMQ0p6YVdkdVgybHVYM0J5YjNacFpHVnlJam9pWTNWemRHOXRJbjE5LnNTRl9lcTE1ZXZhSG5lSUFNLUMyelpSYk8yZlNNUGxXR0Vycl9IZkZWaUFXcW1ybmVPZi1PVmQ3bXQ5VXp2ZGFlSm5EX1RHR2JnTFh4aVJGWnBqMkdtYjItWkprQzQ1RWY1MGxjZWFaRDlHV0w2YkUtOGcxdFhIcTNPNWZsQ1NLVmt5OVhia2pCam9uVmJXM0JzZzI3dV9fOWJfT1lQTVRlbWpscnFLYkFjVlVDNnM4c1dTRDlfeXpENmkyTm9pMDhSMUdFN2NzZHZocTNveE1Ub25sSW9QWVV5N09wX3JVYUp0ajVISTl6MXNMdXk4ZnNmQVZycHpmR2pXOE9hY1czektyd01CZVpJV1hRdEx3MTQtNXdPcFVDTEJtQmloUVNBdGtjRjIwU09raFhMam5DRWZWWi1HUk9meHotTDBjVnV3cGdnTlRraXExOXQtM0VpTzRlQa04MmYwNGE3Yi1jZWJi"
-            auth_bytes = base64.b64decode(auth_message_b64)
+            self.logger.info(auth_message)
             
             # Отправляем как бинарные данные (Binary Message)
             await self.websocket.send(auth_bytes)
@@ -1622,14 +1684,21 @@ class PadreWebSocketClient:
             candles_count = len(candles_data['t'])
             self.logger.info(f"🔍 Начинаем обрабатывать данные о свечах для {self.token_address}: {candles_count} свечей")
             
-            if candles_count < 10:  # Нужно больше свечей для анализа тренда
-                self.logger.info(f"🔍 Недостаточно данных о свечах ({candles_count}) для анализа тренда")
-                self.pending = False
-                return
-                
+            # if candles_count < 120:  # Нужно больше свечей для анализа тренда
+            #     self.logger.info(f"🔍 Недостаточно данных о свечах ({candles_count}) для анализа тренда")
+            #     self.pending = False
+            #     return
+
             # Берем закрытия свечей для анализа тренда
             closes = candles_data['c']
             times = candles_data['t']
+
+            time_diff = times[-1] - times[0]
+            self.logger.info(f"Времена: {time_diff}, {times[-1]}, {times[0]}")
+
+            # if time_diff > 170:  # Проверяем что весь график укладывается в 170 секунд
+            #     self.logger.info(f"График больше 170 секунд ({time_diff} сек)")
+            #     return
 
              # Проверяем минимальный маркеткап
             last_close = closes[-1]
@@ -1658,13 +1727,24 @@ class PadreWebSocketClient:
 
             market_cap = (total_supply / (10 ** 9)) * last_close * 1000
             
-            if market_cap < 13000:
-                self.logger.info(f"🚫 Маркеткап {market_cap:,.2f}$ < 13,000$ - пропускаем уведомление")
-                self.pending = False
-                return
+            # if market_cap < 13000:
+            #     self.logger.info(f"🚫 Маркеткап {market_cap:,.2f}$ < 13,000$ - пропускаем уведомление")
+            #     self.pending = False
+            #     return
 
             self.logger.info(f"💰 Маркеткап: {market_cap:,.2f}$ (Цена: {last_close}, Supply: {total_supply / (10 ** 9):,.2f})")
-            
+
+            # Сортируем снапшоты по количеству вхождений (значениям) в порядке убывания
+            sorted_snapshots = sorted(
+                self.top_10_holders_snapshots.items(),
+                key=lambda item: item[1],  # Сортируем по значению (количеству)
+                reverse=True  # В порядке убывания
+            )
+
+            self.logger.info("📊 Статистика распределения топ-10 холдеров:")
+            for percentage, count in sorted_snapshots:
+                self.logger.info(f"  • {percentage}%: {count} раз")
+
             # # Проверяем максимальное падение и максимальный рост между свечами
             # max_drop = 0
             # max_rise = 0
@@ -1899,7 +1979,7 @@ class PadreWebSocketClient:
                 clean_holders.items(), 
                 key=lambda x: x[1].get('pcnt', 0), 
                 reverse=True
-            )[:max_holders]
+            )
             
             # Сортируем исключенных холдеров по проценту (по убыванию)
             sorted_excluded_holders = sorted(
@@ -1915,7 +1995,7 @@ class PadreWebSocketClient:
                 result_lines.append("ТОП ЧИСТЫЕ ХОЛДЕРЫ:")
                 for i, (wallet_address, holder_info) in enumerate(sorted_clean_holders, 1):
                     pcnt = holder_info.get('pcnt', 0)
-                    short_address = f"{wallet_address[:8]}...{wallet_address[-4:]}"
+                    short_address = f"{wallet_address}"
                     result_lines.append(f"  {i}. {short_address} - {self.safe_format(pcnt, '.2f')}%")
             else:
                 result_lines.append("ТОП ЧИСТЫЕ ХОЛДЕРЫ: Нет данных")
@@ -2293,11 +2373,16 @@ class PadreWebSocketClient:
                                         self.logger.warning(f"⚠️ Ошибка преобразования amount={update[2]} для кошелька {wallet_address}")
                                         pcnt = 0
                                     
+                                    if wallet_address in top10holders_pcnt:
+                                        join_date = top10holders_pcnt[wallet_address]['join_date']
+                                    else:
+                                        join_date = update[16]
                                     top10holders_pcnt[wallet_address] = {
                                         'pcnt': pcnt,
                                         'insider': update[4],
                                         'isBundler': update[15],
-                                        'isPool': wallet_address in self.LIQUIDITY_POOL_ADDRESSES
+                                        'isPool': wallet_address in self.LIQUIDITY_POOL_ADDRESSES,
+                                        'join_date': join_date
                                     }
                                 self.token_data_cache[self.current_token_address]['top10holders'] = top10holders_pcnt
                                 self.logger.info(f"📊 Обновлен top10holders токена: {len(update_data['updated'])} записей")
@@ -2365,12 +2450,18 @@ class PadreWebSocketClient:
                                 except (ValueError, TypeError, ZeroDivisionError):
                                     self.logger.warning(f"⚠️ Ошибка преобразования amount={entry[2]} для кошелька {wallet_address}")
                                     pcnt = 0
-                                
+
+                                if wallet_address in top10holders_pcnt:
+                                    join_date = top10holders_pcnt[wallet_address]['join_date']
+                                else:
+                                    join_date = entry[16]
+
                                 top10holders_pcnt[wallet_address] = {
                                     'pcnt': pcnt,
                                     'insider': entry[4],
                                     'isBundler': entry[15],
-                                    'isPool': wallet_address in self.LIQUIDITY_POOL_ADDRESSES
+                                    'isPool': wallet_address in self.LIQUIDITY_POOL_ADDRESSES,
+                                    'join_date': join_date
                                 }
                             self.token_data_cache[self.current_token_address]['top10holders'] = top10holders_pcnt
                             self.logger.info(f"📊 Создан top10holders токена: {len(snapshot_data['allEntries'])} записей")
@@ -2828,7 +2919,7 @@ class PadreWebSocketClient:
                         self.logger.error(f"❌ Ошибка Telegram API: {response.status} - {await response.text()}")
                         return False
                         
-            # Сохраняем время последней отправки
+            # Сохраняем время последней отправки 
             self.last_telegram_time = time.time()
             self.logger.info("✅ Сообщение успешно отправлено в Telegram")
             return True
@@ -3406,6 +3497,9 @@ class PadreWebSocketClient:
             if base_token_audit:
                 dev_address = base_token_audit.get('deployerAddress')
             
+            count_find_eboshers = 0
+            find_eboshers = []
+
             for wallet, value in sorted_holders:
                 if value['isPool']:
                     self.logger.debug(f"🔎 Обнаружена незаполненная ликвидность {wallet} на {value['pcnt']}%")
@@ -3423,6 +3517,15 @@ class PadreWebSocketClient:
                     continue
                 if value['pcnt'] > max_holders_pcnt:
                     max_holders_pcnt = value['pcnt']
+                if wallet in top_eboshers:
+                    # if value['pcnt'] < 1:
+                    #     continue
+                    if value['join_date']:
+                        count_find_eboshers += 1
+                        dt = datetime.fromtimestamp(value['join_date'])
+                        find_eboshers.append(f"{wallet} ({value['pcnt']:.1f}%) | {dt.strftime('%Y-%m-%d %H:%M:%S')}")
+                    else:
+                        find_eboshers.append(f"{wallet} ({value['pcnt']:.1f}%) | нет даты")
                 top10HoldersPcnt += value['pcnt'] or 0
                 top10Holders += f"{round(value['pcnt'] or 0, 2)}% "
                 average_holders_pcnt += value['pcnt'] or 0
@@ -3459,6 +3562,12 @@ class PadreWebSocketClient:
             self.logger.info(f"🆕 Fresh Wallets: {fresh_wallets} ({fresh_wallets_sol:.2f} SOL)")
             self.logger.info(f"🎯 Снайперы: {snipers_percent:.1f}% ({snipers_count})")
             self.logger.info(f"👨‍💼 Инсайдеры: {insiders_percent:.1f}%")
+            if find_eboshers:
+                self.logger.info(f"👨‍💼 Eboshers: {len(find_eboshers)} шт")
+                for i, ebosher in enumerate(find_eboshers, 1):
+                    self.logger.info(f"    {i}. {ebosher}")
+            else:
+                self.logger.info("👨‍💼 Eboshers: не обнаружены")
             
             self.logger.info(f"📈 ДИНАМИКА РОСТА:")
             self.logger.info(f"👥 Холдеры: +{growth['holders_growth']:.2f}/мин")
@@ -3474,38 +3583,44 @@ class PadreWebSocketClient:
 
             self.last_top10_holders_percent = top_10_holders_total_pcnt
 
+            if f"{top_10_holders_total_pcnt:.1f}" in self.top_10_holders_snapshots:
+                self.top_10_holders_snapshots[f"{top_10_holders_total_pcnt:.1f}"] += 1
+            else:
+                self.top_10_holders_snapshots[f"{top_10_holders_total_pcnt:.1f}"] = 1
+
             self.logger.info(f"🏆 Динамика ТОП-10: -{self.top10_holders_sold_percent:.1f}% (+{self.top10_holders_bought_percent:.1f}%)")
 
-            if self.top10_holders_sold_percent > self.top10_holders_bought_percent and self.top10_holders_bought_percent > 0:
+            if self.top10_holders_sold_percent > self.top10_holders_bought_percent and self.top10_holders_bought_percent > 0 and top_10_holders_total_pcnt > 13:
                 self.top_10_holders_bought_more_than_they_dumped = False
             
             activity_conditions = {
-                'time_ok': (int(time.time()) - metrics.get('marketCreatedAt', 0)) >= 60,
+                # 'time_ok': (int(time.time()) - metrics.get('marketCreatedAt', 0)) < 120,
                 # Базовые условия по холдерам
-                'holders_min': total_holders >= 30,  # Минимум 30 холдеров
-                'holders_max': total_holders <= 100,  # Максимум 100 холдеров
+                # 'holders_min': total_holders >= 30,  # Минимум 30 холдеров
+                # 'holders_max': total_holders <= 100,  # Максимум 100 холдеров
                 # 'available_liquidity': available_liquidity < 70,
-                'max_top_10_holders_pcnt_before_dev_exit': self.token_metrics.max_top_10_holders_pcnt_before_dev_exit <= 40,
-                'holders_never_dumped': (
-                    self.token_metrics.max_holders <= 100  # Никогда не было больше 100 холдеров
-                ),
-                'top10_holders_bought_sold_correlated': (
-                    self.top10_holders_sold_percent < self.top10_holders_bought_percent
-                ),
-                'top_10_holders_bought_more_than_they_dumped': self.top_10_holders_bought_more_than_they_dumped,
+                # 'max_top_10_holders_pcnt_before_dev_exit': self.token_metrics.max_top_10_holders_pcnt_before_dev_exit <= 40,
+                # 'holders_never_dumped': (
+                #     self.token_metrics.max_holders <= 100  # Никогда не было больше 100 холдеров
+                # ),
+                # 'top10_holders_bought_sold_correlated': (
+                    # self.top10_holders_sold_percent < self.top10_holders_bought_percent
+                # ),
+                # 'top_10_holders_bought_more_than_they_dumped': self.top_10_holders_bought_more_than_they_dumped,
+                'count_find_eboshers': count_find_eboshers >= 3,
                 # 'max_holders_pcnt': 3 < max_holders_pcnt <= 7,
                 # Условия по бандлерам
                 # 'bundlers_ok': (
                 #     self.token_metrics.max_bundlers_after_dev_exit >= 1 and
                 #     total_bundlers >= 1 # % бандлеров >= 1 шт
                 # ),
-                'bundlers_before_dev_ok': (
-                    self.token_metrics.max_bundlers_before_dev_exit <= 60  # Максимум 60% бандлеров до выхода дева
-                ),
+                # 'bundlers_before_dev_ok': (
+                #     self.token_metrics.max_bundlers_before_dev_exit <= 60  # Максимум 60% бандлеров до выхода дева
+                # ),
                 # Условия по деву
-                'dev_percent_ok': (
-                    dev_percent <= 2  # Текущий процент дева <= 2%
-                ),
+                # 'dev_percent_ok': (
+                #     dev_percent <= 2  # Текущий процент дева <= 2%
+                # ),
                 # 'average_holders_pcnt_ok': (
                 #     average_holders_pcnt > 1
                 # ),
@@ -3514,34 +3629,45 @@ class PadreWebSocketClient:
                 # ),
                 
                 # Условия по снайперам
-                'snipers_ok': (
-                    snipers_percent == 0
-                ),
-                'snipers_not_bundlers': self.token_metrics.check_snipers_bundlers_correlation(),  # Проверка что снайперы не являются бандлерами
+                # 'snipers_ok': (
+                #     snipers_count <= 20 and  # ≤20 снайперов
+                #     (
+                #         snipers_percent <= 3.5 or  # ≤3.5% ИЛИ
+                #         (
+                #             any(float(m.get('snipersHoldingPcnt', 0) or 0) > 0 for m in metrics_history) and
+                #             max(float(m.get('snipersHoldingPcnt', 0) or 0) 
+                #                 for m in metrics_history 
+                #                 if float(m.get('snipersHoldingPcnt', 0) or 0) > 0) > snipers_percent and
+                #             snipers_percent <= 5.0 and  # ≤5% в текущий момент
+                #             check_rapid_exit('snipersHoldingPcnt', ratio=3, max_seconds=120)  # С rapid exit
+                #         )
+                #     )
+                # ),
+                # 'snipers_not_bundlers': self.token_metrics.check_snipers_bundlers_correlation(),  # Проверка что снайперы не являются бандлерами
 
                 # Условия по инсайдерам
-                'insiders_ok': (
-                    insiders_percent <= 15 or  # Либо текущий процент <= 15%
-                    (
-                        any(float(m.get('insidersHoldingPcnt', 0) or 0) > 0 for m in self.token_metrics.metrics_history) and
-                        max(float(m.get('insidersHoldingPcnt', 0) or 0) 
-                            for m in self.token_metrics.metrics_history 
-                            if float(m.get('insidersHoldingPcnt', 0) or 0) > 0) > insiders_percent and
-                        insiders_percent <= 22.0 and  # Но не больше 22% в текущий момент
-                        self.token_metrics.check_rapid_exit('insidersHoldingPcnt', ratio=3, max_seconds=120)  # Более строгий rapid exit
-                    )
-                ),
+                # 'insiders_ok': (
+                #     insiders_percent <= 15 or  # Либо текущий процент <= 15%
+                #     (
+                #         any(float(m.get('insidersHoldingPcnt', 0) or 0) > 0 for m in self.token_metrics.metrics_history) and
+                #         max(float(m.get('insidersHoldingPcnt', 0) or 0) 
+                #             for m in self.token_metrics.metrics_history 
+                #             if float(m.get('insidersHoldingPcnt', 0) or 0) > 0) > insiders_percent and
+                #         insiders_percent <= 22.0 and  # Но не больше 22% в текущий момент
+                #         self.token_metrics.check_rapid_exit('insidersHoldingPcnt', ratio=3, max_seconds=120)  # Более строгий rapid exit
+                #     )
+                # ),
 
                 # Условия по ликвидности и росту
-                'min_liquidity': liquidity >= 10000,
+                # 'min_liquidity': liquidity >= 10000,
                 # 'min_mcap': market_cap >= 13000,
                 # 'holders_growth': growth['holders_growth'] >= 2900,  # Рост холдеров ≥2900/мин
 
                 # Проверка возможности уведомления
                 'can_notify': self.token_metrics.can_send_notification('active'),
 
-                'snipers_not_insiders': self.token_metrics.check_snipers_insiders_correlation(),
-                'bundlers_snipers_exit_not_correlated': self.token_metrics.check_bundlers_snipers_exit_correlation(),
+                # 'snipers_not_insiders': self.token_metrics.check_snipers_insiders_correlation(),
+                # 'bundlers_snipers_exit_not_correlated': self.token_metrics.check_bundlers_snipers_exit_correlation(),
                 # 'holders_not_correlated': await self.token_metrics.check_holders_correlation(),  # Проверка корреляции обычных холдеров
             }
 
@@ -3670,12 +3796,13 @@ class PadreWebSocketClient:
                 "Referer": "https://trade.padre.gg/",
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36 Edg/139.0.0.0",
                 "Content-Type": "application/x-www-form-urlencoded",
+                "x-client-version": "Chrome/JsCore/10.9.0/FirebaseCore-web",
                 "X-Firebase-GMPID": "1:678231832583:web:81243a9bc65c3c19ac92a2"
             }
             
             data = {
                 "grant_type": "refresh_token",
-                "refresh_token": "AMf-vBwkXf6xNcmN59HHbK9DRKlPVAniCLhecpdsgbRQzCpsVdnax5IvKnun39f_-zyIYLRU7AXj2USRqCj5jZ1q7HUtMhzHhhL0Ob2HxkvHWEmz1V6ja91ZztxlFgvbP18740Y_33UdmNRKpZtj6bCCmvT2m0Z-Zw"
+                "refresh_token": "AMf-vBxhTitYWGSdKRnKKH7gXnsocOd3OgU0boTIozHKRP-YFalXuKKA1K4EyuSp06wFBH4NrpNJXlne_BodIXhNn2-dZhhPRfdLMkllDMxw17Fq07YQsa-6a4A5nhZR-nyFvMNwTaxg8lgl2D6b12iW_eft4rMfFw"
             }
             
             self.logger.info("🔄 Запрашиваем новый access_token...")
@@ -3687,6 +3814,7 @@ class PadreWebSocketClient:
                         access_token = result.get('access_token')
                         if access_token:
                             self.logger.info("✅ Успешно обновлен access_token")
+                            self.logger.info(result)
                             return access_token
                         else:
                             self.logger.error("❌ Не получили access_token в ответе")

@@ -1,0 +1,471 @@
+2vqJxeH51vGM79yAyAR4yDjTaiTGbcwQK1JJExWwpump
+04.09.2025 17:50:31 на миграции
+результат: слив бабла
+дев не слил до миграции
+до миграции никто из ебошеров не заходил
+в секунды миграции учавствовали ебошеры:
+    F5PBvNnXacy6nfE8LbcUziEJYMeeAFJcLHPRgcgWT7YB 2.07$
+    BnnNJJgy9w2MLQ9XBKJKG9FQa2r9qdW7u5VpzEkwUcc3 31.01$
+    B27vwq89vX3oDa8fFNGiqQWB2wRiSmsmD8Hw2JuRefC8 40.67$
+    CTRbbM6whSXqp26cFY9iP44Kf7dxFbPFi7csZTgyfK4r 61.00$
+    2Ftx367NL7nAY4WUyJTMeQ1DjNpwnypqnuKTAydrRQgJ 20.08$
+    9yCDkpYssZi2xjqBnChuSLt4PYGhq4t5rg66ajgBqmfy 51.14$
+    6rSZ2r84hMY1XYxF9Kmxq9F7gpEUu8DnLc3yxTiyf9cV 12.25$
+    afYCmj4WESJukFPN5joiqfDrdxeVkzJrsLVPExbpCSu 34.59$
+    3bpHDndU44xgG6VR1nN6KFz1JVTmpJdpnM7is7HN1ptT 38.09$
+    HXyxauHQHF6UnNojuLbC5Ty4jkF42mDJfw9UcXF4w6ib 41.25$
+    GcyDQTqZQFLN9kpB9nWtQXL2ky71VyKxxm2cM5QsG32J 33.91$
+    4KuBSjWabxQcHAM1Q1BUELZVrSezt9XsB6wrEDSXYv2D 32.29$
+    F7RV6aBWfniixoFkQNWmRwznDj2vae2XbusFfvMMjtbE 392.2$
+    7n5S8G9rWJsjzcDh3Tcft8T4KnztU6oPnTVQtKXR5Ay5 39.37$
+    EVSzigN952n23j8aiL9Qytzdykp8mysy22B91sEaLX2R 54.36$
+    CAcSDuVgL8g16yrpmBCRTmbjJXEsjSM1V1Nx7D4oQmfS 60.69$
+    RXtscEJfZUMBxHdcdSFoDUv2p4iwsu21REBhKbeTtFp 0.00$
+    2NSbrzkmFQBqMtyBndaoBx1j5GvR8SKZ6fr3W2WBNaRm 42.77$
+    start533UuQWHmdfv9ukpZhsNJ4rF3684o9ouXkxJGo 62.59$
+    SYL1AkmSL6iQcubvj64ZWjzw5gHrZ8xsznc5Nw6eGL4 62.15$
+    DrnuP46qcf7b7utTY9Esm46SwkTFhYu4TrtRGTyvkE67 196.1$
+    6qLaebiJz8SC8XJpx3KtSwQXPMkv3UZX1whSh2ffLrfP 17.1$
+
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+6UjBC7DyzY85Z7cFtYB3p8L4WqgJF6gvizECf9a4pump
+04.09.2025 17:58:18 на миграции
+результат: 3х от кола
+дев слил до миграции
+до миграции замечены ебошеры:
+    8FB3twsvkSdpQeLJKcXPmh3yJARgK5Rjvz6mBArACniy 40.38$
+    5oY8JP2EJi3DhJwjDnQ8pusDKTuBNgVhbWTZmWEpS9i5 412.31$
+    8fsKLLtvKNanL4ginCaiRS6UfeemY11rSf8U8fN1dJw4 201.79$
+в секунды миграции учавствовали ебошеры:
+    2Ftx367NL7nAY4WUyJTMeQ1DjNpwnypqnuKTAydrRQgJ 19.97$
+    6rSZ2r84hMY1XYxF9Kmxq9F7gpEUu8DnLc3yxTiyf9cV 10.51$
+    BnnNJJgy9w2MLQ9XBKJKG9FQa2r9qdW7u5VpzEkwUcc3 30.90$
+    B27vwq89vX3oDa8fFNGiqQWB2wRiSmsmD8Hw2JuRefC8 40.51$
+    CTRbbM6whSXqp26cFY9iP44Kf7dxFbPFi7csZTgyfK4r 60.77$
+    LfEcaUf77iEhnz6gFpLqYgDb5Uk6Ekc5n69wu7Qa9Uw 103.15$
+    F5PBvNnXacy6nfE8LbcUziEJYMeeAFJcLHPRgcgWT7YB 2.06$
+    9yCDkpYssZi2xjqBnChuSLt4PYGhq4t5rg66ajgBqmfy 45.52$
+    FVAj1u6rGpXb8Rtu4a2VFMJwkJJasWg34TJhXAvkyDUa 3.05$
+    EVSzigN952n23j8aiL9Qytzdykp8mysy22B91sEaLX2R 51.49$
+    4KuBSjWabxQcHAM1Q1BUELZVrSezt9XsB6wrEDSXYv2D 32.40$
+    GcyDQTqZQFLN9kpB9nWtQXL2ky71VyKxxm2cM5QsG32J 33.75$
+    7n5S8G9rWJsjzcDh3Tcft8T4KnztU6oPnTVQtKXR5Ay5 36.91$
+    HXyxauHQHF6UnNojuLbC5Ty4jkF42mDJfw9UcXF4w6ib 40.82$
+    GXmJTB1Pnuz9dHWrzrgkBFs6Jx1VmpRJWoX13wkJio95 367.75$
+    6cPe5bVyBk8hAoq8TC8iJVL9zrqcVuu2myedsbkoqW5U 384.68$
+    STorreSu8X6yPLmiEScNHSGDinqV7j84hWjmvH9SPwk 187.21$
+    2NSbrzkmFQBqMtyBndaoBx1j5GvR8SKZ6fr3W2WBNaRm 48.65$
+    RXtscEJfZUMBxHdcdSFoDUv2p4iwsu21REBhKbeTtFp 19.95$
+    F7RV6aBWfniixoFkQNWmRwznDj2vae2XbusFfvMMjtbE 390.74$
+    MMybeF7PtvrChLeQJvdGPNu7vCWPD8yTVNDb2wGXuiy 0.11$
+    SYL1AkmSL6iQcubvj64ZWjzw5gHrZ8xsznc5Nw6eGL4 61.18$
+    start533UuQWHmdfv9ukpZhsNJ4rF3684o9ouXkxJGo 62.38$
+    DrnuP46qcf7b7utTY9Esm46SwkTFhYu4TrtRGTyvkE67 195.37$
+    trG1hBHXFWyeYj54ftUPB6SGWVyz1nGxmRQNjtPHsxJ 200.42$
+    STorreSu8X6yPLmiEScNHSGDinqV7j84hWjmvH9SPwk 195.16$
+
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+5vALDi6HNw6mctpyHjKdafkC8bPU2G7MSM3V9Eppump
+04.09.2025 18:08:13 на миграции
+результат: 3.5x от кола
+дев не слил до миграции
+до миграции замечены ебошеры:
+    CBahc4zKdmyB4td2jr648NgjsukiZfUQvUvaGhP6nuDA 10.01$
+в секунды миграции учавствовали ебошеры:
+    8FiuwM6FmVKmBLCaJ6QcNScnVw4NuNs7Tt4Skf91saF8 408.73$
+    8znHBwV5wSBWDg7ruwYkHeMDNXQ2BPiwBzkTDJeUy1rP 3070.00$
+    B27vwq89vX3oDa8fFNGiqQWB2wRiSmsmD8Hw2JuRefC8 40.38$
+    CTRbbM6whSXqp26cFY9iP44Kf7dxFbPFi7csZTgyfK4r 60.57$
+    4KuBSjWabxQcHAM1Q1BUELZVrSezt9XsB6wrEDSXYv2D 32.86$
+    GcyDQTqZQFLN9kpB9nWtQXL2ky71VyKxxm2cM5QsG32J 34.29$
+    HXyxauHQHF6UnNojuLbC5Ty4jkF42mDJfw9UcXF4w6ib 41.18$
+    6rSZ2r84hMY1XYxF9Kmxq9F7gpEUu8DnLc3yxTiyf9cV 23.10$
+    F5PBvNnXacy6nfE8LbcUziEJYMeeAFJcLHPRgcgWT7YB 2.05$
+    FfbyDLrGEumCSSbL5gSLui1b7L7pi3mDJvuJy99sLsKV 642.77$
+    EVSzigN952n23j8aiL9Qytzdykp8mysy22B91sEaLX2R 51.96$
+    3bpHDndU44xgG6VR1nN6KFz1JVTmpJdpnM7is7HN1ptT 38.95$
+    8UYGruUkUjpyqzPL417QbAzhRKi4ygMtWVEYkmFznVHK 127.28$
+    J1KjHu8Y8ZieU3h3MygdQmzKth27Mrz7Mn1Q8j6Lqx4e 613.1$
+    FjfDjzMefzPS4kxWzHEXHBZUxKEcdSDjUw9eQgFAy55z 613.1$
+    7GGPrWsu6pt1PZd4MGBoAkSe2dQgSSu4UwT6MPWW4QGR 164.32$
+    FL4oyQ93YtsSfXeEdu6MtjTqCVn7d9FsvF3fGo4WNtZ 10.12$
+    GF2TuDA2SBw9AcAwoHsAmwBzWHLZVW59FaMqi2gMUCRd 50.58$
+    4vTQn5ncpcE4JQM6v8D5jjmq4uvLGPTEnuj9AUmvkMCQ 57.11$
+    7n5S8G9rWJsjzcDh3Tcft8T4KnztU6oPnTVQtKXR5Ay5 33.83$
+    afYCmj4WESJukFPN5joiqfDrdxeVkzJrsLVPExbpCSu 31.87$
+    RfqWTWGqp175guA8qPhf5kPmoY2b8HDJ98aRJ95w888 97.82$
+    GEb3dwRE2EKCaqekuYfowcUdbtbQGCAveU9qgHp88888 166.42$
+    F7RV6aBWfniixoFkQNWmRwznDj2vae2XbusFfvMMjtbE 389.46$
+    jZTZGwmBVRgwMeRWnQFJRFALbkCWmQYMLEWs9YbEikj 83.25$
+    2NSbrzkmFQBqMtyBndaoBx1j5GvR8SKZ6fr3W2WBNaRm 41.13$
+    RXtscEJfZUMBxHdcdSFoDUv2p4iwsu21REBhKbeTtFp 0.00$
+    9yCDkpYssZi2xjqBnChuSLt4PYGhq4t5rg66ajgBqmfy 61.93$
+    BnnNJJgy9w2MLQ9XBKJKG9FQa2r9qdW7u5VpzEkwUcc3 30.83$
+    MMybeF7PtvrChLeQJvdGPNu7vCWPD8yTVNDb2wGXuiy 0.12$
+    AQwNxyDrre34Dv4WcoEJc8vwDuZgeRW1so9oAwSEYpc8 79.64$
+    start533UuQWHmdfv9ukpZhsNJ4rF3684o9ouXkxJGo 62.24$
+    SYL1AkmSL6iQcubvj64ZWjzw5gHrZ8xsznc5Nw6eGL4 61.95$
+    DrnuP46qcf7b7utTY9Esm46SwkTFhYu4TrtRGTyvkE67 194.73$
+    CAcSDuVgL8g16yrpmBCRTmbjJXEsjSM1V1Nx7D4oQmfS 60.16$
+    6qLaebiJz8SC8XJpx3KtSwQXPMkv3UZX1whSh2ffLrfP 18.72$
+
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+4evKBNdRDzLWPQfJM5GhjKEJS5zsYo4Vwe5YGtxppump
+04.09.2025 18:23:31 на миграции
+результат: 1.9x от кола
+дев не слил до миграции
+до миграции никто из ебошеров не заходил
+в секунды миграции учавствовали ебошеры:
+    2Ftx367NL7nAY4WUyJTMeQ1DjNpwnypqnuKTAydrRQgJ 19.85$
+    B27vwq89vX3oDa8fFNGiqQWB2wRiSmsmD8Hw2JuRefC8 40.28$
+    CTRbbM6whSXqp26cFY9iP44Kf7dxFbPFi7csZTgyfK4r 60.42$
+    MMybeF7PtvrChLeQJvdGPNu7vCWPD8yTVNDb2wGXuiy 0.11$
+    FVAj1u6rGpXb8Rtu4a2VFMJwkJJasWg34TJhXAvkyDUa 3.03$
+    EVSzigN952n23j8aiL9Qytzdykp8mysy22B91sEaLX2R 46.92$
+    4KuBSjWabxQcHAM1Q1BUELZVrSezt9XsB6wrEDSXYv2D 28.53$
+    GcyDQTqZQFLN9kpB9nWtQXL2ky71VyKxxm2cM5QsG32J 29.50$
+    HXyxauHQHF6UnNojuLbC5Ty4jkF42mDJfw9UcXF4w6ib 35.79$
+    3bpHDndU44xgG6VR1nN6KFz1JVTmpJdpnM7is7HN1ptT 35.14$
+    afYCmj4WESJukFPN5joiqfDrdxeVkzJrsLVPExbpCSu 32.65$
+    6rSZ2r84hMY1XYxF9Kmxq9F7gpEUu8DnLc3yxTiyf9cV 11.36$
+    F5PBvNnXacy6nfE8LbcUziEJYMeeAFJcLHPRgcgWT7YB 1.8$
+    BnnNJJgy9w2MLQ9XBKJKG9FQa2r9qdW7u5VpzEkwUcc3 32.68$
+    GF2TuDA2SBw9AcAwoHsAmwBzWHLZVW59FaMqi2gMUCRd 50.45$
+    4vTQn5ncpcE4JQM6v8D5jjmq4uvLGPTEnuj9AUmvkMCQ 62.92$
+    F7RV6aBWfniixoFkQNWmRwznDj2vae2XbusFfvMMjtbE 388.49$
+    2NSbrzkmFQBqMtyBndaoBx1j5GvR8SKZ6fr3W2WBNaRm 44.07$
+    RXtscEJfZUMBxHdcdSFoDUv2p4iwsu21REBhKbeTtFp 0.00$
+    SYL1AkmSL6iQcubvj64ZWjzw5gHrZ8xsznc5Nw6eGL4 63.46$
+    EoCkV3B6PvcLcnR3XJASzYGL27hPNr8SH2p9MGUcyvSi 59.66$
+    56rnZT6oreR9PQpMqmsWSy9evYmLTYJSZ3iaiRWfCEWE 6.60$
+    9yCDkpYssZi2xjqBnChuSLt4PYGhq4t5rg66ajgBqmfy 51.55$
+    DrnuP46qcf7b7utTY9Esm46SwkTFhYu4TrtRGTyvkE67 194.24$
+    dexvcNUf31JyHkxcsceWpqGErhXe5Eu5QWLe993m1Pu 4.25$
+    AQwNxyDrre34Dv4WcoEJc8vwDuZgeRW1so9oAwSEYpc8 81.80$
+    6qLaebiJz8SC8XJpx3KtSwQXPMkv3UZX1whSh2ffLrfP 18.39$
+
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+3FL9TGT7FCEDKumLWKHb15ooTgpLoRt7JVF7gXQGpump
+04.09.2025 18:28:19 на миграции
+результат: 10x от кола
+дев не слил до миграции
+до миграции никто из ебошеров не заходил
+в секунды миграции учавствовали ебошеры:
+    LfEcaUf77iEhnz6gFpLqYgDb5Uk6Ekc5n69wu7Qa9Uw 154.16$
+    2Ftx367NL7nAY4WUyJTMeQ1DjNpwnypqnuKTAydrRQgJ 19.82$
+    6rSZ2r84hMY1XYxF9Kmxq9F7gpEUu8DnLc3yxTiyf9cV 10.17$
+    6cPe5bVyBk8hAoq8TC8iJVL9zrqcVuu2myedsbkoqW5U 374.49$
+    EVSzigN952n23j8aiL9Qytzdykp8mysy22B91sEaLX2R 51.36$
+    4KuBSjWabxQcHAM1Q1BUELZVrSezt9XsB6wrEDSXYv2D 32.46$
+    GcyDQTqZQFLN9kpB9nWtQXL2ky71VyKxxm2cM5QsG32J 34.31$
+    7n5S8G9rWJsjzcDh3Tcft8T4KnztU6oPnTVQtKXR5Ay5 36.36$
+    HXyxauHQHF6UnNojuLbC5Ty4jkF42mDJfw9UcXF4w6ib 40.89$
+    afYCmj4WESJukFPN5joiqfDrdxeVkzJrsLVPExbpCSu 34.62$
+    2NSbrzkmFQBqMtyBndaoBx1j5GvR8SKZ6fr3W2WBNaRm 36.40$
+    MMybeF7PtvrChLeQJvdGPNu7vCWPD8yTVNDb2wGXuiy 0.12$
+    RXtscEJfZUMBxHdcdSFoDUv2p4iwsu21REBhKbeTtFp 0.00$
+    6qLaebiJz8SC8XJpx3KtSwQXPMkv3UZX1whSh2ffLrfP 18.82$
+тут интересно, приход основных денег пришёл позже на маркеткапе 100-140к:
+    4Ttwst6k6ip1kVjtGdE6fHtms8TWWs8HSYfyBTuEmF39 100.93$
+    8ypj8ZLvSbTTMiND6eHLsyzwqdQxxcCRToruJ4ZGvFbq 388.42$
+    2fNPNJKE3ny6b5Vo1wdfa7J7KqYNjeyBM3PbGGSJ398r 195.94$
+    4Ttwst6k6ip1kVjtGdE6fHtms8TWWs8HSYfyBTuEmF39 100.93$
+    7q15WZ4iSUDvqfs5Kdh9bfptkQhs6qKUyCUq6GY6PGxg 390.72$
+    8qvNUZf5p4Q15WNc64xZ5cLrLZU1ZDecKVpSDBkU3vbz 232.44$
+    DULT92uQ2twmM82FmREXBTs5aQ9ynTJGLz5VSD6RUhXp 394.74$
+    kEFiAX3jo5NmemysQov342TZ9mGh6yp92GDRjhA8XDf 259.67$
+    trG1hBHXFWyeYj54ftUPB6SGWVyz1nGxmRQNjtPHsxJ 200.80$
+    DKvJD5BYRE1nNVULwst1T8hTvEgs8HP7TnGeM2G9dwqQ 200.83$
+    DULT92uQ2twmM82FmREXBTs5aQ9ynTJGLz5VSD6RUhXp 397.82$
+
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+5uWmHLdeLCS4kthE1DeWmWNzyxpHejGJKt2aKKyTpump
+04.09.2025 18:39:37 на миграции
+результат: слив бабла
+дев слил до миграции
+до миграции никто из ебошеров не заходил
+в секунды миграции учавствовали ебошеры:
+    BnnNJJgy9w2MLQ9XBKJKG9FQa2r9qdW7u5VpzEkwUcc3 30.61$
+    CTRbbM6whSXqp26cFY9iP44Kf7dxFbPFi7csZTgyfK4r 60.20$
+    B27vwq89vX3oDa8fFNGiqQWB2wRiSmsmD8Hw2JuRefC8 40.13$
+    F5PBvNnXacy6nfE8LbcUziEJYMeeAFJcLHPRgcgWT7YB 2.13$
+    2Ftx367NL7nAY4WUyJTMeQ1DjNpwnypqnuKTAydrRQgJ 19.82$
+    6rSZ2r84hMY1XYxF9Kmxq9F7gpEUu8DnLc3yxTiyf9cV 10.15$
+    afYCmj4WESJukFPN5joiqfDrdxeVkzJrsLVPExbpCSu 34.70$
+    HXyxauHQHF6UnNojuLbC5Ty4jkF42mDJfw9UcXF4w6ib 41.16$
+    GcyDQTqZQFLN9kpB9nWtQXL2ky71VyKxxm2cM5QsG32J 34.03$
+    4KuBSjWabxQcHAM1Q1BUELZVrSezt9XsB6wrEDSXYv2D 32.54$
+    FVAj1u6rGpXb8Rtu4a2VFMJwkJJasWg34TJhXAvkyDUa 3.02$
+    EVSzigN952n23j8aiL9Qytzdykp8mysy22B91sEaLX2R 51.83$
+    7n5S8G9rWJsjzcDh3Tcft8T4KnztU6oPnTVQtKXR5Ay5 37.15$
+    3bpHDndU44xgG6VR1nN6KFz1JVTmpJdpnM7is7HN1ptT 38.62$
+    9yCDkpYssZi2xjqBnChuSLt4PYGhq4t5rg66ajgBqmfy 47.76$
+    F7RV6aBWfniixoFkQNWmRwznDj2vae2XbusFfvMMjtbE 387.08$
+    2NSbrzkmFQBqMtyBndaoBx1j5GvR8SKZ6fr3W2WBNaRm 42.08$
+    RXtscEJfZUMBxHdcdSFoDUv2p4iwsu21REBhKbeTtFp 0.00$
+    SYL1AkmSL6iQcubvj64ZWjzw5gHrZ8xsznc5Nw6eGL4 61.44$
+    start533UuQWHmdfv9ukpZhsNJ4rF3684o9ouXkxJGo 61.86$
+    DrnuP46qcf7b7utTY9Esm46SwkTFhYu4TrtRGTyvkE67 193.89$
+    MMybeF7PtvrChLeQJvdGPNu7vCWPD8yTVNDb2wGXuiy 0.13$
+    8qvNUZf5p4Q15WNc64xZ5cLrLZU1ZDecKVpSDBkU3vbz 204.88$
+    6qLaebiJz8SC8XJpx3KtSwQXPMkv3UZX1whSh2ffLrfP 18.26$
+    4vevqYLtSP7Hxrvw64E8bUUq4Co6xPJfWFGdZLVXyKK2 19.92$
+
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+cCWPpQoDxnkFtLa72h2QyiZcbYY1GLmcQDs6vAipump
+04.09.2025 18:44:06 на миграции
+результат: x1.35
+дев не слил до миграции
+до миграции никто из ебошеров не заходил
+в секунды миграции учавствовали ебошеры:
+    CTRbbM6whSXqp26cFY9iP44Kf7dxFbPFi7csZTgyfK4r 60.38$
+    B27vwq89vX3oDa8fFNGiqQWB2wRiSmsmD8Hw2JuRefC8 40.25$
+    niggerd597QYedtvjQDVHZTCCGyJrwHNm2i49dkm5zS 2980$
+    EVSzigN952n23j8aiL9Qytzdykp8mysy22B91sEaLX2R 53.08$
+    4KuBSjWabxQcHAM1Q1BUELZVrSezt9XsB6wrEDSXYv2D 33.27$
+    GcyDQTqZQFLN9kpB9nWtQXL2ky71VyKxxm2cM5QsG32J 34.97$
+    7n5S8G9rWJsjzcDh3Tcft8T4KnztU6oPnTVQtKXR5Ay5 38.03$
+    HXyxauHQHF6UnNojuLbC5Ty4jkF42mDJfw9UcXF4w6ib 41.71$
+    3bpHDndU44xgG6VR1nN6KFz1JVTmpJdpnM7is7HN1ptT 39.35$
+    afYCmj4WESJukFPN5joiqfDrdxeVkzJrsLVPExbpCSu 35.70$
+    6rSZ2r84hMY1XYxF9Kmxq9F7gpEUu8DnLc3yxTiyf9cV 20.31$
+    F5PBvNnXacy6nfE8LbcUziEJYMeeAFJcLHPRgcgWT7YB 2.12$
+    BsB6Rzz7FvZVb4SLPtD9zETWajpR9TVbYKmaJKFbWHM3 46.04$
+    GF2TuDA2SBw9AcAwoHsAmwBzWHLZVW59FaMqi2gMUCRd 48.85$
+    4vTQn5ncpcE4JQM6v8D5jjmq4uvLGPTEnuj9AUmvkMCQ 49.39$
+    AQwNxyDrre34Dv4WcoEJc8vwDuZgeRW1so9oAwSEYpc8 66.72$
+    EoCkV3B6PvcLcnR3XJASzYGL27hPNr8SH2p9MGUcyvSi 51.04$
+    CAcSDuVgL8g16yrpmBCRTmbjJXEsjSM1V1Nx7D4oQmfS 29.98$
+    F7RV6aBWfniixoFkQNWmRwznDj2vae2XbusFfvMMjtbE 388.24$
+    FVAj1u6rGpXb8Rtu4a2VFMJwkJJasWg34TJhXAvkyDUa 3.03$
+    FL4oyQ93YtsSfXeEdu6MtjTqCVn7d9FsvF3fGo4WNtZ 10.08$
+    2NSbrzkmFQBqMtyBndaoBx1j5GvR8SKZ6fr3W2WBNaRm 42.97$
+    RXtscEJfZUMBxHdcdSFoDUv2p4iwsu21REBhKbeTtFp 0.00$
+    RfqWTWGqp175guA8qPhf5kPmoY2b8HDJ98aRJ95w888 100.3$
+    GEb3dwRE2EKCaqekuYfowcUdbtbQGCAveU9qgHp88888 174.3$
+    9yCDkpYssZi2xjqBnChuSLt4PYGhq4t5rg66ajgBqmfy 56.15$
+    2Ftx367NL7nAY4WUyJTMeQ1DjNpwnypqnuKTAydrRQgJ 19.84$
+    BnnNJJgy9w2MLQ9XBKJKG9FQa2r9qdW7u5VpzEkwUcc3 30.72$
+    start533UuQWHmdfv9ukpZhsNJ4rF3684o9ouXkxJGo 61.48$
+    SYL1AkmSL6iQcubvj64ZWjzw5gHrZ8xsznc5Nw6eGL4 61.83$
+    DrnuP46qcf7b7utTY9Esm46SwkTFhYu4TrtRGTyvkE67 194.12$
+    9vXnk76UCu9cUPg6eQk5rqShSwBBWvbbiDcBW2Pa21ZJ 19.99$
+    FqBAfZWZgy4FPBQMpvApr5NjekFt5LpavasuRhLEr917 2.12$
+    6qLaebiJz8SC8XJpx3KtSwQXPMkv3UZX1whSh2ffLrfP 18.56$
+    CBahc4zKdmyB4td2jr648NgjsukiZfUQvUvaGhP6nuDA 99.95$
+
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Dnbufq2jE6sWoscmqcZLifcc7psKmSzzYJLMCLC1pump
+04.09.2025 18:44:29 на миграции
+результат: 2.2x
+дев не слил до миграции
+до миграции никто из ебошеров не заходил
+в секунды миграции учавствовали ебошеры:
+    MMybeF7PtvrChLeQJvdGPNu7vCWPD8yTVNDb2wGXuiy 0.1$
+    2Ftx367NL7nAY4WUyJTMeQ1DjNpwnypqnuKTAydrRQgJ 19.81$
+    6cPe5bVyBk8hAoq8TC8iJVL9zrqcVuu2myedsbkoqW5U 372.31$
+    4KuBSjWabxQcHAM1Q1BUELZVrSezt9XsB6wrEDSXYv2D 33.45$
+    GcyDQTqZQFLN9kpB9nWtQXL2ky71VyKxxm2cM5QsG32J 35.01$
+    7n5S8G9rWJsjzcDh3Tcft8T4KnztU6oPnTVQtKXR5Ay5 37.79$
+    HXyxauHQHF6UnNojuLbC5Ty4jkF42mDJfw9UcXF4w6ib 41.61$
+    3bpHDndU44xgG6VR1nN6KFz1JVTmpJdpnM7is7HN1ptT 38.68$
+    afYCmj4WESJukFPN5joiqfDrdxeVkzJrsLVPExbpCSu 36.14$
+    6rSZ2r84hMY1XYxF9Kmxq9F7gpEUu8DnLc3yxTiyf9cV 9.86$
+    GXmJTB1Pnuz9dHWrzrgkBFs6Jx1VmpRJWoX13wkJio95 357.47$
+    F5PBvNnXacy6nfE8LbcUziEJYMeeAFJcLHPRgcgWT7YB 2.12$
+    9yCDkpYssZi2xjqBnChuSLt4PYGhq4t5rg66ajgBqmfy 51.00$
+    2NSbrzkmFQBqMtyBndaoBx1j5GvR8SKZ6fr3W2WBNaRm 42.96$
+    kEFiAX3jo5NmemysQov342TZ9mGh6yp92GDRjhA8XDf 185.97$
+    RXtscEJfZUMBxHdcdSFoDUv2p4iwsu21REBhKbeTtFp 19.42$
+    BnnNJJgy9w2MLQ9XBKJKG9FQa2r9qdW7u5VpzEkwUcc3 29.21$
+    STorreSu8X6yPLmiEScNHSGDinqV7j84hWjmvH9SPwk 184.27$
+    AGvJnMfsNdPEqo2TCFD5azorBq9eX9RcbEKJtnbLr3Lu 201.45$
+    start533UuQWHmdfv9ukpZhsNJ4rF3684o9ouXkxJGo 75.94$
+    DrnuP46qcf7b7utTY9Esm46SwkTFhYu4TrtRGTyvkE67 193.77$
+    SYL1AkmSL6iQcubvj64ZWjzw5gHrZ8xsznc5Nw6eGL4 53.88$
+    trG1hBHXFWyeYj54ftUPB6SGWVyz1nGxmRQNjtPHsxJ 198.85$
+    kEFiAX3jo5NmemysQov342TZ9mGh6yp92GDRjhA8XDf 190.95$
+    3SzGurSjCeHeysypWAmwKmUzNnKtCaS8ZF9tJja4kz1w 103.72$
+    zZkY9M3JJkLPZeX5L4AY7QD69S3SbjRuAAi131rbNgi 99.72$
+    DULTXqjYWJbqbdzS8QCmjhDaq1vyc2qSTDyrwR7Nti9M 184.84$
+    rzC3xPL6pZrDqcxnM1zRY6eEJ8QnRKJg5KjBeHjCXJc 200.58$
+    94iQuYjVgTwGXxtM7ywfpzfLvx3gN4oQRuc9osRE2pEm 395.98$
+    J3Ez1WjZMpcnMua4xA9nirZwWTurAxY7wqhm4vPeJ8k5 397.66$
+    4Ttwst6k6ip1kVjtGdE6fHtms8TWWs8HSYfyBTuEmF39 40.25$
+
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+9hyDvNvDBWVHbnKK9FJ2usBA34JQH9qqxvyYCM55pump
+04.09.2025 19:56:26 на миграции
+результат: 1.3x
+дев не слил до миграции
+до миграции замечены ебошеры:
+    diddyadSFmdcGdFuDeoXGBGP6RSApN6NeEejsQ2hTMV 200.21$
+в секунды миграции учавствовали ебошеры:
+    BnnNJJgy9w2MLQ9XBKJKG9FQa2r9qdW7u5VpzEkwUcc3 30.77$
+    B27vwq89vX3oDa8fFNGiqQWB2wRiSmsmD8Hw2JuRefC8 40.35$
+    CTRbbM6whSXqp26cFY9iP44Kf7dxFbPFi7csZTgyfK4r 60.52$
+    F5PBvNnXacy6nfE8LbcUziEJYMeeAFJcLHPRgcgWT7YB 2.14$
+    2Ftx367NL7nAY4WUyJTMeQ1DjNpwnypqnuKTAydrRQgJ 19.89$
+    MMybeF7PtvrChLeQJvdGPNu7vCWPD8yTVNDb2wGXuiy 0.12$
+    FVAj1u6rGpXb8Rtu4a2VFMJwkJJasWg34TJhXAvkyDUa 5.06$
+    6rSZ2r84hMY1XYxF9Kmxq9F7gpEUu8DnLc3yxTiyf9cV 10.89$
+    9yCDkpYssZi2xjqBnChuSLt4PYGhq4t5rg66ajgBqmfy 49.54$
+    F7RV6aBWfniixoFkQNWmRwznDj2vae2XbusFfvMMjtbE 389.12$
+    start533UuQWHmdfv9ukpZhsNJ4rF3684o9ouXkxJGo 59.92$
+    SYL1AkmSL6iQcubvj64ZWjzw5gHrZ8xsznc5Nw6eGL4 59.52$
+    RXtscEJfZUMBxHdcdSFoDUv2p4iwsu21REBhKbeTtFp 0.00$
+    6JguQEansvS7boW1waGcA6a6tC4xLXWaHWnNsZiBiBpk 163.43$
+    DrnuP46qcf7b7utTY9Esm46SwkTFhYu4TrtRGTyvkE67 194.91$
+    CJDtBcJe71SxcCDDyYj9rgW6NhHKRuxAimdVaBpMt4dR 501.77$
+    DULTv14gM667tfnyVFphDYQi23qZ3tVWE7tFfJ8EQmtN 287.99$
+    7muomhBk1zZva1nu4gggB3uQ6boj9o1e3rXq9Q6DQq8h 200.78$
+    rsrsSsTU77K85CS9xMJUqDDVzDhFCoaMn98AJUaoQCG 387.41$
+    dexvcNUf31JyHkxcsceWpqGErhXe5Eu5QWLe993m1Pu 6.23$
+    DULTqj2gt8WmMAfQRwae3QAXRLroGpo7TQYpqL6dmJL2 292.36$
+    6qLaebiJz8SC8XJpx3KtSwQXPMkv3UZX1whSh2ffLrfP 18.96$
+
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+8R1ktznZT4omiNdkE8nDVeLXED19FX5nACyMfLZmpump
+04.09.2025 20:10:31 на миграции
+результат: слив бабла
+дев слил до миграции
+до миграции замечены ебошеры:
+    AkwtqnhWBws2f6AG1rsiJszx2F99R4zYxGFHosgeBFkv 701.93$
+    BQGkYQTDGH5Y8zcV9VGN2Rb26MszbEpPVWrpxpkwp1yz 100.28$
+    diddyadSFmdcGdFuDeoXGBGP6RSApN6NeEejsQ2hTMV 481.32$
+в секунды миграции учавствовали ебошеры:
+    2Ftx367NL7nAY4WUyJTMeQ1DjNpwnypqnuKTAydrRQgJ 19.92$
+    BnnNJJgy9w2MLQ9XBKJKG9FQa2r9qdW7u5VpzEkwUcc3 30.82$
+    B27vwq89vX3oDa8fFNGiqQWB2wRiSmsmD8Hw2JuRefC8 40.41$
+    CTRbbM6whSXqp26cFY9iP44Kf7dxFbPFi7csZTgyfK4r 60.62$
+    6rSZ2r84hMY1XYxF9Kmxq9F7gpEUu8DnLc3yxTiyf9cV 11.34$
+    F5PBvNnXacy6nfE8LbcUziEJYMeeAFJcLHPRgcgWT7YB 1.92$
+    FVAj1u6rGpXb8Rtu4a2VFMJwkJJasWg34TJhXAvkyDUa 5.06$
+    LfEcaUf77iEhnz6gFpLqYgDb5Uk6Ekc5n69wu7Qa9Uw 154.97$
+    9yCDkpYssZi2xjqBnChuSLt4PYGhq4t5rg66ajgBqmfy 47.36$
+    6cPe5bVyBk8hAoq8TC8iJVL9zrqcVuu2myedsbkoqW5U 384.10$
+    STorreSu8X6yPLmiEScNHSGDinqV7j84hWjmvH9SPwk 195.09$
+    kEFiAX3jo5NmemysQov342TZ9mGh6yp92GDRjhA8XDf 190.62$
+    rsrsSsTU77K85CS9xMJUqDDVzDhFCoaMn98AJUaoQCG 399.69$
+    F7RV6aBWfniixoFkQNWmRwznDj2vae2XbusFfvMMjtbE 389.79$
+    STorreSu8X6yPLmiEScNHSGDinqV7j84hWjmvH9SPwk 187.11$
+    kEFiAX3jo5NmemysQov342TZ9mGh6yp92GDRjhA8XDf 182.84$
+    5K9r1dvizNWDyrDC2Nqg8gqiM6Lzf1K2oVvX5nckoLqD 6.02$
+    DrnuP46qcf7b7utTY9Esm46SwkTFhYu4TrtRGTyvkE67 194.89$
+    start533UuQWHmdfv9ukpZhsNJ4rF3684o9ouXkxJGo 60.78$
+    SYL1AkmSL6iQcubvj64ZWjzw5gHrZ8xsznc5Nw6eGL4 60.33$
+    RXtscEJfZUMBxHdcdSFoDUv2p4iwsu21REBhKbeTtFp 0.00$
+    3SzGurSjCeHeysypWAmwKmUzNnKtCaS8ZF9tJja4kz1w 101.74$
+    kEFiAX3jo5NmemysQov342TZ9mGh6yp92GDRjhA8XDf 201.01$
+    MMybeF7PtvrChLeQJvdGPNu7vCWPD8yTVNDb2wGXuiy 0.11$
+    FD5sk3AK3SfEAPBe2PufriasLsHLesFhUvDjb7mr9bKd 100.53$
+    AoG7J2jydRxZyEbTBz2TphhXdxXekX8JDXxf7a6gnfaY 402.10$
+    J3Ez1WjZMpcnMua4xA9nirZwWTurAxY7wqhm4vPeJ8k5 199.32$
+    rsrsSsTU77K85CS9xMJUqDDVzDhFCoaMn98AJUaoQCG 402.76$
+    E3JsN8jSqpKHgpPeJ1XvPtTuS43md8HoDMQxbALDiiKo 10.05$
+    4Ttwst6k6ip1kVjtGdE6fHtms8TWWs8HSYfyBTuEmF39 80.97$
+    J3Ez1WjZMpcnMua4xA9nirZwWTurAxY7wqhm4vPeJ8k5 197.45$
+
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+FJHBGp7c64qZ6mmNhLase9NikjbGFoJKpjYBcZhGpump
+04.09.2025 20:29:07 на миграции
+результат: x1.6
+дев слил до миграции
+до миграции замечены ебошеры:
+    4bC3hkmTPrnbrjVW6pY3U2gBWFYg4yB9cP3egVWY6yV6 22.33$
+    4bC3hkmTPrnbrjVW6pY3U2gBWFYg4yB9cP3egVWY6yV6 20.49$
+    4bC3hkmTPrnbrjVW6pY3U2gBWFYg4yB9cP3egVWY6yV6 20.49$
+в секунды миграции учавствовали ебошеры:
+    2Ftx367NL7nAY4WUyJTMeQ1DjNpwnypqnuKTAydrRQgJ 19.95$
+    F5PBvNnXacy6nfE8LbcUziEJYMeeAFJcLHPRgcgWT7YB 2.06$
+    B27vwq89vX3oDa8fFNGiqQWB2wRiSmsmD8Hw2JuRefC8 40.48$
+    CTRbbM6whSXqp26cFY9iP44Kf7dxFbPFi7csZTgyfK4r 60.73$
+    9yCDkpYssZi2xjqBnChuSLt4PYGhq4t5rg66ajgBqmfy 49.47$
+    6rSZ2r84hMY1XYxF9Kmxq9F7gpEUu8DnLc3yxTiyf9cV 12.29$
+    MMybeF7PtvrChLeQJvdGPNu7vCWPD8yTVNDb2wGXuiy 0.12$
+    FVAj1u6rGpXb8Rtu4a2VFMJwkJJasWg34TJhXAvkyDUa 5.08$
+    6cPe5bVyBk8hAoq8TC8iJVL9zrqcVuu2myedsbkoqW5U 377.69$
+    F7RV6aBWfniixoFkQNWmRwznDj2vae2XbusFfvMMjtbE 389.79$
+    BnnNJJgy9w2MLQ9XBKJKG9FQa2r9qdW7u5VpzEkwUcc3 30.88$
+    DrnuP46qcf7b7utTY9Esm46SwkTFhYu4TrtRGTyvkE67 195.23$
+    SYL1AkmSL6iQcubvj64ZWjzw5gHrZ8xsznc5Nw6eGL4 62.22$
+    start533UuQWHmdfv9ukpZhsNJ4rF3684o9ouXkxJGo 61.79$
+    RXtscEJfZUMBxHdcdSFoDUv2p4iwsu21REBhKbeTtFp 0.00$
+    6qLaebiJz8SC8XJpx3KtSwQXPMkv3UZX1whSh2ffLrfP 16.74$
+    4Ttwst6k6ip1kVjtGdE6fHtms8TWWs8HSYfyBTuEmF39 30.43$
+    4ojcXeM18auosis5JMsTf73XLv7x68ZesGRod7oApcRH 20.29$
+
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+Hy4AR5XTD2QprvxT1dw7Zx7tWjpfebxM7SKLNvHWpump
+04.09.2025 20:41:16 на миграции
+результат: слив бабла
+дев слил до миграции
+до миграции замечены ебошеры:
+    FhLXSnMgkQu6obU9BrnohbdEP6YmJBdbo78Rwjtc8LiH 201.85$
+    diddyadSFmdcGdFuDeoXGBGP6RSApN6NeEejsQ2hTMV 200.04$
+    5K9r1dvizNWDyrDC2Nqg8gqiM6Lzf1K2oVvX5nckoLqD 6.00$
+    9EHq9t72VDUN4rb2Ki5ihNCr6YQVUKEabDwiwmn7qTw1 20.03$
+    D2EMtpL4NvmPxoR1qEan394k2K22qPG2nc6awYTyj9N6 40.06$
+    D2EMtpL4NvmPxoR1qEan394k2K22qPG2nc6awYTyj9N6 40.06$
+    BJDHJGqBwWqC3n8es6ikfLuxS4NeWGW9dmh4gTmnMv1c 50.14$
+    BJDHJGqBwWqC3n8es6ikfLuxS4NeWGW9dmh4gTmnMv1c 50.14$
+    78VmpGcBmrEaisBABR1Fbf92wYpN4qEP5heBHySt6VNt 600.31$
+    BfbRCPBvKrc2z1ixdynATrfDYSnQyWNcSLszSAvQEd3S 100.05$
+    7z9JKs9aoRa5dqTTK9oL5xj4peTNkN5HZWFM9Su7nEZQ 188.18$
+    E3JsN8jSqpKHgpPeJ1XvPtTuS43md8HoDMQxbALDiiKo 10.02$
+    E3JsN8jSqpKHgpPeJ1XvPtTuS43md8HoDMQxbALDiiKo 10.02$
+    BfbRCPBvKrc2z1ixdynATrfDYSnQyWNcSLszSAvQEd3S 50.13$
+    E3JsN8jSqpKHgpPeJ1XvPtTuS43md8HoDMQxbALDiiKo 4.01$
+    E3JsN8jSqpKHgpPeJ1XvPtTuS43md8HoDMQxbALDiiKo 4.01$
+    E3JsN8jSqpKHgpPeJ1XvPtTuS43md8HoDMQxbALDiiKo 10.02$
+в секунды миграции учавствовали ебошеры:
+    2Ftx367NL7nAY4WUyJTMeQ1DjNpwnypqnuKTAydrRQgJ 19.88$
+    F5PBvNnXacy6nfE8LbcUziEJYMeeAFJcLHPRgcgWT7YB 2.05$
+    BnnNJJgy9w2MLQ9XBKJKG9FQa2r9qdW7u5VpzEkwUcc3 30.75$
+    B27vwq89vX3oDa8fFNGiqQWB2wRiSmsmD8Hw2JuRefC8 40.33$
+    CTRbbM6whSXqp26cFY9iP44Kf7dxFbPFi7csZTgyfK4r 60.49$
+    FVAj1u6rGpXb8Rtu4a2VFMJwkJJasWg34TJhXAvkyDUa 5.05$
+    9yCDkpYssZi2xjqBnChuSLt4PYGhq4t5rg66ajgBqmfy 49.04$
+    6rSZ2r84hMY1XYxF9Kmxq9F7gpEUu8DnLc3yxTiyf9cV 10.31$
+    LfEcaUf77iEhnz6gFpLqYgDb5Uk6Ekc5n69wu7Qa9Uw 154.42$
+    start533UuQWHmdfv9ukpZhsNJ4rF3684o9ouXkxJGo 62.09$
+    SYL1AkmSL6iQcubvj64ZWjzw5gHrZ8xsznc5Nw6eGL4 61.63$
+    RXtscEJfZUMBxHdcdSFoDUv2p4iwsu21REBhKbeTtFp 18.45$
+    MMybeF7PtvrChLeQJvdGPNu7vCWPD8yTVNDb2wGXuiy 0.11$
+    DrnuP46qcf7b7utTY9Esm46SwkTFhYu4TrtRGTyvkE67 194.46$
+    STorreSu8X6yPLmiEScNHSGDinqV7j84hWjmvH9SPwk 191.95$
+    DULT92uQ2twmM82FmREXBTs5aQ9ynTJGLz5VSD6RUhXp 197.68$
+    4vevqYLtSP7Hxrvw64E8bUUq4Co6xPJfWFGdZLVXyKK2 20.01$
+
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+
+4MzNqcoep29nZuoHVTUn24eE4B9pvskrUo6nJ9aDpump
+04.09.2025 20:46:15 на миграции
+результат: x4.5
+дев слил до миграции
+до миграции замечены ебошеры:
+    C9B2nJoF271SU9MnZtiNaXn4ZxGdNvvABxGTLXS4pj4V 199.54$
+    2Ftx367NL7nAY4WUyJTMeQ1DjNpwnypqnuKTAydrRQgJ 19.82$
+    6rSZ2r84hMY1XYxF9Kmxq9F7gpEUu8DnLc3yxTiyf9cV 10.29$
+    LfEcaUf77iEhnz6gFpLqYgDb5Uk6Ekc5n69wu7Qa9Uw 153.71$
+    5K9r1dvizNWDyrDC2Nqg8gqiM6Lzf1K2oVvX5nckoLqD 6.00$
+    3SzGurSjCeHeysypWAmwKmUzNnKtCaS8ZF9tJja4kz1w 102.22$
+    RXtscEJfZUMBxHdcdSFoDUv2p4iwsu21REBhKbeTtFp 0.00$
+    rsrsSsTU77K85CS9xMJUqDDVzDhFCoaMn98AJUaoQCG 396.17$
+    kEFiAX3jo5NmemysQov342TZ9mGh6yp92GDRjhA8XDf 205.16$
+    MMybeF7PtvrChLeQJvdGPNu7vCWPD8yTVNDb2wGXuiy 0.13$
+    DULTqj2gt8WmMAfQRwae3QAXRLroGpo7TQYpqL6dmJL2 300.30$
+    DULTqj2gt8WmMAfQRwae3QAXRLroGpo7TQYpqL6dmJL2 297.44$
+    
+в секунды миграции учавствовали ебошеры:
