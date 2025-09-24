@@ -82,7 +82,6 @@ class JupiterTokenListener:
             pools_msg_1 = {
                 "type": "subscribe:pool",
                 "pools": [
-                    "7ydCvqmPj42msz3mm2W28a4hXKaukF7XNpRjNXNhbonk",
                     "29F4jaxGYGCP9oqJxWn7BRrXDCXMQYFEirSHQjhhpump"
                 ]
             }

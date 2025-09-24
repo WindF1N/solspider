@@ -1,0 +1,252 @@
+Кошельки, работающие ТОЛЬКО с контрактами, содержащими niggerd597QYedtvjQDVHZTCCGyJrwHNm2i49dkm5zS:
+Всего найдено эксклюзивных кошельков: 45
+
+Кошелек: CzoK6AA79K7Xi4bZj4FsyJad85VforNdC94LSyHv123u
+  Контракты:
+    - 14K7JjbkRm41BmWjFVVpzG6mv5PkV8eT6UiQV4xipump
+    - pRs1BdGTcuQShtQjqjjoBZf7iQWwWkc7NMUrw9Mpump
+    - uTmm9uiuPUZmypRdYdWZUJohtZSPeFY6MMUNFSepump
+
+Кошелек: 6sEaErLao6DQAGDaDcrpXQd5xMDL8FDXqeoSNRzhrnXx
+  Контракты:
+    - 7gNGQFpnZZRANACXiokpVLHbEJ7Mfqu5ufdYfdHpump
+    - R9h2oHz5QLu4e5j4CNbQDgxNisD8pJVWA3HfSywpump
+    - pRs1BdGTcuQShtQjqjjoBZf7iQWwWkc7NMUrw9Mpump
+
+Кошелек: BafcU6maciYwj44A1Fw8MUju9tEX9ga6nRGrxsCX7QLo
+  Контракты:
+    - 818ysFxCNbLE8vb9jeruG8VV3LboQVPGGLTJMiapump
+    - A1VfQHpFYPKiPtbxmoaSmUFC7639GyHrkXY2jHppump
+    - pRs1BdGTcuQShtQjqjjoBZf7iQWwWkc7NMUrw9Mpump
+
+Кошелек: 3y4TYA7CekgZUFPExadbj242rr8jYzpreMtGexfCZFeC
+  Контракты:
+    - A1VfQHpFYPKiPtbxmoaSmUFC7639GyHrkXY2jHppump
+    - MAG2tgKYRgb4Uc6tWtVAGbxQkZaShAvixRD2opUpump
+    - pRs1BdGTcuQShtQjqjjoBZf7iQWwWkc7NMUrw9Mpump
+
+Кошелек: 27GrcAd2tfjmkrvng8s13qcUy8mHHXeuNkJNq1oUpmYc
+  Контракты:
+    - A1VfQHpFYPKiPtbxmoaSmUFC7639GyHrkXY2jHppump
+    - pRs1BdGTcuQShtQjqjjoBZf7iQWwWkc7NMUrw9Mpump
+
+Кошелек: 2ZXNN8pkNGVaFn8YeA9nWuFdPgp2VYVBYddJU2NSX6ot
+  Контракты:
+    - A1VfQHpFYPKiPtbxmoaSmUFC7639GyHrkXY2jHppump
+    - JNUxyoyuCU8u6cf6MH5qs88zbWW7zqzh5Udngq1pump
+    - MAG2tgKYRgb4Uc6tWtVAGbxQkZaShAvixRD2opUpump
+    - pRs1BdGTcuQShtQjqjjoBZf7iQWwWkc7NMUrw9Mpump
+
+Кошелек: DBNKUHwvaFQN8xVnuKM1n1aFZNqnVexuahHWtY7unP75
+  Контракты:
+    - A1VfQHpFYPKiPtbxmoaSmUFC7639GyHrkXY2jHppump
+    - pRs1BdGTcuQShtQjqjjoBZf7iQWwWkc7NMUrw9Mpump
+    - xDyukNXJvkpreTkHGjYXn65Npb5z4cogwfKyDpLpump
+
+Кошелек: B9oZaLjULfYvJNkCM9WAj7zgcaJdjGrPAPA244h8L1yo
+  Контракты:
+    - 12LJX4a83B4tCuZ1qtqeeBTGkmLAavBmuv59GnAipump
+    - pRs1BdGTcuQShtQjqjjoBZf7iQWwWkc7NMUrw9Mpump
+
+Кошелек: Cnh7spMLztazba1HW1Mhn9WHVHsZWxwEKcnBPEBw7Mbr
+  Контракты:
+    - A1VfQHpFYPKiPtbxmoaSmUFC7639GyHrkXY2jHppump
+    - pRs1BdGTcuQShtQjqjjoBZf7iQWwWkc7NMUrw9Mpump
+    - pncNPSqfrb3ZUVhPsjoVXRJ95BZj9RWMnFySLGwpump
+    - qaKeBHoEf81yBUunBoK2cqhyPEkHz1S5eFHMRw7pump
+    - xDyukNXJvkpreTkHGjYXn65Npb5z4cogwfKyDpLpump
+
+Кошелек: 8AjJ1DMQ9ybWSkcH83rDdiL1njNTNuCisLaYSzqNH5HK
+  Контракты:
+    - 818ysFxCNbLE8vb9jeruG8VV3LboQVPGGLTJMiapump
+    - i33GreTectwnMmJWmYrsMxgv3464zE3Mnb7mv9Dpump
+    - pRs1BdGTcuQShtQjqjjoBZf7iQWwWkc7NMUrw9Mpump
+
+Кошелек: C9JnvDZqx2pttk2SUrdk36SHgTKsjB9iwYrhrJkfH4a8
+  Контракты:
+    - Gti4XSi6rqwfQK5cN9C2nExxgp393rBYutER9Yhhpump
+
+Кошелек: ECGuNECKMUd6iXEjBf3mLTfTtDvKVJdihiGorJ5raCJX
+  Контракты:
+    - 818ysFxCNbLE8vb9jeruG8VV3LboQVPGGLTJMiapump
+    - KHuRPwe8gbhgwKeXisT9otKPJ5JWnmvFQUvbFJFpump
+    - fVdGszjarwjYbqAjgFQognXR9H4bL3jAL4uBnFHpump
+
+Кошелек: FzKbkGtiJ6z4LmKHtoPTAd1QxVPrMubRD4y9gqdTdXsU
+  Контракты:
+    - 6bKKinhFs1UYGuaN5FQjd6sESnBHjYv4fSVs749pump
+    - n1bJ7HYKvLUYDRrMBXH9mySpWY3jCpfudYtSdrKpump
+    - pncNPSqfrb3ZUVhPsjoVXRJ95BZj9RWMnFySLGwpump
+
+Кошелек: EQkZB6pPnKYvn8EpjBBMcc3vApTiwnnBnDH484pVwvGu
+  Контракты:
+    - EYyeCC51TGSa8tS31yoTqH7bTyXLmboUTwkTGjGppump
+
+Кошелек: 5erSTgmNwszTmLQxAZgzBC68zmvj3je3zAaKz7agqJfy
+  Контракты:
+    - 12LJX4a83B4tCuZ1qtqeeBTGkmLAavBmuv59GnAipump
+    - 7n43NG62MCYZjao4TXBwUUR2K61hUvEMSSHaXpwpump
+    - A1VfQHpFYPKiPtbxmoaSmUFC7639GyHrkXY2jHppump
+    - huGbvMBsED85Z2P2S5bkiJkRbL7RSaqzd1iZ39qpump
+    - i33GreTectwnMmJWmYrsMxgv3464zE3Mnb7mv9Dpump
+    - mN49pmMc6DHzRo2LWwiqpbubBr7Va3VQsXmRivupump
+    - xDyukNXJvkpreTkHGjYXn65Npb5z4cogwfKyDpLpump
+
+Кошелек: 94vpNACmX7bpM7HDhkphhAqM1s3ycc8ZqPdMtSNsHFBg
+  Контракты:
+    - KjPiGHgVxMjAw7hTvwV9A6nqvaxFeeHscLiDaqHpump
+
+Кошелек: BKhkgBWYA1fFEUNoUcGbbM4K55j3etP3NviHwC3Se1uV
+  Контракты:
+    - BZMXBSRrmSv8ENv3C6FKtpuXV3pob7f5pFm5qMWjpump
+
+Кошелек: BULNj1hMx7k7qz4AqghjatY1D2jGWG3LwAq92cMQNVwf
+  Контракты:
+    - BZMXBSRrmSv8ENv3C6FKtpuXV3pob7f5pFm5qMWjpump
+
+Кошелек: EGZmYodBWEsWCxmW5MsqWnDyzpcaKNKp99Ck2FA5jaFP
+  Контракты:
+    - 14f2EYSKwDCVKq6YcpFaP9TtDLuvJwVbRuFuqLLLpump
+    - ed5gTBSUwuQX39kgY6mUCW3uM2oMVX6SiDXqzpypump
+    - xDyukNXJvkpreTkHGjYXn65Npb5z4cogwfKyDpLpump
+
+Кошелек: HWUyX6BBtSVb1iNYL92rp5zMR54ADUrqu4tdUGsVJMoZ
+  Контракты:
+    - 14f2EYSKwDCVKq6YcpFaP9TtDLuvJwVbRuFuqLLLpump
+    - ed5gTBSUwuQX39kgY6mUCW3uM2oMVX6SiDXqzpypump
+    - xDyukNXJvkpreTkHGjYXn65Npb5z4cogwfKyDpLpump
+
+Кошелек: DyE8fuMu5BSmhJzacXsYEptS5vLFv8LuTfNCqY1bDdnU
+  Контракты:
+    - g76G6KmjKzTvFWUPD5esbyfBFBbocQ38gDeru8spump
+
+Кошелек: 8rG5AJofVtS8ifi4Dsf3vhb5GXpdurELXLMXQHE41zbK
+  Контракты:
+    - g76G6KmjKzTvFWUPD5esbyfBFBbocQ38gDeru8spump
+
+Кошелек: E6UA6u2Z1kLRvMw3Vin7TdHHaqf71X9oCvNGpQJWKhXG
+  Контракты:
+    - i33GreTectwnMmJWmYrsMxgv3464zE3Mnb7mv9Dpump
+    - uTmm9uiuPUZmypRdYdWZUJohtZSPeFY6MMUNFSepump
+
+Кошелек: 8PRg6vDgpTSRBTZNs5ujvaRuRn8sT4GdTLZ38UGN5ECC
+  Контракты:
+    - 818ysFxCNbLE8vb9jeruG8VV3LboQVPGGLTJMiapump
+    - i33GreTectwnMmJWmYrsMxgv3464zE3Mnb7mv9Dpump
+    - uTmm9uiuPUZmypRdYdWZUJohtZSPeFY6MMUNFSepump
+
+Кошелек: CrY4fdtRvg93Tj5xjsxfqKMvU1chbJKsxq4KgvJmivre
+  Контракты:
+    - 6uq2GSca5XgGJSzG42CWnSEMZHkZNBiuuM7VL6bpump
+    - 818ysFxCNbLE8vb9jeruG8VV3LboQVPGGLTJMiapump
+
+Кошелек: CuowHX9Ppjay7d4jcJm8y667Dtsdp12xScPbGU78ygBt
+  Контракты:
+    - 6uq2GSca5XgGJSzG42CWnSEMZHkZNBiuuM7VL6bpump
+    - 818ysFxCNbLE8vb9jeruG8VV3LboQVPGGLTJMiapump
+
+Кошелек: 5A8T11fLbJF2wk9ripv26bbW85ZQfi1QhXeJxiT7dy7z
+  Контракты:
+    - KHuRPwe8gbhgwKeXisT9otKPJ5JWnmvFQUvbFJFpump
+    - pncNPSqfrb3ZUVhPsjoVXRJ95BZj9RWMnFySLGwpump
+    - qaKeBHoEf81yBUunBoK2cqhyPEkHz1S5eFHMRw7pump
+    - xDyukNXJvkpreTkHGjYXn65Npb5z4cogwfKyDpLpump
+
+Кошелек: 2qNPVxRhpMEq84H5rciHUzEhoeGkpwF5Eg1XZfrPRDK6
+  Контракты:
+    - A1VfQHpFYPKiPtbxmoaSmUFC7639GyHrkXY2jHppump
+    - KHuRPwe8gbhgwKeXisT9otKPJ5JWnmvFQUvbFJFpump
+    - pncNPSqfrb3ZUVhPsjoVXRJ95BZj9RWMnFySLGwpump
+    - qaKeBHoEf81yBUunBoK2cqhyPEkHz1S5eFHMRw7pump
+
+Кошелек: E1yG8dMUYB3tacJ6xrvpW9VRQgFPVhNqoGkSvVxZmcsD
+  Контракты:
+    - A1VfQHpFYPKiPtbxmoaSmUFC7639GyHrkXY2jHppump
+    - pncNPSqfrb3ZUVhPsjoVXRJ95BZj9RWMnFySLGwpump
+    - qaKeBHoEf81yBUunBoK2cqhyPEkHz1S5eFHMRw7pump
+    - xDyukNXJvkpreTkHGjYXn65Npb5z4cogwfKyDpLpump
+
+Кошелек: 8rXprJDEwK2vp8QyYM5TnYy7MkvR8Sw4iPjwudCAgxHp
+  Контракты:
+    - A1VfQHpFYPKiPtbxmoaSmUFC7639GyHrkXY2jHppump
+    - pncNPSqfrb3ZUVhPsjoVXRJ95BZj9RWMnFySLGwpump
+
+Кошелек: 9W4YQSvPYyKPAvKqEvCXeycHQA4BH7sPcFeJbAULAmFu
+  Контракты:
+    - 3RkFP4bDnfb3tuEH1TYYzK2bvA5j37aG4VGgLNJgpump
+
+Кошелек: HQvAdbfEX9mLjzfaRbDDHXaCajsrSBGZpoRPSjRCdvFb
+  Контракты:
+    - 3RkFP4bDnfb3tuEH1TYYzK2bvA5j37aG4VGgLNJgpump
+
+Кошелек: ELM3hGQHJzA8d4ibwvyKVhdoyAaVdNaWuCNXFRZQS3BW
+  Контракты:
+    - 3RkFP4bDnfb3tuEH1TYYzK2bvA5j37aG4VGgLNJgpump
+
+Кошелек: 2kT9cDP95uzfWA3CNeq5p9MQ4haFSeQeEtkKVDjZ2D3D
+  Контракты:
+    - 3RkFP4bDnfb3tuEH1TYYzK2bvA5j37aG4VGgLNJgpump
+
+Кошелек: GAReDtFNfPnneNP8JAAKsb3g2bew8Nu9cGNJgiRtAFa3
+  Контракты:
+    - A1VfQHpFYPKiPtbxmoaSmUFC7639GyHrkXY2jHppump
+    - xDyukNXJvkpreTkHGjYXn65Npb5z4cogwfKyDpLpump
+
+Кошелек: 2TvBKryi2hyquTt6tbh373rEx1mCoyi6CtStLQkdvcKr
+  Контракты:
+    - A1VfQHpFYPKiPtbxmoaSmUFC7639GyHrkXY2jHppump
+
+Кошелек: HPL9P7fsAuUib6cFyTKft1JFpc5kkTA4G8c8dQ3qkb1a
+  Контракты:
+    - A1VfQHpFYPKiPtbxmoaSmUFC7639GyHrkXY2jHppump
+    - xDyukNXJvkpreTkHGjYXn65Npb5z4cogwfKyDpLpump
+
+Кошелек: 7iUrpYDAPEj8Qi4GFwcc1F9xDBjqazw9XFsPZNiQyXqB
+  Контракты:
+    - A1VfQHpFYPKiPtbxmoaSmUFC7639GyHrkXY2jHppump
+    - xDyukNXJvkpreTkHGjYXn65Npb5z4cogwfKyDpLpump
+
+Кошелек: 9XKYrepfJBhYXBaKqyixEa4H5y5BHXKdqKhMQjUvebSx
+  Контракты:
+    - A1VfQHpFYPKiPtbxmoaSmUFC7639GyHrkXY2jHppump
+
+Кошелек: 2FG5jbFVP1AGhnDBDQx3vs2Q6Ya2c79rnsyiQ44ZuNbj
+  Контракты:
+    - 6uq2GSca5XgGJSzG42CWnSEMZHkZNBiuuM7VL6bpump
+    - KHuRPwe8gbhgwKeXisT9otKPJ5JWnmvFQUvbFJFpump
+    - huGbvMBsED85Z2P2S5bkiJkRbL7RSaqzd1iZ39qpump
+
+Кошелек: BsMfdznQbxGTVxDeVv5BbVVRAvsQTGcEd1aG3UQ8Qa1g
+  Контракты:
+    - 6uq2GSca5XgGJSzG42CWnSEMZHkZNBiuuM7VL6bpump
+
+Кошелек: 2uZVoCkQVWL5qSg9VcJqQmurksZZuwLCzRnTE4Z8Zc6F
+  Контракты:
+    - 6uq2GSca5XgGJSzG42CWnSEMZHkZNBiuuM7VL6bpump
+    - 7gNGQFpnZZRANACXiokpVLHbEJ7Mfqu5ufdYfdHpump
+
+Кошелек: 2eTRAaKCPNHdRiHUKK1w2P9YxVXDNvPirG6SSNFsRUmi
+  Контракты:
+    - 6uq2GSca5XgGJSzG42CWnSEMZHkZNBiuuM7VL6bpump
+    - huGbvMBsED85Z2P2S5bkiJkRbL7RSaqzd1iZ39qpump
+
+Кошелек: AqzUDsaDKQWjPQczvfiQZrBBqjCEMCnPKGe7evkVg2e3
+  Контракты:
+    - xDyukNXJvkpreTkHGjYXn65Npb5z4cogwfKyDpLpump
+
+Кошелек: BM5C4ugk9XhXgx96RpHRQnNtpiFTwFHyMhYVC9MHiVGm
+  Контракты:
+    - 5BH4C8y2ATgey3AFcMZ8Bg2E5XTS92V2DSCDcAcj2tRF
+
+
+--- Топ контрактов по плотности эксклюзивных кошельков (найдено 31) ---
+  1. A1VfQHpFYPKiPtbxmoaSmUFC7639GyHrkXY2jHppump (Эксклюзивных кошельков: 15)
+  2. xDyukNXJvkpreTkHGjYXn65Npb5z4cogwfKyDpLpump (Эксклюзивных кошельков: 11)
+  3. pRs1BdGTcuQShtQjqjjoBZf7iQWwWkc7NMUrw9Mpump (Эксклюзивных кошельков: 10)
+  4. 818ysFxCNbLE8vb9jeruG8VV3LboQVPGGLTJMiapump (Эксклюзивных кошельков: 6)
+  5. pncNPSqfrb3ZUVhPsjoVXRJ95BZj9RWMnFySLGwpump (Эксклюзивных кошельков: 6)
+  6. 6uq2GSca5XgGJSzG42CWnSEMZHkZNBiuuM7VL6bpump (Эксклюзивных кошельков: 6)
+  7. qaKeBHoEf81yBUunBoK2cqhyPEkHz1S5eFHMRw7pump (Эксклюзивных кошельков: 4)
+  8. i33GreTectwnMmJWmYrsMxgv3464zE3Mnb7mv9Dpump (Эксклюзивных кошельков: 4)
+  9. KHuRPwe8gbhgwKeXisT9otKPJ5JWnmvFQUvbFJFpump (Эксклюзивных кошельков: 4)
+  10. 3RkFP4bDnfb3tuEH1TYYzK2bvA5j37aG4VGgLNJgpump (Эксклюзивных кошельков: 4)

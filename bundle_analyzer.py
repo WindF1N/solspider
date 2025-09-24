@@ -12,6 +12,7 @@ import struct
 import os
 import sys
 import logging
+import subprocess
 import aiohttp
 import msgpack
 from datetime import datetime
@@ -27,6 +28,9 @@ import numpy as np
 from scipy.stats import linregress
 import uuid
 import random
+import threading
+import base64
+import json
 # Загружаем переменные окружения из .env файла
 load_dotenv()
 
@@ -507,7 +511,7 @@ PADRE_WS_URL = get_next_padre_backend()
 
 # Куки для подключения к padre
 PADRE_COOKIES = {
-    'mp_f259317776e8d4d722cf5f6de613d9b5_mixpanel': '%7B%22distinct_id%22%3A%20%22tg_7891524244%22%2C%22%24device_id%22%3A%20%22198c4c7db7a10cd-01cbba2231e301-4c657b58-1fa400-198c4c7db7b1a60%22%2C%22%24user_id%22%3A%20%22tg_7891524244%22%2C%22%24initial_referrer%22%3A%20%22%24direct%22%2C%22%24initial_referring_domain%22%3A%20%22%24direct%22%7D'
+    'mp_f259317776e8d4d722cf5f6de613d9b5_mixpanel': '%7B%22distinct_id%22%3A%20%22tg_7705971216%22%2C%22%24device_id%22%3A%20%221994891147ed64-0e987e413d3cf48-4c657b58-1fa400-1994891147face%22%2C%22%24user_id%22%3A%20%22tg_7705971216%22%2C%22%24initial_referrer%22%3A%20%22%24direct%22%2C%22%24initial_referring_domain%22%3A%20%22%24direct%22%7D'
 }
 
 # Хранилище токенов для анализа
@@ -1386,6 +1390,77 @@ class PadreWebSocketClient:
 
         self.JWT_TOKEN = "eyJhbGciOiJSUzI1NiIsImtpZCI6ImVmMjQ4ZjQyZjc0YWUwZjk0OTIwYWY5YTlhMDEzMTdlZjJkMzVmZTEiLCJ0eXAiOiJKV1QifQ.eyJuYW1lIjoid29ya2VyMTAwMHgiLCJoYXV0aCI6dHJ1ZSwiaXNzIjoiaHR0cHM6Ly9zZWN1cmV0b2tlbi5nb29nbGUuY29tL3BhZHJlLTQxNzAyMCIsImF1ZCI6InBhZHJlLTQxNzAyMCIsImF1dGhfdGltZSI6MTc1NTY0ODA3OCwidXNlcl9pZCI6InRnXzc4OTE1MjQyNDQiLCJzdWIiOiJ0Z183ODkxNTI0MjQ0IiwiaWF0IjoxNzU2OTA3Mjc4LCJleHAiOjE3NTY5MTA4NzgsImZpcmViYXNlIjp7ImlkZW50aXRpZXMiOnt9LCJzaWduX2luX3Byb3ZpZGVyIjoiY3VzdG9tIn19.PeB6yO94ZexRBkVAwBdbVOF-ay9VrF6z9N26qMdmXEsjwPYJSVY0ydiKUT5EYG8K6u08rQzyNHDond7ehtXJsrBatZ1QwOkXjwuvviWga4nRH00LY44VDVhNGefvkeg24EObVnr0NQce5fGRRFYa6Zr4gM67mCh6zxPCv1loumKNoH_hH19hSlqDiF7sF-eOPL-Ml08yf0j0lUAI1tsoB7f8oBwC2SSc83yPNgcddqE0BX7uDAmz5TU34LXiWd7cw036X4JrC9TWORUiYnR2OspKeE7owMwHlEp74sd-C5ANigm6a3nk-cDD0Yn32i2cl9USLKp_EzcE139A4S-7Yg"
         
+        self.current_access_token = None
+        self.access_token_expiry = 0
+
+    def _sync_get_token_from_script(self) -> Optional[str]:
+        """Синхронный вызов скрипта padre_get_access_token.py"""
+        try:
+            script_path = os.path.join(os.path.dirname(__file__), "padre_get_access_token.py")
+            result = subprocess.run(
+                ["python", script_path],
+                capture_output=True,
+                text=True,
+                cwd=os.path.dirname(__file__)
+            )
+
+            if result.returncode == 0:
+                self.logger.info("✅ Скрипт padre_get_access_token.py выполнен успешно")
+                token_file = os.path.join(os.path.dirname(__file__), "token.txt")
+                if os.path.exists(token_file):
+                    with open(token_file, 'r') as f:
+                        token = f.read().strip()
+                    if token and token.startswith('eyJ'):
+                        return token
+                    else:
+                        self.logger.error("❌ Токен в файле имеет неправильный формат")
+                        return None
+                else:
+                    self.logger.error("❌ Файл token.txt не найден")
+                    return None
+            else:
+                self.logger.error(f"❌ Ошибка выполнения скрипта: {result.stderr}")
+                return None
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка при вызове скрипта: {e}")
+            return None
+
+    async def get_access_token(self) -> str:
+        """Получает новый access_token через refresh_token или из файла"""
+        current_time = time.time()
+        # Если токен еще действителен, возвращаем его
+        if self.current_access_token and self.access_token_expiry > current_time + 60:  # Запас 60 секунд
+            return self.current_access_token
+
+        try:
+            self.logger.info("🔄 Запрашиваем новый access_token...")
+            loop = asyncio.get_event_loop()
+            token = await loop.run_in_executor(None, self._sync_get_token_from_script)
+
+            if token:
+                # Декодируем JWT, чтобы получить время истечения
+                try:
+                    payload = base64.urlsafe_b64decode(token.split('.')[1] + '==').decode('utf-8')
+                    payload_json = json.loads(payload)
+                    self.access_token_expiry = payload_json.get('exp', 0)
+                    self.current_access_token = token
+                    self.logger.info(f"✅ Успешно обновлен access_token. Срок действия до: {datetime.fromtimestamp(self.access_token_expiry)}")
+                    return token
+                except Exception as e:
+                    self.logger.error(f"❌ Ошибка декодирования JWT токена: {e}")
+                    return ""
+            else:
+                self.logger.error("❌ Не удалось получить токен из скрипта")
+                return ""
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка при получении access_token: {e}")
+            return ""
+
+    async def get_refresh_token(self) -> str:
+        """Получает refresh_token из файла или запрашивает у пользователя"""
+        # ... existing code ...
+
     async def connect(self):
         """Подключение к WebSocket"""
         try:
@@ -1440,89 +1515,6 @@ class PadreWebSocketClient:
             self.logger.error(f"❌ Ошибка подключения к {self.padre_backend} для токена {self.token_address[:8]}: {e}")
             return False
 
-    async def send_bundler_notification(self, contract_address: str, token_data: dict, bundler_count: int, bundler_percentage: float, simulated: bool = False):
-        """Отправляем уведомление о токене с высоким процентом бандлеров"""
-        try:
-            market_id = await get_market_id_for_token_cached(contract_address)
-            if sended_tokens.get(market_id):
-                self.logger.info(f"⚠️ Уведомление для {contract_address[:8]} уже было отправлено")
-                return
-            
-            symbol = token_data.get('symbol', 'UNK')
-            name = token_data.get('name', symbol)
-            dex_source = token_data.get('dex_source', 'Unknown')
-            market_cap = token_data.get('market_cap', 0)
-            total_holders = token_data.get('total_holders', 0)
-            sol_spent_in_bundles = token_data.get('sol_spent_in_bundles', 0)
-            bundler_percentage_ath = token_data.get('bundler_percentage_ath', 0)
-            sim_tag = " 🎲 [СИМУЛЯЦИЯ]" if simulated else ""
-            
-            self.logger.info(f"📤 Подготовка уведомления для {contract_address[:8]}")
-            self.logger.info(f"📊 Проверка условий: holders={total_holders}, bundlers={bundler_count}, market_id={market_id}")
-            
-            # Получаем deployer процент (может быть числом или объектом)
-            deployer_pcnt = token_data.get('deployerHoldingPcnt')
-            if isinstance(deployer_pcnt, dict):
-                deployer_pcnt = deployer_pcnt.get('current', 0)
-            
-            message = (
-                f"🚨 <b>X X X XX X иксыыыыы!!!</b>\n\n"
-                f"🪙 <b>{name}</b> ({symbol})\n"
-                f"📍 <b>Контракт:</b> <code>{contract_address}</code>\n"
-                f"📊 <b>Бандлеры:</b> {bundler_count} ({self.safe_format(bundler_percentage, '.1f')}%)\n"
-                f"🏆 <b>ATH бандлеры:</b> {self.safe_format(bundler_percentage_ath, '.1f')}%\n"
-                f"👤 <b>Холдеры:</b> {total_holders}\n"
-                f"💰 <b>SOL на бандлеры:</b> {self.safe_format(sol_spent_in_bundles, ',.2f')}\n"
-                f"💰 <b>Market Cap:</b> ${self.safe_format(market_cap, ',.0f')}\n"
-                f"🏪 <b>DEX:</b> {dex_source}\n\n"
-                
-                f"💵 <b>Цена:</b> ${self.safe_format(token_data.get('basePriceInUsdUi'), ',.8f')}\n"
-                f"💱 <b>Цена в Quote:</b> {self.safe_format(token_data.get('basePriceInQuoteUi'), ',.8f')}\n"
-                f"💧 <b>Ликвидность:</b> ${self.safe_format(token_data.get('liquidityInUsdUi'), ',.2f')}\n\n"
-                
-                f"📊 <b>АНАЛИЗ ТОКЕНА:</b>\n"
-                f"👨‍💼 <b>Dev %:</b> {self.safe_format(token_data.get('devHoldingPcnt'), '.1f')}%\n"
-                f"👨‍💼 <b>Deployer %:</b> {self.safe_format(deployer_pcnt, '.1f')}%\n"
-                f"👥 <b>Инсайдеры:</b> {self.safe_format(token_data.get('insidersHoldingPcnt'), '.1f')}%\n"
-                f"🎯 <b>Снайперы:</b> {token_data.get('totalSnipers') or 0} ({self.safe_format(token_data.get('snipersHoldingPcnt'), '.1f')}%)\n"
-                f"🤖 <b>Trading App:</b> {token_data.get('tradingAppTxns') or 0} транзакций\n\n"
-                
-                f"📦 <b>БАНДЛЫ:</b>\n"
-                f"💼 <b>Количество:</b> {token_data.get('totalBundlesCount') or 0}\n"
-                f"📈 <b>Текущий %:</b> {self.safe_format((token_data.get('bundlesHoldingPcnt', {}) or {}).get('current'), '.1f')}%\n"
-                f"🏆 <b>ATH %:</b> {self.safe_format((token_data.get('bundlesHoldingPcnt', {}) or {}).get('ath'), '.1f')}%\n"
-                f"💰 <b>SOL в бандлах:</b> {self.safe_format(token_data.get('totalSolSpentInBundles'), ',.2f')}\n"
-                f"🔢 <b>Токенов в бандлах:</b> {self.safe_format(token_data.get('totalTokenBoughtInBundles'), ',.0f')}\n\n"
-                
-                f"🆕 <b>FRESH WALLETS:</b>\n"
-                f"👥 <b>Количество:</b> {(token_data.get('freshWalletBuys', {}) or {}).get('count', 0)}\n"
-                f"💰 <b>SOL потрачено:</b> {self.safe_format((token_data.get('freshWalletBuys', {}) or {}).get('sol'), ',.2f')}\n"
-                f"💸 <b>Комиссии:</b> {self.safe_format(token_data.get('totalSolFees'), ',.4f')} SOL\n\n"
-                
-                f"📊 <b>SUPPLY:</b>\n"
-                f"🔢 <b>Total Supply:</b> {self.safe_format(token_data.get('totalSupply'), ',')}"
-            )
-            
-            # Создаем кнопки для быстрых действий
-            keyboard = [
-                [
-                    {"text": "🚀 Axiom", "url": f"https://axiom.trade/t/{contract_address}"},
-                    {"text": "🚀 DexScreener", "url": f"https://dexscreener.com/solana/{contract_address}"}
-                ],
-            ]
-            
-            success = await self.send_telegram_message(message, keyboard)
-            
-            if success:
-                self.logger.info(f"✅ Отправлено уведомление о токене {symbol} с {bundler_percentage:.1f}% бандлеров")
-                if market_id:
-                    sended_tokens[market_id] = True
-                self.logger.warning(f"⚠️ Не удалось отправить уведомление о токене {symbol}")
-                
-        except Exception as e:
-            self.logger.error(f"❌ Ошибка отправки уведомления о бандлерах: {e}")
-            self.logger.exception(e)
-    
     async def send_auth_message(self):
         """Отправляем аутентификационное сообщение"""
         try:
@@ -1551,9 +1543,10 @@ class PadreWebSocketClient:
                 new_token = await self.get_access_token()
                 if new_token:
                     self.JWT_TOKEN = new_token
-                    self.logger.info("🔄 Получен новый JWT токен, пробуем снова...")
-                    # Рекурсивно вызываем себя с новым токеном
-                    return await self.send_auth_message()
+                    self.logger.info("🔄 Получен новый JWT токен, принудительно переподключаемся...")
+                    # Вместо рекурсивного вызова, вызываем принудительное переподключение
+                    await self.force_reconnect()
+                    return  # Выходим, так как force_reconnect перезапустит цикл
                 raise AuthenticationPolicyViolation("Не удалось получить новый JWT токен")
             self.logger.error(f"❌ Ошибка аутентификации: {e}")
             raise
@@ -2485,396 +2478,6 @@ class PadreWebSocketClient:
             self.logger.error(f"❌ Ошибка обработки top10holders данных: {e}")
             self.logger.error(traceback.format_exc())
     
-    def extract_bundler_data(self, data: dict) -> dict:
-        """Извлекает данные о бандлерах из fast-stats ответа"""
-        try:
-            # Попробуем различные структуры данных
-            bundler_info = {}
-            
-            # Вариант 1: прямые поля
-            if 'bundlers' in data:
-                bundler_info['bundler_count'] = data['bundlers']
-            elif 'bundler_count' in data:
-                bundler_info['bundler_count'] = data['bundler_count']
-                
-            # Вариант 2: поля в stats объекте
-            if 'stats' in data:
-                stats = data['stats']
-                if 'bundlers' in stats:
-                    bundler_info['bundler_count'] = stats['bundlers']
-                if 'holders' in stats:
-                    bundler_info['total_holders'] = stats['holders']
-                    
-            # Вариант 3: множественные токены в массиве
-            if 'tokens' in data:
-                # Обрабатываем каждый токен отдельно
-                for token_data in data['tokens']:
-                    token_address = token_data.get('address') or token_data.get('contract')
-                    if token_address:
-                        bundler_info['token_address'] = token_address
-                        bundler_info['bundler_count'] = token_data.get('bundlers', 0)
-                        bundler_info['total_holders'] = token_data.get('holders', 0)
-                        break
-                        
-            # Поиск токена по адресу
-            if not bundler_info.get('token_address'):
-                # Ищем адрес токена в различных полях
-                for key, value in data.items():
-                    if isinstance(value, str) and len(value) > 30:  # Похоже на адрес токена
-                        bundler_info['token_address'] = value
-                        break
-                        
-            return bundler_info if bundler_info else None
-            
-        except Exception as e:
-            self.logger.error(f"❌ Ошибка извлечения данных о бандлерах: {e}")
-            return None
-    
-    def extract_bundler_data_from_init_snapshot(self, snapshot: dict, token_address: str) -> dict:
-        """Извлекает данные о бандлерах из init snapshot"""
-        try:
-            bundler_info = {'token_address': token_address}
-            
-            # ВАЖНО: Извлекаем и сохраняем метаданные токена из snapshot
-            symbol = snapshot.get('baseTokenSymbol') or snapshot.get('symbol', 'UNK')
-            name = snapshot.get('baseTokenName') or snapshot.get('name', symbol)
-            market_cap = snapshot.get('marketCapInUsd', snapshot.get('fdvInUsdUi', 0))
-            
-            # Сохраняем метаданные токена в кеш
-            if symbol != 'UNK' or name != symbol:
-                self.token_data_cache[token_address] = {
-                    'symbol': symbol,
-                    'name': name,
-                    'market_cap': market_cap,
-                    'dex_source': 'Pump.fun',
-                    'chain': snapshot.get('chain', 'SOLANA'),
-                    'source': 'market_init_snapshot'
-                }
-                self.logger.info(f"✅ Сохранили метаданные токена {name} ({symbol}) в кеш из market snapshot")
-            
-            # Ищем в pumpFunGaze (основной источник bundler данных)
-            self.logger.info(f"🔍 Проверяем наличие pumpFunGaze в snapshot...")
-            self.logger.info(f"📋 Ключи в snapshot: {list(snapshot.keys())}")
-            
-            if 'pumpFunGaze' in snapshot and snapshot['pumpFunGaze'] is not None:
-                pump_gaze = snapshot['pumpFunGaze']
-                self.logger.info(f"🎯 Найдены pumpFunGaze данные в init:")
-                self.logger.info(f"📦 ПОЛНЫЕ pumpFunGaze данные: {pump_gaze}")
-                
-                # Извлекаем количество бандлеров и холдеров
-                if 'totalBundlesCount' in pump_gaze:
-                    bundler_info['bundler_count'] = pump_gaze['totalBundlesCount']
-                
-                # Извлекаем процент бандлеров
-                if 'bundlesHoldingPcnt' in pump_gaze:
-                    bundles_pcnt = pump_gaze['bundlesHoldingPcnt']
-                    if isinstance(bundles_pcnt, dict) and 'current' in bundles_pcnt:
-                        bundler_info['bundler_percentage'] = bundles_pcnt['current']
-                        bundler_info['bundler_percentage_ath'] = bundles_pcnt.get('ath', 0)
-                
-                # Дополнительная информация
-                if 'totalSolSpentInBundles' in pump_gaze:
-                    bundler_info['sol_spent_in_bundles'] = pump_gaze['totalSolSpentInBundles']
-            
-            # Извлекаем общее количество холдеров
-            if 'totalHolders' in snapshot:
-                bundler_info['total_holders'] = snapshot['totalHolders']
-            
-            # Проверяем, есть ли достаточно данных для анализа
-            if bundler_info.get('bundler_count') and bundler_info.get('total_holders'):
-                return bundler_info
-            elif bundler_info.get('bundler_percentage') and bundler_info.get('total_holders'):
-                return bundler_info
-            else:
-                self.logger.debug(f"⚠️ Недостаточно bundler данных в init snapshot для {token_address[:8]}...")
-                return None
-            
-        except Exception as e:
-            self.logger.error(f"❌ Ошибка извлечения bundler данных из init snapshot: {e}")
-            return None
-
-    def extract_bundler_data_from_update(self, update_payload: dict) -> dict:
-        """Извлекает данные о бандлерах из update сообщения"""
-        try:
-            bundler_info = {}
-            
-            # НОВЫЙ ФОРМАТ: pumpFunGaze данные
-            self.logger.info(f"🔍 Проверяем наличие pumpFunGaze в update...")
-            self.logger.info(f"📋 Ключи в update_payload: {list(update_payload.keys())}")
-            
-            if 'pumpFunGaze' in update_payload and update_payload['pumpFunGaze'] is not None:
-                pump_gaze = update_payload['pumpFunGaze']
-                self.logger.info(f"🎯 Найдены pumpFunGaze данные в update:")
-                self.logger.info(f"📦 ПОЛНЫЕ pumpFunGaze данные: {pump_gaze}")
-                
-                # Ищем ключи bundler данных
-                self.logger.info(f"🔍 Ключи в pumpFunGaze: {list(pump_gaze.keys())}")
-                
-                # Извлекаем количество бандлеров
-                if 'totalBundlesCount' in pump_gaze and pump_gaze['totalBundlesCount'] is not None:
-                    bundler_info['bundler_count'] = pump_gaze['totalBundlesCount']
-                    self.logger.info(f"✅ Найден totalBundlesCount: {pump_gaze['totalBundlesCount']}")
-                else:
-                    self.logger.info(f"❌ totalBundlesCount не найден или None")
-                
-                # Извлекаем процент бандлеров (уже рассчитанный)
-                if 'bundlesHoldingPcnt' in pump_gaze and pump_gaze['bundlesHoldingPcnt'] is not None:
-                    bundles_pcnt = pump_gaze['bundlesHoldingPcnt']
-                    self.logger.info(f"✅ Найден bundlesHoldingPcnt: {bundles_pcnt}")
-                    if isinstance(bundles_pcnt, dict) and 'current' in bundles_pcnt:
-                        bundler_info['bundler_percentage'] = bundles_pcnt['current']
-                        bundler_info['bundler_percentage_ath'] = bundles_pcnt.get('ath', 0)
-                        self.logger.info(f"✅ Извлечен bundler процент: {bundles_pcnt['current']}%")
-                    else:
-                        self.logger.info(f"❌ bundlesHoldingPcnt неправильного формата")
-                else:
-                    self.logger.info(f"❌ bundlesHoldingPcnt не найден или None")
-                
-                # Дополнительная информация
-                if 'totalSolSpentInBundles' in pump_gaze and pump_gaze['totalSolSpentInBundles'] is not None:
-                    bundler_info['sol_spent_in_bundles'] = pump_gaze['totalSolSpentInBundles']
-            
-            # Извлекаем общее количество холдеров
-            if 'totalHolders' in update_payload:
-                bundler_info['total_holders'] = update_payload['totalHolders']
-                
-            # Также проверяем bundler данные на уровне update_payload
-            if 'bundlesHoldingPcnt' in update_payload and update_payload['bundlesHoldingPcnt'] is not None:
-                bundles_pcnt = update_payload['bundlesHoldingPcnt']
-                if isinstance(bundles_pcnt, dict) and 'current' in bundles_pcnt:
-                    bundler_info['bundler_percentage'] = bundles_pcnt['current']
-                    bundler_info['bundler_percentage_ath'] = bundles_pcnt.get('ath', 0)
-                    self.logger.info(f"🎯 Найден bundler percentage в update_payload: {bundles_pcnt['current']}%")
-                    
-            if 'totalBundlesCount' in update_payload and update_payload['totalBundlesCount'] is not None:
-                bundler_info['bundler_count'] = update_payload['totalBundlesCount']
-                self.logger.info(f"🎯 Найден bundler count в update_payload: {update_payload['totalBundlesCount']}")
-                
-            if 'totalSolSpentInBundles' in update_payload and update_payload['totalSolSpentInBundles'] is not None:
-                bundler_info['sol_spent_in_bundles'] = update_payload['totalSolSpentInBundles']
-            
-            # Старые форматы (оставляем для совместимости)
-            if 'bundlers' in update_payload:
-                bundler_info['bundler_count'] = update_payload['bundlers']
-            if 'holders' in update_payload:
-                bundler_info['total_holders'] = update_payload['holders']
-            if 'tokenAddress' in update_payload:
-                bundler_info['token_address'] = update_payload['tokenAddress']
-                
-            # Ищем в дельтах (изменения)
-            if 'delta' in update_payload:
-                delta = update_payload['delta']
-                if 'bundlers' in delta:
-                    bundler_info['bundler_count'] = delta['bundlers']
-                if 'holders' in delta:
-                    bundler_info['total_holders'] = delta['holders']
-                    
-            # Ищем в stats
-            if 'stats' in update_payload:
-                stats = update_payload['stats']
-                if 'bundlers' in stats:
-                    bundler_info['bundler_count'] = stats['bundlers']
-                if 'holders' in stats:
-                    bundler_info['total_holders'] = stats['holders']
-                    
-            # Проверяем, есть ли достаточно данных для анализа
-            self.logger.info(f"🔍 Проверяем извлеченные bundler данные: {bundler_info}")
-            
-            bundler_count = bundler_info.get('bundler_count')
-            bundler_percentage = bundler_info.get('bundler_percentage') 
-            total_holders = bundler_info.get('total_holders')
-            
-            self.logger.info(f"📊 bundler_count: {bundler_count}")
-            self.logger.info(f"📊 bundler_percentage: {bundler_percentage}")
-            self.logger.info(f"📊 total_holders: {total_holders}")
-            
-            # Проверяем, есть ли основные bundler данные
-            has_bundler_data = bundler_count is not None or bundler_percentage is not None
-            
-            if has_bundler_data:
-                self.logger.info(f"✅ Bundler данные найдены! Возвращаем: {bundler_info}")
-                return bundler_info
-            else:
-                self.logger.info(f"❌ Нет bundler данных (ни count, ни percentage)")
-                return None
-            
-        except Exception as e:
-            self.logger.error(f"❌ Ошибка извлечения bundler данных из update: {e}")
-            return None
-
-    async def process_bundler_detection(self, bundler_info: dict):
-        """Обрабатывает обнаруженные данные о бандлерах"""
-        try:
-            token_address = bundler_info.get('token_address')
-            bundler_count = bundler_info.get('bundler_count', 0)
-            total_holders = bundler_info.get('total_holders', 0)
-            
-            # Используем уже рассчитанный процент если доступен
-            bundler_percentage = bundler_info.get('bundler_percentage')
-            if bundler_percentage is None and bundler_count > 0 and total_holders > 0:
-                bundler_percentage = (bundler_count / total_holders) * 100
-            
-            if bundler_count > 0 and bundler_percentage is not None:
-                # Используем сохраненный адрес токена если не передан
-                if not token_address and hasattr(self, 'current_token_address'):
-                    token_address = self.current_token_address
-                
-                bundler_percentage_ath = bundler_info.get('bundler_percentage_ath', bundler_percentage)
-                sol_spent = bundler_info.get('sol_spent_in_bundles', 0)
-                
-                self.logger.info(f"🎯 БАНДЛЕР ДАННЫЕ ОБНАРУЖЕНЫ!")
-                self.logger.info(f"📊 Токен {token_address if token_address else 'N/A'}: {bundler_count} бандлеров")
-                self.logger.info(f"👥 Холдеры: {total_holders}")
-                self.logger.info(f"📈 Текущий %: {bundler_percentage:.2f}%")
-                self.logger.info(f"🔥 ATH %: {bundler_percentage_ath:.2f}%")
-                self.logger.info(f"💰 SOL потрачено в бандлах: {sol_spent:.2f}")
-                
-                if bundler_percentage > 0:
-                    self.logger.info(f"Токен имеет {bundler_percentage:.2f}% бандлеров")
-                    
-                    # Получаем данные токена из кеша
-                    cached_data = self.token_data_cache.get(token_address, {})
-                    
-                    # Формируем данные токена для уведомления
-                    token_data = {
-                        'address': token_address or "Unknown",
-                        'symbol': cached_data.get('symbol', 'UNK'),
-                        'name': cached_data.get('name', 'Unknown Token'),
-                        'market_cap': cached_data.get('market_cap', 0),
-                        'dex_source': cached_data.get('dex_source', 'Unknown'),
-                        'total_holders': total_holders,
-                        'bundler_percentage_ath': bundler_percentage_ath,
-                        'sol_spent_in_bundles': sol_spent,
-                        'bundler_count': bundler_count,
-                        # Базовые поля
-                        'basePriceInUsdUi': cached_data.get('basePriceInUsdUi', 0),
-                        'basePriceInQuoteUi': cached_data.get('basePriceInQuoteUi', 0),
-                        'liquidityInUsdUi': cached_data.get('liquidityInUsdUi', 0),
-                        'deployerHoldingPcnt': cached_data.get('deployerHoldingPcnt', 0),
-                        
-                        # PumpFunGaze данные
-                        'devHoldingPcnt': cached_data.get('devHoldingPcnt', 0),
-                        'tradingAppTxns': cached_data.get('tradingAppTxns', 0),
-                        'freshWalletBuys': cached_data.get('freshWalletBuys', {'count': 0, 'sol': 0}),
-                        'insidersHoldingPcnt': cached_data.get('insidersHoldingPcnt', 0),
-                        'totalSupply': cached_data.get('totalSupply', 0) or 0,
-                        'totalSnipers': cached_data.get('totalSnipers', 0),
-                        'bundlesHoldingPcnt': cached_data.get('bundlesHoldingPcnt', {'current': 0, 'ath': 0}),
-                        'totalBundlesCount': cached_data.get('totalBundlesCount', 0),
-                        'totalSolSpentInBundles': cached_data.get('totalSolSpentInBundles', 0),
-                        'totalTokenBoughtInBundles': cached_data.get('totalTokenBoughtInBundles', 0),
-                        'totalSolFees': cached_data.get('totalSolFees', 0),
-                        'snipersHoldingPcnt': cached_data.get('snipersHoldingPcnt', 0),
-                    }
-
-                    # Получаем deployer процент (может быть числом или объектом)
-                    deployer_pcnt = token_data.get('deployerHoldingPcnt')
-                    if isinstance(deployer_pcnt, dict):
-                        deployer_pcnt = deployer_pcnt.get('current', 0)
-
-                    if total_holders > 18 and bundler_count > 0 and bundler_count < 6:
-                        self.logger.info(f"🎯 Найдены подходящие условия для уведомления! Holders: {total_holders}, Bundlers: {bundler_count}")
-                        
-                        # Формируем bundler_info для отправки
-                        bundler_info = {
-                            'token_address': self.token_address,
-                            'bundler_count': bundler_count,
-                            'total_holders': total_holders,
-                            'bundler_percentage': bundles_pcnt.get('current', 0),
-                            'bundler_percentage_ath': bundles_pcnt.get('ath', 0),
-                            'sol_spent_in_bundles': pump_gaze.get('totalSolSpentInBundles', 0)
-                        }
-                        
-                        # Добавляем все данные из кеша
-                        bundler_info.update(self.token_data_cache.get(self.token_address, {}))
-                        
-                        # Отправляем уведомление
-                        await self.send_bundler_notification(
-                            contract_address=self.token_address,
-                            token_data=bundler_info,
-                            bundler_count=bundler_count,
-                            bundler_percentage=bundles_pcnt.get('current', 0),
-                            simulated=False
-                        )
-                    else:
-                        self.logger.info(f"⚠️ Токен {self.token_address[:8]} не соответствует условиям: holders={total_holders}, bundlers={bundler_count}")
-                    
-                else:
-                    self.logger.info(f"✅ Ниже порога: {bundler_percentage:.2f}%")
-                    
-        except Exception as e:
-            self.logger.error(f"❌ Ошибка обработки bundler detection: {e}")
-    
-    async def analyze_token_bundlers(self, contract_address: str):
-        """Анализируем бандлеров токена и отправляем уведомление при необходимости"""
-        try:
-            token_data = pending_tokens.get(contract_address)
-            bundler_data = bundler_results.get(contract_address)
-            
-            if not token_data or not bundler_data:
-                return
-            
-            bundler_count = bundler_data['bundler_count']
-            
-            # Рассчитываем процент бандлеров (условная формула, нужно адаптировать)
-            # Предполагаем, что 100% = 1000 держателей (это нужно настроить)
-            max_holders = 1000
-            bundler_percentage = (bundler_count / max_holders) * 100
-            
-            self.logger.info(f"📈 Токен {contract_address[:8]}: {bundler_count} бандлеров ({bundler_percentage:.1f}%)")
-            
-            # Проверяем, достигается ли минимальный порог
-            if bundler_percentage >= MIN_BUNDLER_PERCENTAGE:
-                await self.send_bundler_alert(token_data, bundler_count, bundler_percentage)
-            else:
-                self.logger.info(f"⚪ Токен {contract_address[:8]}: процент бандлеров {bundler_percentage:.1f}% ниже порога {MIN_BUNDLER_PERCENTAGE}%")
-            
-            # Удаляем токен из очереди
-            del pending_tokens[contract_address]
-            
-        except Exception as e:
-            self.logger.error(f"❌ Ошибка анализа бандлеров для {contract_address[:8]}: {e}")
-    
-    async def send_bundler_alert(self, token_data: dict, bundler_count: int, bundler_percentage: float):
-        """Отправляем уведомление о токене с высоким процентом бандлеров"""
-        try:
-            contract_address = token_data.get('mint', token_data.get('address', 'Unknown'))
-            symbol = token_data.get('symbol', 'UNK')
-            name = token_data.get('name', 'Unknown Token')
-            
-            # Формируем сообщение
-            message = (
-                f"🔥 <b>ВЫСОКИЙ ПРОЦЕНТ БАНДЛЕРОВ!</b>\n\n"
-                f"💎 <b>Токен:</b> {name} ({symbol})\n"
-                f"📍 <b>Контракт:</b> <code>{contract_address}</code>\n"
-                f"👥 <b>Бандлеров:</b> {bundler_count}\n"
-                f"📊 <b>Процент:</b> {bundler_percentage:.1f}%\n"
-                f"⚡ <b>Порог:</b> {MIN_BUNDLER_PERCENTAGE}%\n\n"
-                f"🕐 <b>Время:</b> {datetime.now().strftime('%H:%M:%S')}"
-            )
-            
-            # Создаем кнопки
-            keyboard = [
-                [
-                    {"text": "💎 Axiom.trade", "url": f"https://axiom.trade/t/{contract_address}"},
-                    {"text": "📊 DexScreener", "url": f"https://dexscreener.com/solana/{contract_address}"}
-                ],
-                [
-                    {"text": "🔍 trade.padre.gg", "url": f"https://trade.padre.gg/trade/solana/{contract_address}"}
-                ]
-            ]
-            
-            # Отправляем в указанную группу и тему
-            success = await self.send_telegram_message(message, keyboard)
-            
-            if success:
-                self.logger.info(f"✅ Отправлено уведомление о токене {symbol} с {bundler_percentage:.1f}% бандлеров")
-            else:
-                self.logger.error(f"❌ Не удалось отправить уведомление о токене {symbol}")
-                
-        except Exception as e:
-            self.logger.error(f"❌ Ошибка отправки уведомления: {e}")
-    
     async def send_telegram_message(self, message: str, keyboard: List[List[Dict[str, str]]] = None) -> bool:
         """Отправляет сообщение в Telegram с задержкой при необходимости"""
         try:
@@ -3676,110 +3279,110 @@ class PadreWebSocketClient:
                 self.logger.info(f"({self.token_address[:8]}...) 🚫 Токен в черном списке - пропускаем обработку")
                 return
 
-            if all(activity_conditions.values()):
-                # # Дополнительная проверка: анализируем паттерны холдеров для выявления "гениальных рагов"
-                # self.logger.info(f"({self.token_address[:8]}...) 📊 ОБЩИЙ % ВЛАДЕНИЯ РАННИХ ХОЛДЕРОВ: {top_10_holders_total_pcnt:.2f}%")
+            # if all(activity_conditions.values()):
+            #     # # Дополнительная проверка: анализируем паттерны холдеров для выявления "гениальных рагов"
+            #     # self.logger.info(f"({self.token_address[:8]}...) 📊 ОБЩИЙ % ВЛАДЕНИЯ РАННИХ ХОЛДЕРОВ: {top_10_holders_total_pcnt:.2f}%")
                 
-                # # Получаем историю процентов холдеров из TokenMetrics
-                # holder_percentages_history = self.token_metrics.holder_percentages_history if hasattr(self.token_metrics, 'holder_percentages_history') else []
+            #     # # Получаем историю процентов холдеров из TokenMetrics
+            #     # holder_percentages_history = self.token_metrics.holder_percentages_history if hasattr(self.token_metrics, 'holder_percentages_history') else []
                 
-                # # Анализируем паттерны холдеров (синхронно, используем все доступные снапшоты до 1000)
-                # is_suspicious, suspicious_reasons = self.is_suspicious_pattern(holder_percentages_history)
+            #     # # Анализируем паттерны холдеров (синхронно, используем все доступные снапшоты до 1000)
+            #     # is_suspicious, suspicious_reasons = self.is_suspicious_pattern(holder_percentages_history)
                 
-                # self.logger.info(f"({self.token_address[:8]}...) 📈 АНАЛИЗ СТАБИЛЬНОСТИ ТОП-ХОЛДЕРОВ:")
-                # analysis_limit = 1000
-                # analyzed_count = min(len(holder_percentages_history), analysis_limit)
-                # self.logger.info(f"({self.token_address[:8]}...)    📊 Всего снапшотов: {len(holder_percentages_history)}, анализируется: {analyzed_count}")
+            #     # self.logger.info(f"({self.token_address[:8]}...) 📈 АНАЛИЗ СТАБИЛЬНОСТИ ТОП-ХОЛДЕРОВ:")
+            #     # analysis_limit = 1000
+            #     # analyzed_count = min(len(holder_percentages_history), analysis_limit)
+            #     # self.logger.info(f"({self.token_address[:8]}...)    📊 Всего снапшотов: {len(holder_percentages_history)}, анализируется: {analyzed_count}")
                 
-                # if is_suspicious:
-                #     self.logger.info(f"({self.token_address[:8]}...) 🚨 МАНИПУЛЯТИВНЫЕ ПАТТЕРНЫ ХОЛДЕРОВ ОБНАРУЖЕНЫ:")
-                #     for reason in suspicious_reasons:
-                #         self.logger.info(f"({self.token_address[:8]}...)    ⚠️ {reason}")
-                #     self.logger.info(f"({self.token_address[:8]}...) ❌ Токен отклонен как манипулятивный проект")
+            #     # if is_suspicious:
+            #     #     self.logger.info(f"({self.token_address[:8]}...) 🚨 МАНИПУЛЯТИВНЫЕ ПАТТЕРНЫ ХОЛДЕРОВ ОБНАРУЖЕНЫ:")
+            #     #     for reason in suspicious_reasons:
+            #     #         self.logger.info(f"({self.token_address[:8]}...)    ⚠️ {reason}")
+            #     #     self.logger.info(f"({self.token_address[:8]}...) ❌ Токен отклонен как манипулятивный проект")
                     
-                #     # Добавляем токен в глобальный черный список навсегда
-                #     GENIUS_RUG_BLACKLIST.add(self.token_address)
-                #     save_blacklist()  # Сохраняем в файл
-                #     self.logger.info(f"({self.token_address[:8]}...) 🚫 Токен добавлен в черный список (размер: {len(GENIUS_RUG_BLACKLIST)})")
+            #     #     # Добавляем токен в глобальный черный список навсегда
+            #     #     GENIUS_RUG_BLACKLIST.add(self.token_address)
+            #     #     save_blacklist()  # Сохраняем в файл
+            #     #     self.logger.info(f"({self.token_address[:8]}...) 🚫 Токен добавлен в черный список (размер: {len(GENIUS_RUG_BLACKLIST)})")
                     
-                #     # НЕ отправляем уведомление для подозрительных токенов
-                #     return
-                # else:
-                #     self.logger.info(f"({self.token_address[:8]}...) ✅ Паттерны холдеров здоровые")
-                #     self.logger.info(f"({self.token_address[:8]}...)    ✓ Топ-холдеры стабильны")
-                #     self.logger.info(f"({self.token_address[:8]}...)    ✓ Нет признаков манипуляций")
+            #     #     # НЕ отправляем уведомление для подозрительных токенов
+            #     #     return
+            #     # else:
+            #     #     self.logger.info(f"({self.token_address[:8]}...) ✅ Паттерны холдеров здоровые")
+            #     #     self.logger.info(f"({self.token_address[:8]}...)    ✓ Топ-холдеры стабильны")
+            #     #     self.logger.info(f"({self.token_address[:8]}...)    ✓ Нет признаков манипуляций")
                 
-                self.logger.info(f"🚀 АКТИВНОСТЬ ТОКЕНА НАЙДЕНА: {self.token_address[:8]}")
-                self.logger.info("✅ Все условия выполнены:")
-                for condition, value in activity_conditions.items():
-                    self.logger.info(f"  • {condition}: {value}")
-                    
-                # Отправляем уведомление только для здоровых токенов
-                self.logger.info(f"📢 Отправлено уведомление о начале активности для {self.token_address[:8]}")
-                # Проверяем, не отправляли ли мы уже уведомление для этого токена
-                if self.token_address in SENT_NOTIFICATIONS or self.pending:
-                    self.logger.info(f"⏳ Пропускаем уведомление об активности для {self.token_address[:8]} (слишком рано)")
-                    return
-                await self.send_activity_notification(metrics, growth)
-            else:
-                self.logger.info("❌ Не соответствует условиям активности:")
-                for condition, value in activity_conditions.items():
-                    if not value:
-                        self.logger.info(f"  • {condition}: {value}")
-            
-            # # 2. Сигнал помпа (быстрый рост)
-            # pump_conditions = {
-            #     'holders_growth': growth['holders_growth'] > 0.5,
-            #     'price_growth': growth['price_growth'] > 0,
-            #     'activity_ok': (
-            #         total_bundlers > 0 or           # Есть бандлеры
-            #         fresh_wallets >= 5 or           # Много новых кошельков
-            #         fresh_wallets_sol >= 2.0        # Большие покупки от новых
-            #     ),
-            #     'min_liquidity': liquidity >= 20000,
-            #     'min_mcap': market_cap >= 50000,
-            #     'can_notify': self.token_metrics.can_send_notification('pump')
-            # }
-            
-            # if all(pump_conditions.values()):
-            #     self.logger.info(f"🔥 БЫСТРЫЙ РОСТ НАЙДЕН: {self.token_address[:8]}")
+            #     self.logger.info(f"🚀 АКТИВНОСТЬ ТОКЕНА НАЙДЕНА: {self.token_address[:8]}")
             #     self.logger.info("✅ Все условия выполнены:")
-            #     for condition, value in pump_conditions.items():
+            #     for condition, value in activity_conditions.items():
             #         self.logger.info(f"  • {condition}: {value}")
-            #     await self.send_pump_notification(metrics, growth)
+                    
+            #     # Отправляем уведомление только для здоровых токенов
+            #     self.logger.info(f"📢 Отправлено уведомление о начале активности для {self.token_address[:8]}")
+            #     # Проверяем, не отправляли ли мы уже уведомление для этого токена
+            #     if self.token_address in SENT_NOTIFICATIONS or self.pending:
+            #         self.logger.info(f"⏳ Пропускаем уведомление об активности для {self.token_address[:8]} (слишком рано)")
+            #         return
+            #     await self.send_activity_notification(metrics, growth)
             # else:
-            #     self.logger.info("❌ Не соответствует условиям помпа:")
-            #     for condition, value in pump_conditions.items():
+            #     self.logger.info("❌ Не соответствует условиям активности:")
+            #     for condition, value in activity_conditions.items():
             #         if not value:
             #             self.logger.info(f"  • {condition}: {value}")
+            
+            # # # 2. Сигнал помпа (быстрый рост)
+            # # pump_conditions = {
+            # #     'holders_growth': growth['holders_growth'] > 0.5,
+            # #     'price_growth': growth['price_growth'] > 0,
+            # #     'activity_ok': (
+            # #         total_bundlers > 0 or           # Есть бандлеры
+            # #         fresh_wallets >= 5 or           # Много новых кошельков
+            # #         fresh_wallets_sol >= 2.0        # Большие покупки от новых
+            # #     ),
+            # #     'min_liquidity': liquidity >= 20000,
+            # #     'min_mcap': market_cap >= 50000,
+            # #     'can_notify': self.token_metrics.can_send_notification('pump')
+            # # }
+            
+            # # if all(pump_conditions.values()):
+            # #     self.logger.info(f"🔥 БЫСТРЫЙ РОСТ НАЙДЕН: {self.token_address[:8]}")
+            # #     self.logger.info("✅ Все условия выполнены:")
+            # #     for condition, value in pump_conditions.items():
+            # #         self.logger.info(f"  • {condition}: {value}")
+            # #     await self.send_pump_notification(metrics, growth)
+            # # else:
+            # #     self.logger.info("❌ Не соответствует условиям помпа:")
+            # #     for condition, value in pump_conditions.items():
+            # #         if not value:
+            # #             self.logger.info(f"  • {condition}: {value}")
 
-            # 3. Специальный паттерн с быстрым ростом и бандлерами
-            # Рассчитываем возраст токена в секундах
-            age = int(time.time()) - metrics.get('marketCreatedAt', 0)
+            # # 3. Специальный паттерн с быстрым ростом и бандлерами
+            # # Рассчитываем возраст токена в секундах
+            # age = int(time.time()) - metrics.get('marketCreatedAt', 0)
             
-            special_pattern_conditions = {
-                'age_ok': age <= 10,  # Токен младше 10 секунд
-                'rapid_holders_growth': growth['holders_growth'] >= 600,  # Очень быстрый рост холдеров
-                'bundlers_present': total_bundlers >= 1,  # Есть бандлеры
-                'bundlers_percentage': bundles_percent >= 30,  # Высокий процент бандлеров
-                'high_snipers': snipers_percent >= 40,  # Высокий процент снайперов
-                'high_insiders': insiders_percent >= 40,  # Высокий процент инсайдеров
-                'bundlers_growth': growth['bundlers_growth'] >= 60,  # Быстрый рост бандлеров
-                'min_holders': total_holders >= 15,  # Минимум холдеров
-                'can_notify': self.token_metrics.can_send_notification('special_pattern')
-            }
+            # special_pattern_conditions = {
+            #     'age_ok': age <= 10,  # Токен младше 10 секунд
+            #     'rapid_holders_growth': growth['holders_growth'] >= 600,  # Очень быстрый рост холдеров
+            #     'bundlers_present': total_bundlers >= 1,  # Есть бандлеры
+            #     'bundlers_percentage': bundles_percent >= 30,  # Высокий процент бандлеров
+            #     'high_snipers': snipers_percent >= 40,  # Высокий процент снайперов
+            #     'high_insiders': insiders_percent >= 40,  # Высокий процент инсайдеров
+            #     'bundlers_growth': growth['bundlers_growth'] >= 60,  # Быстрый рост бандлеров
+            #     'min_holders': total_holders >= 15,  # Минимум холдеров
+            #     'can_notify': self.token_metrics.can_send_notification('special_pattern')
+            # }
             
-            if all(special_pattern_conditions.values()):
-                self.logger.info(f"⚡ СПЕЦИАЛЬНЫЙ ПАТТЕРН НАЙДЕН: {self.token_address[:8]}")
-                self.logger.info("✅ Все условия выполнены:")
-                for condition, value in special_pattern_conditions.items():
-                    self.logger.info(f"  • {condition}: {value}")
-                await self.send_special_pattern_notification(metrics, growth)
-            else:
-                self.logger.debug("❌ Не соответствует условиям специального паттерна:")
-                for condition, value in special_pattern_conditions.items():
-                    if not value:
-                        self.logger.debug(f"  • {condition}: {value}")
+            # if all(special_pattern_conditions.values()):
+            #     self.logger.info(f"⚡ СПЕЦИАЛЬНЫЙ ПАТТЕРН НАЙДЕН: {self.token_address[:8]}")
+            #     self.logger.info("✅ Все условия выполнены:")
+            #     for condition, value in special_pattern_conditions.items():
+            #         self.logger.info(f"  • {condition}: {value}")
+            #     await self.send_special_pattern_notification(metrics, growth)
+            # else:
+            #     self.logger.debug("❌ Не соответствует условиям специального паттерна:")
+            #     for condition, value in special_pattern_conditions.items():
+            #         if not value:
+            #             self.logger.debug(f"  • {condition}: {value}")
                 
         except Exception as e:
             self.logger.error(f"❌ Ошибка обработки метрик для {self.token_address[:8]}: {e}")
@@ -3787,44 +3390,33 @@ class PadreWebSocketClient:
 
 
     async def get_access_token(self) -> str:
-        """Получает новый access_token через refresh_token"""
+        """Получает новый access_token через refresh_token или из файла"""
+        current_time = time.time()
+        # Если токен еще действителен, возвращаем его
+        if self.current_access_token and self.access_token_expiry > current_time + 60:  # Запас 60 секунд
+            return self.current_access_token
+
         try:
-            url = "https://securetoken.googleapis.com/v1/token?key=AIzaSyDytD3neNMfkCmjm7Ll24bJuAzZIaERw8Q"
-            
-            headers = {
-                "Origin": "https://trade.padre.gg",
-                "Referer": "https://trade.padre.gg/",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36 Edg/139.0.0.0",
-                "Content-Type": "application/x-www-form-urlencoded",
-                "x-client-version": "Chrome/JsCore/10.9.0/FirebaseCore-web",
-                "X-Firebase-GMPID": "1:678231832583:web:81243a9bc65c3c19ac92a2"
-            }
-            
-            data = {
-                "grant_type": "refresh_token",
-                "refresh_token": "AMf-vBxhTitYWGSdKRnKKH7gXnsocOd3OgU0boTIozHKRP-YFalXuKKA1K4EyuSp06wFBH4NrpNJXlne_BodIXhNn2-dZhhPRfdLMkllDMxw17Fq07YQsa-6a4A5nhZR-nyFvMNwTaxg8lgl2D6b12iW_eft4rMfFw"
-            }
-            
             self.logger.info("🔄 Запрашиваем новый access_token...")
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, data=data) as response:
-                    if response.status == 200:
-                        result = await response.json()
-                        access_token = result.get('access_token')
-                        if access_token:
-                            self.logger.info("✅ Успешно обновлен access_token")
-                            self.logger.info(result)
-                            return access_token
-                        else:
-                            self.logger.error("❌ Не получили access_token в ответе")
-                    else:
-                        self.logger.error(f"❌ Ошибка запроса access_token: {response.status}")
-                        response_text = await response.text()
-                        self.logger.debug(f"Ответ сервера: {response_text[:200]}...")
-            
-            return ""
-            
+            loop = asyncio.get_event_loop()
+            token = await loop.run_in_executor(None, self._sync_get_token_from_script)
+
+            if token:
+                # Декодируем JWT, чтобы получить время истечения
+                try:
+                    payload = base64.urlsafe_b64decode(token.split('.')[1] + '==').decode('utf-8')
+                    payload_json = json.loads(payload)
+                    self.access_token_expiry = payload_json.get('exp', 0)
+                    self.current_access_token = token
+                    self.logger.info(f"✅ Успешно обновлен access_token. Срок действия до: {datetime.fromtimestamp(self.access_token_expiry)}")
+                    return token
+                except Exception as e:
+                    self.logger.error(f"❌ Ошибка декодирования JWT токена: {e}")
+                    return ""
+            else:
+                self.logger.error("❌ Не удалось получить токен из скрипта")
+                return ""
+
         except Exception as e:
             self.logger.error(f"❌ Ошибка при получении access_token: {e}")
             return ""
@@ -4178,69 +3770,6 @@ class TokenMonitor:
             
         except Exception as e:
             logger.error(f"❌ Ошибка добавления токена для анализа: {e}")
-    
-    async def simulate_bundler_analysis(self, contract_address: str, token_data: dict):
-        """Симулируем анализ бандлеров с рандомными данными"""
-        try:
-            import random
-            
-            # Генерируем случайные данные о бандлерах
-            bundler_count = random.randint(50, 300)
-            bundler_percentage = (bundler_count / 1000) * 100  # Предполагаем 1000 общих холдеров
-            
-            symbol = token_data.get('symbol', 'UNK')
-            logger.info(f"🎯 Симуляция: {symbol} имеет {bundler_count} бандлеров ({bundler_percentage:.1f}%)")
-            
-            # Если процент выше минимального, отправляем уведомление
-            if bundler_percentage >= MIN_BUNDLER_PERCENTAGE:
-                await self.send_bundler_notification(contract_address, token_data, bundler_count, bundler_percentage, simulated=True)
-                
-            # Убираем из очереди ожидания
-            if contract_address in pending_tokens:
-                del pending_tokens[contract_address]
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка симуляции анализа бандлеров: {e}")
-    
-    async def send_bundler_notification(self, contract_address: str, token_data: dict, bundler_count: int, bundler_percentage: float, simulated: bool = False):
-        """Отправляем уведомление о токене с высоким процентом бандлеров"""
-        try:
-            symbol = token_data.get('symbol', 'UNK')
-            name = token_data.get('name', symbol)
-            dex_source = token_data.get('dex_source', 'Unknown')
-            market_cap = token_data.get('market_cap', 0)
-            
-            sim_tag = " 🎲 [СИМУЛЯЦИЯ]" if simulated else ""
-            
-            message = (
-                f"🚨 <b>ВЫСОКИЙ ПРОЦЕНТ БАНДЛЕРОВ!{sim_tag}</b>\n\n"
-                f"🪙 <b>{name}</b> ({symbol})\n"
-                f"📍 <b>Контракт:</b> <code>{contract_address}</code>\n"
-                f"📊 <b>Бандлеры:</b> {bundler_count} ({bundler_percentage:.1f}%)\n"
-                f"💰 <b>Market Cap:</b> ${market_cap:,.0f}\n"
-                f"🏪 <b>DEX:</b> {dex_source}\n\n"
-                f"⚡ <b>Мин. порог:</b> {MIN_BUNDLER_PERCENTAGE}%\n"
-                f"🎯 <b>Результат:</b> Превышен на {bundler_percentage - MIN_BUNDLER_PERCENTAGE:.1f}%"
-            )
-            
-            # Создаем кнопки для быстрых действий
-            keyboard = [
-                [
-                    {"text": "📊 DexScreener", "url": f"https://dexscreener.com/solana/{contract_address}"},
-                    {"text": "🚀 Pump.fun", "url": f"https://pump.fun/{contract_address}"}
-                ],
-                [{"text": "💎 Jupiter", "url": f"https://jup.ag/swap/SOL-{contract_address}"}]
-            ]
-            
-            success = await self.send_telegram_message(message, keyboard)
-            
-            if success:
-                logger.info(f"✅ Отправлено уведомление о токене {symbol} с {bundler_percentage:.1f}% бандлеров")
-            else:
-                logger.warning(f"⚠️ Не удалось отправить уведомление о токене {symbol}")
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка отправки уведомления о бандлерах: {e}")
     
     async def send_telegram_message(self, message: str, keyboard: List[List[Dict[str, str]]] = None) -> bool:
         """Отправляем сообщение в Telegram с задержкой при необходимости"""

@@ -1,0 +1,1441 @@
+{
+  "timestamp": 1757433607.851199,
+  "ebosher_clusters": {
+    "86K4KWJ2eFxu3Z55B5ua95PWHFcLCPYEbFm3hFUmxXYw": {
+      "wallets": {
+        "A59dYap98vTZ5icj3JMrqiTsPZHusrVmUsmNv8fG6U7T": {
+          "amount": 3.2433,
+          "timestamp": 1757413309
+        },
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 139.8456,
+          "timestamp": 1757413392
+        }
+      },
+      "total_volume": 143.0889,
+      "first_detection": 1757413309,
+      "last_update": 1757413392,
+      "token_name": "Hien",
+      "detected": false,
+      "last_market_cap": 51517.56511746067
+    },
+    "FTyrSwokG2UsNLwQHYYhPZQTMiBhFoCJNk8dGskkbonk": {
+      "wallets": {
+        "AoiBpauLpR9LVRLXTUHM4iBN61bWNW6SQce33tRDmMYC": {
+          "amount": 0.3055,
+          "timestamp": 1757413751
+        },
+        "EHqGZKREkYkQ1zqvNrVphrXsuukDR652hLF4KEfdSoqc": {
+          "amount": 0.2899,
+          "timestamp": 1757413757
+        },
+        "C9gSHAN2g56eVKnPicdChKg218dQ8QreBCDVwQ3unAjQ": {
+          "amount": 0.2842,
+          "timestamp": 1757413843
+        },
+        "64CM2FD5q2hq4x3nQ2NCkPXiQbYSHfaJzJhRsL2szjR6": {
+          "amount": 0.2937,
+          "timestamp": 1757413921
+        },
+        "GfY9dZrHDyAn1XYjXizJLqywu3CyAthRyJ9kZcTSsUqv": {
+          "amount": 0.2963,
+          "timestamp": 1757413929
+        }
+      },
+      "total_volume": -16.8928,
+      "first_detection": 1757413318,
+      "last_update": 1757413929,
+      "token_name": "FAREWELL",
+      "detected": false,
+      "last_market_cap": 69195.21220663296
+    },
+    "49w3MYrcXEYK5d7GccARFJ6NRsjHdGTqFMqGEKJkbonk": {
+      "wallets": {
+        "64CM2FD5q2hq4x3nQ2NCkPXiQbYSHfaJzJhRsL2szjR6": {
+          "amount": 0.3084,
+          "timestamp": 1757413321
+        },
+        "AaZJb9UzjHM5t23AEbwShWkJjzj3vhqboQL9ha4pf7M4": {
+          "amount": 0.3246,
+          "timestamp": 1757413327
+        },
+        "C9gSHAN2g56eVKnPicdChKg218dQ8QreBCDVwQ3unAjQ": {
+          "amount": 0.2929,
+          "timestamp": 1757413334
+        },
+        "EHqGZKREkYkQ1zqvNrVphrXsuukDR652hLF4KEfdSoqc": {
+          "amount": 0.2955,
+          "timestamp": 1757413344
+        },
+        "7AFrvsdrwxSrXqnybn2TsjGD3BAvRdxANrfteMA1J4Ko": {
+          "amount": 0.285,
+          "timestamp": 1757413351
+        },
+        "9NFMjTRkExVMC2QS21M7gdHNWSd6A28VdFLiyFZbbsNw": {
+          "amount": 0.3065,
+          "timestamp": 1757413380
+        },
+        "GfY9dZrHDyAn1XYjXizJLqywu3CyAthRyJ9kZcTSsUqv": {
+          "amount": 0.2899,
+          "timestamp": 1757413387
+        },
+        "AoiBpauLpR9LVRLXTUHM4iBN61bWNW6SQce33tRDmMYC": {
+          "amount": 0.2894,
+          "timestamp": 1757413408
+        },
+        "E2UCsBacLk4nMuPWdh5gf3eMZXnbLVGHsJ9CdQsdVibL": {
+          "amount": 0.307,
+          "timestamp": 1757413513
+        },
+        "6vroQ47CkQzaMo4Uy8i2yGhvNEXKKFaytxqpQUwWtmps": {
+          "amount": 0.3194,
+          "timestamp": 1757413540
+        }
+      },
+      "total_volume": 3.0185999999999997,
+      "first_detection": 1757413321,
+      "last_update": 1757413540,
+      "token_name": "PIXEL BATTLE",
+      "detected": false,
+      "last_market_cap": 61795.61483991917
+    },
+    "2WBS8qzmPCKbdyWy6RiixMYFR1ANjB4drWGUzJRMeMzf": {
+      "wallets": {
+        "A59dYap98vTZ5icj3JMrqiTsPZHusrVmUsmNv8fG6U7T": {
+          "amount": 4.319,
+          "timestamp": 1757414826
+        },
+        "kEFiAX3jo5NmemysQov342TZ9mGh6yp92GDRjhA8XDf": {
+          "amount": 298.274,
+          "timestamp": 1757415016
+        },
+        "STorreSu8X6yPLmiEScNHSGDinqV7j84hWjmvH9SPwk": {
+          "amount": 301.0671,
+          "timestamp": 1757415018
+        },
+        "34KU83DpgdUcBe22cSnCzZsYGukZVtGrLkSyG8BahoP9": {
+          "amount": 4.4277,
+          "timestamp": 1757415021
+        },
+        "HuqMWAVNpam4bpieWwzxXKc25acFRGkZEHCKrPaKo5C3": {
+          "amount": 4.4485,
+          "timestamp": 1757415022
+        },
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 250.0763,
+          "timestamp": 1757415022
+        }
+      },
+      "total_volume": -382.68969999999996,
+      "first_detection": 1757413347,
+      "last_update": 1757415022,
+      "token_name": "Romantic Homicide",
+      "detected": false,
+      "last_market_cap": 128901.7325912759
+    },
+    "52yvprTbRLp4uvzDfkEYmXybxiyaVsrbg1UDfg8Hpump": {
+      "wallets": {
+        "34KU83DpgdUcBe22cSnCzZsYGukZVtGrLkSyG8BahoP9": {
+          "amount": 3.212,
+          "timestamp": 1757413860
+        }
+      },
+      "total_volume": 3.211999999999989,
+      "first_detection": 1757413417,
+      "last_update": 1757413860,
+      "token_name": "ClankerAi Radio",
+      "detected": false,
+      "last_market_cap": 51970.90713289264
+    },
+    "EzEGH66Xheme3C4LKeV3V22axMnPYFAbhBcXwh6JybC5": {
+      "wallets": {
+        "kEFiAX3jo5NmemysQov342TZ9mGh6yp92GDRjhA8XDf": {
+          "amount": 218.5511,
+          "timestamp": 1757431903
+        }
+      },
+      "total_volume": -322.8983,
+      "first_detection": 1757413568,
+      "last_update": 1757431903,
+      "token_name": "i know ball",
+      "detected": false,
+      "last_market_cap": 102212.21757899082
+    },
+    "9NG3mUYEzCFqPwuLvhYabnvhGiZSZN9VgurcfVCFpump": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 224.0949,
+          "timestamp": 1757413572
+        }
+      },
+      "total_volume": 224.0949,
+      "first_detection": 1757413572,
+      "last_update": 1757413572,
+      "token_name": "Eliza V2",
+      "detected": false,
+      "last_market_cap": 163685.73209548803
+    },
+    "6DEa18xxCgx2SgBTJbFdEY6PTNZMWvG2nDv47LHspump": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 188.4757,
+          "timestamp": 1757413576
+        }
+      },
+      "total_volume": 188.4757,
+      "first_detection": 1757413576,
+      "last_update": 1757413576,
+      "token_name": "glub",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "8PpFtwoZKoeqBgAQyLkuujc4K75HAQ41MZgarwGUpump": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 161.6796,
+          "timestamp": 1757429282
+        }
+      },
+      "total_volume": 161.6796,
+      "first_detection": 1757413601,
+      "last_update": 1757429282,
+      "token_name": "Longcat",
+      "detected": false,
+      "last_market_cap": 88386.20241944621
+    },
+    "CuAf6DUJdcav2yASqyZzkE7EPmwU1VyuRe1z56Zfpump": {
+      "wallets": {
+        "88F5JcuuFHpiop2G3oFNAXyWyvpThagAQ3nLGrmnEznz": {
+          "amount": 21.5745,
+          "timestamp": 1757414572
+        }
+      },
+      "total_volume": -8369.466799999997,
+      "first_detection": 1757413754,
+      "last_update": 1757414572,
+      "token_name": "Oggie The Frog",
+      "detected": false,
+      "last_market_cap": 61319.86324846052
+    },
+    "84JF4mMiotZNJqJDi18Kbm8D4nJveSMSimaVtXfHpump": {
+      "wallets": {
+        "CTRbbM6whSXqp26cFY9iP44Kf7dxFbPFi7csZTgyfK4r": {
+          "amount": 64.5902,
+          "timestamp": 1757413927
+        },
+        "F5PBvNnXacy6nfE8LbcUziEJYMeeAFJcLHPRgcgWT7YB": {
+          "amount": 1.3408,
+          "timestamp": 1757413927
+        },
+        "6rSZ2r84hMY1XYxF9Kmxq9F7gpEUu8DnLc3yxTiyf9cV": {
+          "amount": 11.9255,
+          "timestamp": 1757413927
+        },
+        "9yCDkpYssZi2xjqBnChuSLt4PYGhq4t5rg66ajgBqmfy": {
+          "amount": 32.5386,
+          "timestamp": 1757413928
+        },
+        "F7RV6aBWfniixoFkQNWmRwznDj2vae2XbusFfvMMjtbE": {
+          "amount": 415.3005,
+          "timestamp": 1757413928
+        },
+        "DrnuP46qcf7b7utTY9Esm46SwkTFhYu4TrtRGTyvkE67": {
+          "amount": 207.6502,
+          "timestamp": 1757413928
+        },
+        "DJjMVRPFR528jhCXKhokVpfNqa84BHmGuKRXtUjAvWjn": {
+          "amount": 74.2561,
+          "timestamp": 1757413930
+        },
+        "start533UuQWHmdfv9ukpZhsNJ4rF3684o9ouXkxJGo": {
+          "amount": 65.792,
+          "timestamp": 1757413931
+        },
+        "SYL1AkmSL6iQcubvj64ZWjzw5gHrZ8xsznc5Nw6eGL4": {
+          "amount": 66.2317,
+          "timestamp": 1757413931
+        },
+        "EWCK8bN5uLUPcmc1qPPbuAV9sxsSJ358s62vVsTTVQhB": {
+          "amount": 1.7224,
+          "timestamp": 1757413988
+        },
+        "BZYE58VctXarpTa2D4Mqi8qqQgEWkKPMwgfqtmnqxfmX": {
+          "amount": 0.9876,
+          "timestamp": 1757413990
+        }
+      },
+      "total_volume": 942.3356000000002,
+      "first_detection": 1757413927,
+      "last_update": 1757413990,
+      "token_name": "Baby Moodeng",
+      "detected": false,
+      "last_market_cap": 163451.02555523912
+    },
+    "9YKeGRC5XoaBNusQLG8fZKMQKPcMj1L1E4RffhNBBunz": {
+      "wallets": {
+        "6JguQEansvS7boW1waGcA6a6tC4xLXWaHWnNsZiBiBpk": {
+          "amount": 177.5287,
+          "timestamp": 1757415013
+        },
+        "kEFiAX3jo5NmemysQov342TZ9mGh6yp92GDRjhA8XDf": {
+          "amount": 245.8403,
+          "timestamp": 1757415013
+        },
+        "2Ftx367NL7nAY4WUyJTMeQ1DjNpwnypqnuKTAydrRQgJ": {
+          "amount": 31.8951,
+          "timestamp": 1757415013
+        },
+        "2n6TYg77t2ky998jzE9W8ae62KUGNfbKwM6CFJPCEWWS": {
+          "amount": 8.9935,
+          "timestamp": 1757415015
+        },
+        "STorreSu8X6yPLmiEScNHSGDinqV7j84hWjmvH9SPwk": {
+          "amount": 253.6973,
+          "timestamp": 1757415015
+        },
+        "14LYvJoKPK9pCuNJqT6cJEaR1q3FNsfCtopbSXD8b8DM": {
+          "amount": 42.8261,
+          "timestamp": 1757415016
+        },
+        "E45YLW6LV2GdvPu4HgpBMZF4veGmUqbK6hs2W3ykx2s1": {
+          "amount": 140.7067,
+          "timestamp": 1757415025
+        },
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 215.2374,
+          "timestamp": 1757415070
+        }
+      },
+      "total_volume": -26947.086000000003,
+      "first_detection": 1757413960,
+      "last_update": 1757415070,
+      "token_name": "Haru Urara",
+      "detected": false,
+      "last_market_cap": 173736.72739203068
+    },
+    "GftPNcj2X2Q9NRvWTyWKwfY5c9zNneapo9xbPgpcpump": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 330.2242,
+          "timestamp": 1757414332
+        }
+      },
+      "total_volume": 330.2242,
+      "first_detection": 1757414332,
+      "last_update": 1757414332,
+      "token_name": "Sol Strategies",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "5evjSdwx1Y63epsbycq2nuxnQk1wugEVNujoUzYopump": {
+      "wallets": {
+        "6iCwRhtT28LddmjjxomaEFzCnFTYJkjA3uWCmhWBdGKK": {
+          "amount": 106.9114,
+          "timestamp": 1757414401
+        }
+      },
+      "total_volume": 106.9114,
+      "first_detection": 1757414401,
+      "last_update": 1757414401,
+      "token_name": "Lambo Coin",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "239AZYeLBRdCrkEKRKpoE8s5sCeW6DUbFhpcqa9Xo7xP": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 198.6948,
+          "timestamp": 1757414426
+        }
+      },
+      "total_volume": 198.6948,
+      "first_detection": 1757414426,
+      "last_update": 1757414426,
+      "token_name": "White Doge ",
+      "detected": false,
+      "last_market_cap": 103558.21077393943
+    },
+    "Fd7MJk38uZtpKLAD6WQ91yjnBAyETfEmc7D88enD696Y": {
+      "wallets": {
+        "3FsBmLqLX856qC6b76B7bgQzfW81t3ii4z19iLNGNSJ5": {
+          "amount": 639.3611,
+          "timestamp": 1757429603
+        },
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 195.9832,
+          "timestamp": 1757429858
+        }
+      },
+      "total_volume": 523.7841,
+      "first_detection": 1757414562,
+      "last_update": 1757429858,
+      "token_name": "NOBORU",
+      "detected": false,
+      "last_market_cap": 83810.50968208245
+    },
+    "8SXxbF9pASTeWgQU5DCFKJ41DMtwbM4Ex6JMspoLpump": {
+      "wallets": {
+        "6z243JwtBNwcVaxcReKRk6Py4yqk1tz4mCyT95ApRVRZ": {
+          "amount": 6.4067,
+          "timestamp": 1757414587
+        }
+      },
+      "total_volume": 6.4067,
+      "first_detection": 1757414587,
+      "last_update": 1757414587,
+      "token_name": "Justice for Logan",
+      "detected": false,
+      "last_market_cap": 51637.7288062895
+    },
+    "8gsExkAkHfSBPRgET4QwtgJMjsHr6FEpJc7vA724bonk": {
+      "wallets": {
+        "6z243JwtBNwcVaxcReKRk6Py4yqk1tz4mCyT95ApRVRZ": {
+          "amount": 6.4681,
+          "timestamp": 1757415156
+        }
+      },
+      "total_volume": 6.4681,
+      "first_detection": 1757415156,
+      "last_update": 1757415156,
+      "token_name": "Mocat",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "B6xG3yDVnySoXLPYDD89ArDeGoQeBVJ8BSZ5pAckpump": {
+      "wallets": {
+        "932PCcL6KxmSU5MnBKSHqskDjhdrhXhA13kEPuPEKavL": {
+          "amount": 3.0828,
+          "timestamp": 1757428977
+        },
+        "34KU83DpgdUcBe22cSnCzZsYGukZVtGrLkSyG8BahoP9": {
+          "amount": 9.7079,
+          "timestamp": 1757429006
+        },
+        "HuqMWAVNpam4bpieWwzxXKc25acFRGkZEHCKrPaKo5C3": {
+          "amount": 45.3891,
+          "timestamp": 1757429012
+        },
+        "A59dYap98vTZ5icj3JMrqiTsPZHusrVmUsmNv8fG6U7T": {
+          "amount": 70.1203,
+          "timestamp": 1757429013
+        },
+        "dexvcNUf31JyHkxcsceWpqGErhXe5Eu5QWLe993m1Pu": {
+          "amount": 30.4903,
+          "timestamp": 1757429119
+        },
+        "AoG7J2jydRxZyEbTBz2TphhXdxXekX8JDXxf7a6gnfaY": {
+          "amount": 753.2841,
+          "timestamp": 1757429147
+        },
+        "kEFiAX3jo5NmemysQov342TZ9mGh6yp92GDRjhA8XDf": {
+          "amount": 119.0742,
+          "timestamp": 1757429222
+        },
+        "STorreSu8X6yPLmiEScNHSGDinqV7j84hWjmvH9SPwk": {
+          "amount": 117.0672,
+          "timestamp": 1757429222
+        }
+      },
+      "total_volume": 1148.2159,
+      "first_detection": 1757428977,
+      "last_update": 1757429222,
+      "token_name": "Depressed Inu",
+      "detected": false,
+      "last_market_cap": 50659.625062287865
+    },
+    "HXjiARvkzib4NabiMGS6GPsb5xTGyDpuympVHzP3pump": {
+      "wallets": {
+        "34KU83DpgdUcBe22cSnCzZsYGukZVtGrLkSyG8BahoP9": {
+          "amount": 3.1662,
+          "timestamp": 1757431428
+        },
+        "A59dYap98vTZ5icj3JMrqiTsPZHusrVmUsmNv8fG6U7T": {
+          "amount": 3.1704,
+          "timestamp": 1757431479
+        },
+        "HuqMWAVNpam4bpieWwzxXKc25acFRGkZEHCKrPaKo5C3": {
+          "amount": 3.1732,
+          "timestamp": 1757431480
+        }
+      },
+      "total_volume": -209.95560000000003,
+      "first_detection": 1757428906,
+      "last_update": 1757431480,
+      "token_name": "Dudu",
+      "detected": false,
+      "last_market_cap": 56295.76126009191
+    },
+    "2dnqop8yUs7phPaugwF5oC4nNTHuRTGoi4P9DSyGpump": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 153.4758,
+          "timestamp": 1757432066
+        },
+        "HsK2LGF2qNnjxHdnYeFmD26k8vKwf6NyqMnJjMaomBy7": {
+          "amount": 625.8932,
+          "timestamp": 1757432083
+        },
+        "BeVuEw57SbLyQtrcV6pjzpRKC8kmyvhTida4CXfY8ma": {
+          "amount": 466.3462,
+          "timestamp": 1757432201
+        }
+      },
+      "total_volume": -27959.173300000006,
+      "first_detection": 1757428827,
+      "last_update": 1757432201,
+      "token_name": "camiinthisthang",
+      "detected": false,
+      "last_market_cap": 64210.58217865024
+    },
+    "EKvBWm9TSJjVAWdvh87DN9D5kNi99fqdwxYhH9V6pump": {
+      "wallets": {
+        "CTRbbM6whSXqp26cFY9iP44Kf7dxFbPFi7csZTgyfK4r": {
+          "amount": 4.2892,
+          "timestamp": 1757429008
+        },
+        "kEFiAX3jo5NmemysQov342TZ9mGh6yp92GDRjhA8XDf": {
+          "amount": 239.1796,
+          "timestamp": 1757429044
+        },
+        "STorreSu8X6yPLmiEScNHSGDinqV7j84hWjmvH9SPwk": {
+          "amount": 235.8626,
+          "timestamp": 1757429045
+        },
+        "BZYE58VctXarpTa2D4Mqi8qqQgEWkKPMwgfqtmnqxfmX": {
+          "amount": 0.7501,
+          "timestamp": 1757429100
+        },
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 188.1736,
+          "timestamp": 1757429193
+        }
+      },
+      "total_volume": 668.2551,
+      "first_detection": 1757429008,
+      "last_update": 1757429193,
+      "token_name": "Grandma Bambi",
+      "detected": false,
+      "last_market_cap": 61813.800264659025
+    },
+    "DLiW1QXTJ8zXsh9KN2KzvMRXVXK39TcPRH7FwbNUpump": {
+      "wallets": {
+        "EdLwALhn36t9W5U9d7WsevWCd29SeqrdKmXqpdUYr5Ja": {
+          "amount": 2.7896,
+          "timestamp": 1757429010
+        }
+      },
+      "total_volume": 2.7896,
+      "first_detection": 1757429010,
+      "last_update": 1757429010,
+      "token_name": "peek.fun",
+      "detected": false,
+      "last_market_cap": 64358.82184933745
+    },
+    "C33Uvggg36n21hoxE4oHDXbCj4vZAostY1VrtpU1pump": {
+      "wallets": {
+        "Byrftf82dfiKRYjN1Tuu3jtGDroxpt7nEyfy6x3vc6B6": {
+          "amount": 62.6595,
+          "timestamp": 1757433549
+        }
+      },
+      "total_volume": -9113.9766,
+      "first_detection": 1757429036,
+      "last_update": 1757433549,
+      "token_name": "the hidden ticker",
+      "detected": false,
+      "last_market_cap": 172536.98983087222
+    },
+    "HcrWkcgVMuS9D6vS6WfjynKuH7ud4ZykB7ASq2dyN4ks": {
+      "wallets": {
+        "DeJaw4igxaEaQPhorNK18v2YGaNkBDx5G8R7Nrja2hwe": {
+          "amount": 141.4401,
+          "timestamp": 1757429042
+        }
+      },
+      "total_volume": 141.4401,
+      "first_detection": 1757429042,
+      "last_update": 1757429042,
+      "token_name": "PIKA CAPITAL",
+      "detected": false,
+      "last_market_cap": 142743.0628541881
+    },
+    "miH8BxCzYyuRFupPq9pmkN4wmbBwBdepon42P5wpump": {
+      "wallets": {
+        "6P84YMdSS6DcKu8wdVs4RaCqqU7W7FahWkhrcbNR8HZY": {
+          "amount": 189.6586,
+          "timestamp": 1757433470
+        },
+        "Ddk7qKQ5QceCbz91SWPktj1wFGYaB7wvABz5xarttrqJ": {
+          "amount": 160.8517,
+          "timestamp": 1757433476
+        },
+        "9U2UT9hpBq7tyho8k4byQP4diLYMgBUbW8Zfpn6kphPC": {
+          "amount": 112.3097,
+          "timestamp": 1757433561
+        },
+        "GY7UKq4etUj8fcsS1LCncB4TMRAsVskTKnjHHV9ZrJcj": {
+          "amount": 176.7674,
+          "timestamp": 1757433572
+        },
+        "53XkQxcrPqanNj6zzLRBSfE6vLc3gdYFZQd7SjSx8SQc": {
+          "amount": 104.3925,
+          "timestamp": 1757433578
+        },
+        "3RUuXocsZKaHVYxqfxw9j76uF1TmbqHjvVrkamXE5LJs": {
+          "amount": 152.0593,
+          "timestamp": 1757433607
+        }
+      },
+      "total_volume": -107392.62080000003,
+      "first_detection": 1757429136,
+      "last_update": 1757433607,
+      "token_name": "Protest Spiderman",
+      "detected": true,
+      "last_market_cap": 167998.5993246401
+    },
+    "Cup3HyZeAJuVsHHYtSbQJWqTxydAanbQMXWXEm1Qfpj5": {
+      "wallets": {
+        "7GQ33HWPMRgCR9daSnbgwHh3yoauK1fHQ6HZFSVKkECG": {
+          "amount": 142.2202,
+          "timestamp": 1757430628
+        }
+      },
+      "total_volume": -3808.6338,
+      "first_detection": 1757429155,
+      "last_update": 1757430628,
+      "token_name": "The Original Pepe",
+      "detected": false,
+      "last_market_cap": 50658.68109703494
+    },
+    "AmLodSijEM5zb1Rchaq3w9dmLvBBoXopA3caBXxxbYRN": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 165.9123,
+          "timestamp": 1757429167
+        }
+      },
+      "total_volume": 165.9123,
+      "first_detection": 1757429167,
+      "last_update": 1757429167,
+      "token_name": "Degegle: Chat with Degens",
+      "detected": false,
+      "last_market_cap": 70702.65465565088
+    },
+    "CCBXgRF8BgA44qEq5u9mvQ1WVmMANjNmdzwiNmmKejvd": {
+      "wallets": {
+        "kEFiAX3jo5NmemysQov342TZ9mGh6yp92GDRjhA8XDf": {
+          "amount": 173.6969,
+          "timestamp": 1757431716
+        },
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 157.3269,
+          "timestamp": 1757431745
+        },
+        "932PCcL6KxmSU5MnBKSHqskDjhdrhXhA13kEPuPEKavL": {
+          "amount": 3.1533,
+          "timestamp": 1757431993
+        },
+        "STorreSu8X6yPLmiEScNHSGDinqV7j84hWjmvH9SPwk": {
+          "amount": 186.0706,
+          "timestamp": 1757432010
+        },
+        "HuqMWAVNpam4bpieWwzxXKc25acFRGkZEHCKrPaKo5C3": {
+          "amount": 3.1546,
+          "timestamp": 1757432012
+        },
+        "34KU83DpgdUcBe22cSnCzZsYGukZVtGrLkSyG8BahoP9": {
+          "amount": 3.1533,
+          "timestamp": 1757432012
+        },
+        "A59dYap98vTZ5icj3JMrqiTsPZHusrVmUsmNv8fG6U7T": {
+          "amount": 3.1558,
+          "timestamp": 1757432012
+        }
+      },
+      "total_volume": -2503.1994999999997,
+      "first_detection": 1757429215,
+      "last_update": 1757432012,
+      "token_name": "Rockim Prowell",
+      "detected": false,
+      "last_market_cap": 66665.99139440994
+    },
+    "EZytLKFuxsWfKTwThWTQ7x9VtfAbpxzAsTyBfUuzBAGS": {
+      "wallets": {
+        "88F5JcuuFHpiop2G3oFNAXyWyvpThagAQ3nLGrmnEznz": {
+          "amount": 32.9863,
+          "timestamp": 1757429240
+        }
+      },
+      "total_volume": 32.9863,
+      "first_detection": 1757429240,
+      "last_update": 1757429240,
+      "token_name": "Monitor the Situation",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "HrSUCXgwQNVr4fhKbZxokLEdPskVJ2swwGXZkM4Hpump": {
+      "wallets": {
+        "6Xfysa11BZabKXXDH5UERBtmFGt3KM3ZzKhjuKSzQrRY": {
+          "amount": 36.6842,
+          "timestamp": 1757429247
+        }
+      },
+      "total_volume": 36.6842,
+      "first_detection": 1757429247,
+      "last_update": 1757429247,
+      "token_name": "RMENERGY",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "EnkkyvqfUatvfVyjqmSXshRdjMm5JJsNx5sW1sF7pump": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 147.9388,
+          "timestamp": 1757432697
+        }
+      },
+      "total_volume": 147.93880000000001,
+      "first_detection": 1757429363,
+      "last_update": 1757432697,
+      "token_name": "Bloquons tout",
+      "detected": false,
+      "last_market_cap": 57731.73211099389
+    },
+    "65xf8tzGM6HhG2jBsghgstropB3QGLGe6jMZ7pwbpump": {
+      "wallets": {
+        "BeVuEw57SbLyQtrcV6pjzpRKC8kmyvhTida4CXfY8ma": {
+          "amount": 210.4991,
+          "timestamp": 1757430024
+        }
+      },
+      "total_volume": -1512.2355000000002,
+      "first_detection": 1757429365,
+      "last_update": 1757430024,
+      "token_name": "The Obvious Coin",
+      "detected": false,
+      "last_market_cap": 54596.38206704169
+    },
+    "9HoxtrY2UcSFEdTATMLJPPLY3krjPouAfuZQhjKu2MNk": {
+      "wallets": {
+        "6CCGJmpPtFP1RYv6kkeUXD6BgfRhSRSuzJN4YVFcsdLh": {
+          "amount": 21.0532,
+          "timestamp": 1757429422
+        }
+      },
+      "total_volume": 21.0532,
+      "first_detection": 1757429422,
+      "last_update": 1757429422,
+      "token_name": "Pepega",
+      "detected": false,
+      "last_market_cap": 55217.423139211765
+    },
+    "3e8UoF4keuDp5kAkUmboNjLDioPgcxwroJoYtrotpump": {
+      "wallets": {
+        "4ojcXeM18auosis5JMsTf73XLv7x68ZesGRod7oApcRH": {
+          "amount": 122.4375,
+          "timestamp": 1757433162
+        },
+        "3h7vhXCmuUvXEfYEbpQbcFQdSB7v1iBA1bqJRXoZn2VV": {
+          "amount": 668.3113,
+          "timestamp": 1757433444
+        }
+      },
+      "total_volume": 790.7488,
+      "first_detection": 1757429425,
+      "last_update": 1757433444,
+      "token_name": "Pixel 10 Pro",
+      "detected": false,
+      "last_market_cap": 111312.86468885993
+    },
+    "FvRCYq1rJkWHuRKVsMVagHpwo4h7yUSGvE1QpbfivBLV": {
+      "wallets": {
+        "GXM44h5uWoEKhkukb9yKMEcMDaA9W2KDAsQjnvX6Xa4Z": {
+          "amount": 425.5614,
+          "timestamp": 1757429496
+        }
+      },
+      "total_volume": 425.5614,
+      "first_detection": 1757429496,
+      "last_update": 1757429496,
+      "token_name": "Error 404",
+      "detected": false,
+      "last_market_cap": 50128.75013235781
+    },
+    "DBSsFP1jmYwyEncizCNTQSRjVfDU6F5boPPAdFkNpump": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 154.1342,
+          "timestamp": 1757429515
+        }
+      },
+      "total_volume": 154.1342,
+      "first_detection": 1757429515,
+      "last_update": 1757429515,
+      "token_name": "CR CULT",
+      "detected": false,
+      "last_market_cap": 77800.46899159276
+    },
+    "5rx7cqWs11DpZRjZoKrBsEzngjwGSs3Lv8UWGFFmpump": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 155.3247,
+          "timestamp": 1757429597
+        }
+      },
+      "total_volume": 155.3247,
+      "first_detection": 1757429597,
+      "last_update": 1757429597,
+      "token_name": "trash coin",
+      "detected": false,
+      "last_market_cap": 55734.965712070276
+    },
+    "FYsGDHViSqW5Xm8P23VkPD8AGmcEDmwhF9VUKqFpump": {
+      "wallets": {
+        "7GBfdk5h6uFGfW7HcvhoHU2rnXZs5k9qYfxo8iZMXVFA": {
+          "amount": 590.9681,
+          "timestamp": 1757429631
+        }
+      },
+      "total_volume": 590.9681,
+      "first_detection": 1757429631,
+      "last_update": 1757429631,
+      "token_name": "Joe Camel",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "5YUMaw3fFCRMySvuYMgZJ6nB2te3wvo9QGdP3tNNpump": {
+      "wallets": {
+        "3FsBmLqLX856qC6b76B7bgQzfW81t3ii4z19iLNGNSJ5": {
+          "amount": 1403.9122,
+          "timestamp": 1757431976
+        }
+      },
+      "total_volume": 1403.9121999999998,
+      "first_detection": 1757429650,
+      "last_update": 1757431976,
+      "token_name": "first internet runner",
+      "detected": false,
+      "last_market_cap": 53343.88841332876
+    },
+    "GeJVqzGBDhCDQqJnpXbqAdBvzK1aWTR6pMjA2Dyspump": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 194.6556,
+          "timestamp": 1757429698
+        }
+      },
+      "total_volume": 194.6556,
+      "first_detection": 1757429698,
+      "last_update": 1757429698,
+      "token_name": "Guatemalan Dwarf Pedo",
+      "detected": false,
+      "last_market_cap": 131144.44230552914
+    },
+    "3rpL2P5jwr9474snZMbjNRndYTZBy2kSDrZof8qQdaos": {
+      "wallets": {
+        "Eq6sEtbLJwWGHDWpq5surxR12s1KF7sfCvXAXqx2k6Nb": {
+          "amount": 21.3425,
+          "timestamp": 1757429749
+        }
+      },
+      "total_volume": 21.3425,
+      "first_detection": 1757429749,
+      "last_update": 1757429749,
+      "token_name": "GREEN CULT",
+      "detected": false,
+      "last_market_cap": 68417.27908782335
+    },
+    "5CUvx3h8VqB1AQufdHQNCGYkWX8WZ8t41GeRvyNNpump": {
+      "wallets": {
+        "E45YLW6LV2GdvPu4HgpBMZF4veGmUqbK6hs2W3ykx2s1": {
+          "amount": 162.5073,
+          "timestamp": 1757429921
+        }
+      },
+      "total_volume": 162.5073,
+      "first_detection": 1757429921,
+      "last_update": 1757429921,
+      "token_name": "The Meme Job",
+      "detected": false,
+      "last_market_cap": 181355.46861730973
+    },
+    "6Ls94Gp8RYkHirCVu33UAatWjPHmTxdYnfo4e8QZpump": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 170.5681,
+          "timestamp": 1757430031
+        }
+      },
+      "total_volume": 170.5681,
+      "first_detection": 1757430031,
+      "last_update": 1757430031,
+      "token_name": "MS Paint Duck-Thingy",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "BwC4NhHGfT5GrzUSjiYe2LcUeyWqSRt5JY5EqHH8pump": {
+      "wallets": {
+        "kEFiAX3jo5NmemysQov342TZ9mGh6yp92GDRjhA8XDf": {
+          "amount": 196.365,
+          "timestamp": 1757430609
+        },
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 167.0742,
+          "timestamp": 1757430610
+        }
+      },
+      "total_volume": 363.4392,
+      "first_detection": 1757430065,
+      "last_update": 1757430610,
+      "token_name": "Charlie and Lola",
+      "detected": false,
+      "last_market_cap": 69644.80240749854
+    },
+    "ATujEVSGoGZWzdnvkE2cZ6CJFmL9Cfb39HqVF8ujUcKu": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 177.3655,
+          "timestamp": 1757430142
+        }
+      },
+      "total_volume": 177.3655,
+      "first_detection": 1757430142,
+      "last_update": 1757430142,
+      "token_name": "ARCD",
+      "detected": false,
+      "last_market_cap": 54535.99089758899
+    },
+    "39vSia12NkrBbN5qvH3jvad8sYyjUnJsgkY2ajuBecMB": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 182.7702,
+          "timestamp": 1757430347
+        }
+      },
+      "total_volume": 182.7702,
+      "first_detection": 1757430347,
+      "last_update": 1757430347,
+      "token_name": "PupFun",
+      "detected": false,
+      "last_market_cap": 72895.3654744028
+    },
+    "GpfzdS8gfM2zTvQBEtP1279QaUFaPuxFW3WcbAuXpump": {
+      "wallets": {
+        "uS74rigLoPmKdi169RPUB4VSF6T9PqChTpG5jWzVhVp": {
+          "amount": 311.7066,
+          "timestamp": 1757433450
+        },
+        "STorreSu8X6yPLmiEScNHSGDinqV7j84hWjmvH9SPwk": {
+          "amount": 282.1016,
+          "timestamp": 1757433608
+        }
+      },
+      "total_volume": -68920.6572,
+      "first_detection": 1757430464,
+      "last_update": 1757433608,
+      "token_name": "Meme Strategy",
+      "detected": false,
+      "last_market_cap": 151561.22636019308
+    },
+    "HmKemu8YTNceLUgeL8Q5YVZXBzj6Jqjn5ba7kxuB5pWM": {
+      "wallets": {
+        "2wF4hSgVugCDLxfNGWvENzM8zkLD3L4TPZUNih8ikZyo": {
+          "amount": 104.9049,
+          "timestamp": 1757430486
+        }
+      },
+      "total_volume": 104.9049,
+      "first_detection": 1757430486,
+      "last_update": 1757430486,
+      "token_name": "Justice for Gake",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "EXpGGE6g2SiE1aZVF5QCDoAiHvFueTwtHzqGCCLnpump": {
+      "wallets": {
+        "5K9r1dvizNWDyrDC2Nqg8gqiM6Lzf1K2oVvX5nckoLqD": {
+          "amount": 8.3831,
+          "timestamp": 1757430568
+        }
+      },
+      "total_volume": 8.3831,
+      "first_detection": 1757430568,
+      "last_update": 1757430568,
+      "token_name": "Infinite Volume",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "926B7TWrCFX2gvHMGePQwNKw855Kr85VpBTipvyepump": {
+      "wallets": {
+        "7GBfdk5h6uFGfW7HcvhoHU2rnXZs5k9qYfxo8iZMXVFA": {
+          "amount": 311.7222,
+          "timestamp": 1757430833
+        },
+        "88F5JcuuFHpiop2G3oFNAXyWyvpThagAQ3nLGrmnEznz": {
+          "amount": 21.1331,
+          "timestamp": 1757430915
+        },
+        "BxFKKVdCBNh8GZMrRGmZ5KNDUpEeK4PC7EtsQHdczKRp": {
+          "amount": 627.7515,
+          "timestamp": 1757430930
+        },
+        "CXVJewdc79TYR55sz4SGLSWUPz3r4LBJ9Mn93bZ8ZyAz": {
+          "amount": 281.8879,
+          "timestamp": 1757431092
+        },
+        "BZYE58VctXarpTa2D4Mqi8qqQgEWkKPMwgfqtmnqxfmX": {
+          "amount": 0.9883,
+          "timestamp": 1757431098
+        }
+      },
+      "total_volume": 1243.483,
+      "first_detection": 1757430833,
+      "last_update": 1757431098,
+      "token_name": "Pirate Coin",
+      "detected": false,
+      "last_market_cap": 50843.050242212725
+    },
+    "HyXjMq5myw4EovmZe4RcDEW89ViiLFNVw6YpLYbapump": {
+      "wallets": {
+        "4ojcXeM18auosis5JMsTf73XLv7x68ZesGRod7oApcRH": {
+          "amount": 100.2212,
+          "timestamp": 1757432125
+        },
+        "34KU83DpgdUcBe22cSnCzZsYGukZVtGrLkSyG8BahoP9": {
+          "amount": 2.2231,
+          "timestamp": 1757432300
+        }
+      },
+      "total_volume": -330.89730000000003,
+      "first_detection": 1757430836,
+      "last_update": 1757432300,
+      "token_name": "Justice For Rooster",
+      "detected": false,
+      "last_market_cap": 63485.86479697448
+    },
+    "Ejm6CEvFtRR9Rib7vjCGr6UYn4xWRSEKFxX6BxvTpump": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 299.9678,
+          "timestamp": 1757430970
+        }
+      },
+      "total_volume": 299.9678,
+      "first_detection": 1757430970,
+      "last_update": 1757430970,
+      "token_name": "cars cult",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "2Y3Rx35XGevMyBax5PiHQxr5SoAFoPzHTjFuzKz8pump": {
+      "wallets": {
+        "4UzHCTTm2Y8ZyThggALWosboQPAFXAvRDxxNDD2bqH91": {
+          "amount": 211.3918,
+          "timestamp": 1757431810
+        }
+      },
+      "total_volume": 211.39180000000002,
+      "first_detection": 1757430982,
+      "last_update": 1757431810,
+      "token_name": "Nepal Gen Z Revolution",
+      "detected": false,
+      "last_market_cap": 125653.02480783525
+    },
+    "CFA4Yb4MCHjHLvHvvVS68pdAQ1Gg4ehDS8SAWWaeAJ2x": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 349.1109,
+          "timestamp": 1757431343
+        }
+      },
+      "total_volume": 349.1109,
+      "first_detection": 1757431343,
+      "last_update": 1757431343,
+      "token_name": "prediction coin",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "3ZQRnudo4HSfes8qSLd7SpvPDM4SLsKFoPCbNAcDpump": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 154.798,
+          "timestamp": 1757431371
+        }
+      },
+      "total_volume": 154.798,
+      "first_detection": 1757431371,
+      "last_update": 1757431371,
+      "token_name": "Mircea Grok Companion",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "84Y6h6XoaLAD1zxoQ2CDhcZYRpNsSBKsXULCnpjXpump": {
+      "wallets": {
+        "E45YLW6LV2GdvPu4HgpBMZF4veGmUqbK6hs2W3ykx2s1": {
+          "amount": 177.5169,
+          "timestamp": 1757431387
+        }
+      },
+      "total_volume": 177.5169,
+      "first_detection": 1757431387,
+      "last_update": 1757431387,
+      "token_name": "Solana Cat",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "GBUxQFRXQjSPjkxymAUKPfbUbSpRY8Ui7az1HCxtpump": {
+      "wallets": {
+        "E45YLW6LV2GdvPu4HgpBMZF4veGmUqbK6hs2W3ykx2s1": {
+          "amount": 176.6687,
+          "timestamp": 1757431466
+        },
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 315.3802,
+          "timestamp": 1757431467
+        },
+        "554RaY5SEGj6tbF6ZVDoizfm3nmuay4swX2giHZnyh9i": {
+          "amount": 15.9927,
+          "timestamp": 1757431662
+        }
+      },
+      "total_volume": 508.0416,
+      "first_detection": 1757431466,
+      "last_update": 1757431662,
+      "token_name": "Mirror Chain",
+      "detected": false,
+      "last_market_cap": 195965.47513063758
+    },
+    "2xyEkimudm27RYJC5pM8Pr75zy2m1uuJ188fREAqpump": {
+      "wallets": {
+        "2t3Vnqg7niZr3hXKrxBr1E9r6YTvKFhsuSu5P6upiRJp": {
+          "amount": 0.0021,
+          "timestamp": 1757431707
+        }
+      },
+      "total_volume": 0.0021,
+      "first_detection": 1757431707,
+      "last_update": 1757431707,
+      "token_name": "FOOM",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "8LFpoJWGS65GMDL7jPKPPgvns3g6vEDg15BmcUSsezuR": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 480.018,
+          "timestamp": 1757431762
+        }
+      },
+      "total_volume": 480.018,
+      "first_detection": 1757431762,
+      "last_update": 1757431762,
+      "token_name": "Dogenarii coin",
+      "detected": false,
+      "last_market_cap": 88282.3784613305
+    },
+    "3SpQPnYBA2evGckaX55QtmLDAT5VTNDcazgvNW6xpump": {
+      "wallets": {
+        "DULTRZBKB4nmRbUxKRHuSXxsw4gQFzLGeCoRRCqxcnoL": {
+          "amount": 316.3459,
+          "timestamp": 1757431826
+        },
+        "BRAywUXHzo6f7V8gmvBT7aABknQXEJBqMqyCQVGynB9w": {
+          "amount": 209.6087,
+          "timestamp": 1757431861
+        },
+        "777777FLiRTpZtMgS9HULZUYELeAjBMvX8VDdBCZHALK": {
+          "amount": 425.8739,
+          "timestamp": 1757431880
+        },
+        "54y1PRMMVZothfMFJ8u9vemAzUALoScmWkufRL2Y3G7E": {
+          "amount": 42.118,
+          "timestamp": 1757431892
+        },
+        "J3Ez1WjZMpcnMua4xA9nirZwWTurAxY7wqhm4vPeJ8k5": {
+          "amount": 102.5948,
+          "timestamp": 1757431983
+        },
+        "9f1QVWU58Hy2Apj1D7imLCjGRorvNp3GR3TM5dHQEG1x": {
+          "amount": 422.5201,
+          "timestamp": 1757432123
+        }
+      },
+      "total_volume": -32689.32710000001,
+      "first_detection": 1757431797,
+      "last_update": 1757432123,
+      "token_name": "Patrat Capital",
+      "detected": true,
+      "last_market_cap": 69761.20752421925
+    },
+    "2cxnk5oK5UG6e9b3JDftgKzzJ72nRdie5ZxHrspLpump": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 281.6938,
+          "timestamp": 1757432972
+        }
+      },
+      "total_volume": -2212.7686999999996,
+      "first_detection": 1757432039,
+      "last_update": 1757432972,
+      "token_name": "PUMP³",
+      "detected": false,
+      "last_market_cap": 195386.272441708
+    },
+    "KwqUacsY9haCKBwHxzBqTtMXYKMfHTbR2VcsJ6qpump": {
+      "wallets": {
+        "FL4oyQ93YtsSfXeEdu6MtjTqCVn7d9FsvF3fGo4WNtZ": {
+          "amount": 10.2314,
+          "timestamp": 1757433193
+        },
+        "HuqMWAVNpam4bpieWwzxXKc25acFRGkZEHCKrPaKo5C3": {
+          "amount": 3.2639,
+          "timestamp": 1757433207
+        },
+        "3bpHDndU44xgG6VR1nN6KFz1JVTmpJdpnM7is7HN1ptT": {
+          "amount": 29.4198,
+          "timestamp": 1757433259
+        },
+        "dexvcNUf31JyHkxcsceWpqGErhXe5Eu5QWLe993m1Pu": {
+          "amount": 120.3616,
+          "timestamp": 1757433401
+        },
+        "GXM44h5uWoEKhkukb9yKMEcMDaA9W2KDAsQjnvX6Xa4Z": {
+          "amount": 430.6124,
+          "timestamp": 1757433433
+        },
+        "BfbRCPBvKrc2z1ixdynATrfDYSnQyWNcSLszSAvQEd3S": {
+          "amount": 104.4326,
+          "timestamp": 1757433480
+        }
+      },
+      "total_volume": -68594.37629999999,
+      "first_detection": 1757432053,
+      "last_update": 1757433480,
+      "token_name": "this hasnt pumped yet",
+      "detected": true,
+      "last_market_cap": 115459.72479538516
+    },
+    "FyyDnWQUAcGoJ4L7ab9P7VUFmT3Bs2ggW2DSJz5cpump": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 291.2784,
+          "timestamp": 1757432163
+        }
+      },
+      "total_volume": 291.2784,
+      "first_detection": 1757432163,
+      "last_update": 1757432163,
+      "token_name": "W Coin",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "8Lmqg47ZYyPXoKKX7okUwQTq754udgxGsLY3m1KDbrHP": {
+      "wallets": {
+        "kEFiAX3jo5NmemysQov342TZ9mGh6yp92GDRjhA8XDf": {
+          "amount": 269.2324,
+          "timestamp": 1757432200
+        }
+      },
+      "total_volume": 269.2324,
+      "first_detection": 1757432200,
+      "last_update": 1757432200,
+      "token_name": "GACHA BLIND BALL",
+      "detected": false,
+      "last_market_cap": 86282.53060864442
+    },
+    "HfVnabiJCByE8ko6DWZvKKLUKMVRVs2chTKUeyEqpump": {
+      "wallets": {
+        "2Ftx367NL7nAY4WUyJTMeQ1DjNpwnypqnuKTAydrRQgJ": {
+          "amount": 30.9652,
+          "timestamp": 1757433171
+        }
+      },
+      "total_volume": 30.96519999999998,
+      "first_detection": 1757432238,
+      "last_update": 1757433171,
+      "token_name": "Ctrl+Alt+DelCoin",
+      "detected": false,
+      "last_market_cap": 126222.43524280911
+    },
+    "D9tQA4KAm8kC3C23vWKHDsZaGEcpXR6uGHHncEYEpump": {
+      "wallets": {
+        "75RimMoDTLgGJWLbJrgcxKunW4Xp6CJuMUVxChgrzdL1": {
+          "amount": 247.8272,
+          "timestamp": 1757432410
+        }
+      },
+      "total_volume": 247.8272,
+      "first_detection": 1757432410,
+      "last_update": 1757432410,
+      "token_name": "Bruh Moment",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "R6jVVLcdfpZ7tPLHQXZ4uZRFhBcE2L6aQoPgiJuV7j9": {
+      "wallets": {
+        "FZVdsFTRTWwZEy6XC5GCtHNWdcAwiQtAeJ2NSpH6cQNz": {
+          "amount": 482.8461,
+          "timestamp": 1757432460
+        },
+        "Guri8jEBW2uDGuGnkKLfnpEKPbdTgfq7BQEgotMzgVFs": {
+          "amount": 567.6231,
+          "timestamp": 1757432460
+        },
+        "6Xfysa11BZabKXXDH5UERBtmFGt3KM3ZzKhjuKSzQrRY": {
+          "amount": 84.0375,
+          "timestamp": 1757432469
+        },
+        "7GBfdk5h6uFGfW7HcvhoHU2rnXZs5k9qYfxo8iZMXVFA": {
+          "amount": 424.432,
+          "timestamp": 1757432543
+        },
+        "CDBxid9fkfjoemLoBD7dYsUPYEPfqPhgVKRhUSTVEYaU": {
+          "amount": 420.1877,
+          "timestamp": 1757432559
+        },
+        "EyZdcdwiE298fb2SQRT6bt3gH11BdnhiXMZWjGw1ZxHg": {
+          "amount": 95.4972,
+          "timestamp": 1757432560
+        }
+      },
+      "total_volume": 2074.6236,
+      "first_detection": 1757432460,
+      "last_update": 1757432560,
+      "token_name": "SHAFT Foundation",
+      "detected": false,
+      "last_market_cap": 199288.59960387778
+    },
+    "8UQQxdmYo6biF5wxgbWHBQ985pg91E5zk7Kxg9Etpump": {
+      "wallets": {
+        "GuaGK4vjKsQ6sedQWhbhpeMFN3uby3qdnJrZARt7FLkM": {
+          "amount": 682.4866,
+          "timestamp": 1757432630
+        }
+      },
+      "total_volume": 682.4866,
+      "first_detection": 1757432630,
+      "last_update": 1757432630,
+      "token_name": "Jynxzi VS Trenchers (CR)",
+      "detected": false,
+      "last_market_cap": 76873.63209481549
+    },
+    "7K7wrdAqekc9HqcsDnSoxmWhMUurVCPziRDwRcXeFdev": {
+      "wallets": {
+        "DmyZTxf5BxR81WUJWZTdUU6Wst1xq2wcaexQWKaqh6Gm": {
+          "amount": 55.3687,
+          "timestamp": 1757432632
+        }
+      },
+      "total_volume": 55.3687,
+      "first_detection": 1757432632,
+      "last_update": 1757432632,
+      "token_name": "Pokepet",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "7cbVgS8jo14buppUqBcyVeVtqwC52S9LqDCRhRkJPwpD": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 232.4701,
+          "timestamp": 1757432851
+        }
+      },
+      "total_volume": 232.4701,
+      "first_detection": 1757432851,
+      "last_update": 1757432851,
+      "token_name": "Steve",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "218GvpbMt91iGnwxiAfhwP2dc9giBaKi25JLoUADpump": {
+      "wallets": {
+        "HwR86dntgAdqSDMcgjteASBBomLAQyH9DaDQkfcSFiVF": {
+          "amount": 1725.9463,
+          "timestamp": 1757433507
+        }
+      },
+      "total_volume": 1725.9463,
+      "first_detection": 1757432910,
+      "last_update": 1757433507,
+      "token_name": "Silver Surfer ",
+      "detected": false,
+      "last_market_cap": 100981.39513265829
+    },
+    "8wvLsACsR3owhGzmLLHTgh2waW2vKNtVYWDs9cCopump": {
+      "wallets": {
+        "6kH9T6iDWWhGQHRNifpJPxKtbcsN8fPKr71oF5ij3s5C": {
+          "amount": 401.8715,
+          "timestamp": 1757432934
+        }
+      },
+      "total_volume": 401.8715,
+      "first_detection": 1757432934,
+      "last_update": 1757432934,
+      "token_name": "memestock",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "AJyUufGfyHFhPefJLTpszSaajKp2cNTDQV1YDmzCpump": {
+      "wallets": {
+        "BZmxuXQ68QeZABbDFSzveHyrXCv5EG6Ut1ATw5qZgm2Q": {
+          "amount": 1047.5981,
+          "timestamp": 1757433073
+        },
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 162.4303,
+          "timestamp": 1757433078
+        }
+      },
+      "total_volume": 1210.0284,
+      "first_detection": 1757433073,
+      "last_update": 1757433078,
+      "token_name": "Husky Pointing",
+      "detected": false,
+      "last_market_cap": 63207.25497298114
+    },
+    "ErUuZJgP9sv9ussSC4sbyFoKTTUj529iiB3uYqtspump": {
+      "wallets": {
+        "8fsKLLtvKNanL4ginCaiRS6UfeemY11rSf8U8fN1dJw4": {
+          "amount": 622.1864,
+          "timestamp": 1757433101
+        }
+      },
+      "total_volume": 622.1864,
+      "first_detection": 1757433101,
+      "last_update": 1757433101,
+      "token_name": "RyptoLiveCoin",
+      "detected": false,
+      "last_market_cap": 0
+    },
+    "HyapM8zt9vex1Nc1KXd5teiHMzd7y5nhcnHEwk81bonk": {
+      "wallets": {
+        "2NuAgVk3hcb7s4YvP4GjV5fD8eDvZQv5wuN6ZC8igRfV": {
+          "amount": 261.4275,
+          "timestamp": 1757433102
+        }
+      },
+      "total_volume": 261.4275,
+      "first_detection": 1757433102,
+      "last_update": 1757433102,
+      "token_name": "Linos AI",
+      "detected": false,
+      "last_market_cap": 162979.97020320635
+    },
+    "BWMUouVqeTQgpmPRHVfWb2YTsFzhJb6QcjgCq1rodaos": {
+      "wallets": {
+        "DeJaw4igxaEaQPhorNK18v2YGaNkBDx5G8R7Nrja2hwe": {
+          "amount": 127.8483,
+          "timestamp": 1757433522
+        }
+      },
+      "total_volume": 127.8483,
+      "first_detection": 1757433522,
+      "last_update": 1757433522,
+      "token_name": "Genesys Labs",
+      "detected": false,
+      "last_market_cap": 0
+    }
+  },
+  "total_tokens": 77,
+  "active_eboshers": 166
+}

@@ -13,13 +13,18 @@ Track Eboshers - WebSocket client for monitoring eboshers activity
 - Аутентификация с JWT токеном (автоматическое обновление)
 - Интерактивный ввод нового токена при истечении
 - Подписка на tracked-trades/wallet-groups
-- Фильтрация входящих трейдов по списку ебошеров
-- Логирование активности ебошеров
+- Минимальная обработка данных трейдов (только необходимые поля)
+- Логирование трейдов в отдельные файлы по адресам токенов
+- Обнаружение скоплений ебошеров
+- Параллельное логирование по старым метрикам (4+ кошельков за час)
 
 ОСОБЕННОСТИ:
 - При истечении JWT токена система автоматически попытается обновить его
 - Если автоматическое обновление невозможно, система запросит новый токен у пользователя
 - При вводе токена можно использовать Ctrl+C для отмены и продолжения с текущим токеном
+- Обнаружение скоплений по объему ≥ $2000 И количеству кошельков ≥ 4
+- Расширенное временное окно в 1 час для накопления объема
+- Логирование всех покупок в отдельные файлы по токенам
 
 КОМАНДЫ:
 - Ctrl+C для остановки скрипта
@@ -33,6 +38,7 @@ import struct
 import os
 import sys
 import logging
+import subprocess
 import aiohttp
 import msgpack
 from datetime import datetime
@@ -58,7 +64,14 @@ GENIUS_RUG_BLACKLIST = set()
 
 # Папка для логов токенов
 EBOSHERS_LOGS_DIR = "eboshers_logs"
+
+# Файл для логов по старым метрикам
+OLD_METRICS_LOG_FILE = "eboshers_old_metrics_find.log"
 BLACKLIST_FILE = "genius_rug_blacklist.txt"
+
+# Файл для хранения отправленных токенов
+SENT_TOKENS_FILE = "sent_tokens.json"
+MAX_SENT_TOKENS = 300
 
 def j8(e=None, t=None, n=None):
     # Если доступен встроенный randomUUID и не переданы t и e
@@ -124,8 +137,66 @@ def save_blacklist():
     except Exception as e:
         print(f"❌ Ошибка сохранения черного списка: {e}")
 
+def load_sent_tokens():
+    """Загружает список отправленных токенов из JSON файла"""
+    global sent_tokens
+    try:
+        if os.path.exists(SENT_TOKENS_FILE):
+            with open(SENT_TOKENS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # Берем последние MAX_SENT_TOKENS токенов (FIFO)
+                tokens_list = data.get('tokens', [])
+                if len(tokens_list) > MAX_SENT_TOKENS:
+                    tokens_list = tokens_list[-MAX_SENT_TOKENS:]
+                sent_tokens = set(tokens_list)
+            print(f"📥 Загружен список отправленных токенов: {len(sent_tokens)}")
+        else:
+            print("📝 Файл с отправленными токенами не найден, создаем новый")
+            sent_tokens = set()
+    except Exception as e:
+        print(f"❌ Ошибка загрузки отправленных токенов: {e}")
+        sent_tokens = set()
+
+def save_sent_tokens():
+    """Сохраняет список отправленных токенов в JSON файл"""
+    global sent_tokens
+    try:
+        # Конвертируем set в list для сохранения в JSON
+        tokens_list = list(sent_tokens)
+
+        # Ограничиваем количество токенов до MAX_SENT_TOKENS (FIFO)
+        if len(tokens_list) > MAX_SENT_TOKENS:
+            tokens_list = tokens_list[-MAX_SENT_TOKENS:]
+
+        data = {
+            'tokens': tokens_list,
+            'last_updated': datetime.now().isoformat(),
+            'max_tokens': MAX_SENT_TOKENS
+        }
+
+        with open(SENT_TOKENS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        print(f"💾 Сохранен список отправленных токенов: {len(tokens_list)}")
+    except Exception as e:
+        print(f"❌ Ошибка сохранения отправленных токенов: {e}")
+
+def add_sent_token(token_address: str):
+    """Добавляет токен в список отправленных"""
+    global sent_tokens
+    if token_address and token_address not in sent_tokens:
+        sent_tokens.add(token_address)
+        save_sent_tokens()
+
+def is_token_sent(token_address: str) -> bool:
+    """Проверяет, был ли токен уже отправлен"""
+    return token_address in sent_tokens
+
 # Загружаем черный список при запуске
 load_blacklist()
+
+# Загружаем список отправленных токенов при запуске
+load_sent_tokens()
 
 # Настройка основного логирования
 logging.basicConfig(
@@ -139,7 +210,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Инициализация системы отслеживания скоплений ебошеров
-ebosher_clusters = {}  # {token_address: {'wallets': {wallet: timestamp}, 'first_detection': timestamp, 'cluster_size': int}}
+ebosher_clusters = {}  # {token_address: {'wallets': {wallet: timestamp}, 'first_detection': timestamp, 'cluster_size': int, 'last_market_cap': float}}
+
+# Глобальный словарь для кластеров по старым метрикам (4+ кошельков за час)
+old_metrics_clusters = {}  # {token_address: {'wallets': {wallet: timestamp}, 'first_detection': timestamp, 'cluster_size': int}}
+
+# Глобальный набор отправленных токенов
+sent_tokens = set()
 
 def create_token_logger(token_address: str) -> logging.Logger:
     """Создает отдельный логгер для токена"""
@@ -292,9 +369,9 @@ async def get_market_id_for_token_cached(token_address: str) -> Optional[str]:
                 ssl_context.verify_mode = ssl.CERT_NONE
 
                 headers = {
-                    'Cookie': 'mp_f259317776e8d4d722cf5f6de613d9b5_mixpanel=%7B%22distinct_id%22%3A%20%22tg_7891524244%22%2C%22%24device_id%22%3A%20%22198c4c7db7a10cd-01cbba2231e301-4c657b58-1fa400-198c4c7db7b1a60%22%2C%22%24user_id%22%3A%20%22tg_7891524244%22%2C%22%24initial_referrer%22%3A%20%22%24direct%22%2C%22%24initial_referring_domain%22%3A%20%22%24direct%22%7D',
+                    'Cookie': 'mp_f259317776e8d4d722cf5f6de613d9b5_mixpanel=%7B%22distinct_id%22%3A%20%22tg_7705971216%22%2C%22%24device_id%22%3A%20%2219946bc0c961188-06db4de430e72a8-4c657b58-1fa400-19946bc0c9727d3%22%2C%22%24user_id%22%3A%20%22tg_7705971216%22%2C%22%24initial_referrer%22%3A%20%22%24direct%22%2C%22%24initial_referring_domain%22%3A%20%22%24direct%22%7D',
                     'Origin': 'https://trade.padre.gg',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 Edg/138.0.0.0'
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 OPR/122.0.0.0 (Edition Yx 08)'
                 }
 
                 async with websockets.connect(
@@ -448,15 +525,11 @@ def decode_padre_message(message_bytes: bytes) -> Optional[dict]:
 
             if len(unpacked) < 3:
                 print(f"❌ Список слишком короткий: {len(unpacked)}")
+                print(unpacked)
                 return None
 
             message_type = unpacked[0]
             payload = unpacked[1]
-
-            print(f"📋 message_type: {message_type}")
-            print(f"📋 payload: {payload}")
-            print(f"📋 payload type: {type(payload)}")
-            print(unpacked[2])
 
             # Разбираем payload в зависимости от типа сообщения
             if message_type == 4:  # tracked-trades subscription responses
@@ -466,10 +539,23 @@ def decode_padre_message(message_bytes: bytes) -> Optional[dict]:
                 if isinstance(payload, dict):
                     return payload
             elif message_type in [5, 8]:  # fast-stats updates или другие
-                if isinstance(payload, dict):
+                # Проверяем, является ли третий элемент списка словарем (часто содержит основные данные)
+                if len(unpacked) > 2 and isinstance(unpacked[2], dict):
+                    return unpacked[2]
+                # Если нет, возвращаемся к проверке payload
+                elif isinstance(payload, dict):
                     return payload
             elif message_type in [1, 2, 3]:  # auth responses, subscription confirmations
                 return {'type': 'system', 'message_type': message_type, 'payload': payload}
+            elif message_type == 6:  # Специальное сообщение для переподключения
+                print(f"🚨 ОБНАРУЖЕНО СПЕЦИАЛЬНОЕ СООБЩЕНИЕ: message_type={message_type}, payload={payload}")
+                print("🔄 Будет выполнено принудительное переподключение WebSocket")
+                return {'type': 'reconnect_required', 'message_type': message_type, 'payload': payload}
+            else:
+                print(f"📋 message_type: {message_type}")
+                print(f"📋 payload: {payload}")
+                print(f"📋 payload type: {type(payload)}")
+                print(unpacked[2])
 
             # Для всех остальных типов возвращаем полное сообщение
             return {'type': 'unknown', 'raw_data': unpacked}
@@ -485,6 +571,10 @@ def decode_padre_message(message_bytes: bytes) -> Optional[dict]:
 # Конфигурация
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 TARGET_CHAT_ID = -1002680160752  # ID группы из https://t.me/c/2680160752/13134
+SPECIAL_CHAT_ID = -1002731055130  # Канал для специальных сообщений
+SPECIAL_DUPLICATE_CHAT_ID = -1002538268724  # Дополнительный канал для специальных сообщений
+NEW_ADDITIONAL_CHANNEL_ID = -1003084764631 # Новый дополнительный канал для специальных сообщений
+STANDARD_CHAT_ID = -1002837160729  # Канал для стандартных сообщений
 SPECIAL_PATTERN_THREAD_ID = 19879  # ID ветки для специального паттерна https://t.me/c/2680160752/19879
 TARGET_THREAD_ID = 13134  # ID темы
 MIN_BUNDLER_PERCENTAGE = float(os.getenv("MIN_BUNDLER_PERCENTAGE", "10"))  # Минимальный процент бандлеров
@@ -494,7 +584,7 @@ PADRE_WS_URL = get_next_padre_backend()
 
 # Куки для подключения к padre
 PADRE_COOKIES = {
-    'mp_f259317776e8d4d722cf5f6de613d9b5_mixpanel': '%7B%22distinct_id%22%3A%20%22tg_7891524244%22%2C%22%24device_id%22%3A%20%22198c4c7db7a10cd-01cbba2231e301-4c657b58-1fa400-198c4c7db7b1a60%22%2C%22%24user_id%22%3A%20%22tg_7891524244%22%2C%22%24initial_referrer%22%3A%20%22%24direct%22%2C%22%24initial_referring_domain%22%3A%20%22%24direct%22%7D'
+    'mp_f259317776e8d4d722cf5f6de613d9b5_mixpanel': '%7B%22distinct_id%22%3A%20%22tg_7705971216%22%2C%22%24device_id%22%3A%20%2219946bc0c961188-06db4de430e72a8-4c657b58-1fa400-19946bc0c9727d3%22%2C%22%24user_id%22%3A%20%22tg_7705971216%22%2C%22%24initial_referrer%22%3A%20%22%24direct%22%2C%22%24initial_referring_domain%22%3A%20%22%24direct%22%7D'
 }
 
 # Хранилище токенов для анализа
@@ -746,6 +836,15 @@ class EboshersTracker:
         self.logger = logger
         self.JWT_TOKEN = "eyJhbGciOiJSUzI1NiIsImtpZCI6ImVmMjQ4ZjQyZjc0YWUwZjk0OTIwYWY5YTlhMDEzMTdlZjJkMzVmZTEiLCJ0eXAiOiJKV1QifQ.eyJuYW1lIjoid29ya2VyMTAwMHgiLCJoYXV0aCI6dHJ1ZSwiaXNzIjoiaHR0cHM6Ly9zZWN1cmV0b2tlbi5nb29nbGUuY29tL3BhZHJlLTQxNzAyMCIsImF1ZCI6InBhZHJlLTQxNzAyMCIsImF1dGhfdGltZSI6MTc1NTY0ODA3OCwidXNlcl9pZCI6InRnXzc4OTE1MjQyNDQiLCJzdWIiOiJ0Z183ODkxNTI0MjQ0IiwiaWF0IjoxNzU3MDA2NTAwLCJleHAiOjE3NTcwMTAxMDAsImZpcmViYXNlIjp7ImlkZW50aXRpZXMiOnt9LCJzaWduX2luX3Byb3ZpZGVyIjoiY3VzdG9tIn19.Sf8Yvoh-yRpPo6_hohrvVCz5nj15XD_TwJOwUgHUwuJ5R-R-C22Ldqw-VrI6JV6iD1cvhV_T0iQbDLd-tGnGveoPSk7-G7h6xfchq_08H5skEmKFLK8PFBKV_X8V7MJVn7b4hqYdESaMP4TBJ2IdsFCTu-7kwof2qKMDXojdn5PajvqinmtgCFEVlJEdLYnYLdh4KEn9aFdgLRHrV6ORCXreKAbbrh1_KG6ID1TmCARVx6gJnyqhu-1cQLb3NXezaiL_A2SO5RrrWljpxmr2oKOZiVLoOVU6vHtpGmXY_3b5-VzgWsWe6rzZQMWWDWy_av-oPTq-1_3KRoI5gCLTeA"
 
+        # Отслеживание активности tracked trades для автоматического переподключения
+        self.last_tracked_trade_time = None
+        self.tracked_trade_timeout = 60  # 1 минута таймаут
+        self.connection_established_time = None  # Время установления соединения
+
+        # Отслеживание общего времени последнего сообщения (любого типа)
+        self.last_message_time = None
+        self.message_timeout = 60  # 1 минута таймаут без любых сообщений
+
         # Глобальный словарь скоплений ебошеров доступен через ebosher_clusters
 
         # Таймеры для управления соединением
@@ -784,6 +883,7 @@ class EboshersTracker:
 
             # Устанавливаем время начала соединения
             self.connection_start_time = time.time()
+            self.connection_established_time = time.time()
 
             self.logger.info("🔐 Отправляем аутентификацию...")
             # Отправляем аутентификационное сообщение
@@ -804,6 +904,12 @@ class EboshersTracker:
             # Устанавливаем время успешного подключения для защиты от частых переподключений
             if hasattr(self, 'last_connection_time'):
                 self.last_connection_time = time.time()
+
+            # Сбрасываем время последнего tracked trade сообщения при новом подключении
+            self.last_tracked_trade_time = None
+
+            # Сбрасываем время последнего сообщения при новом подключении
+            self.last_message_time = time.time()
 
             return True
 
@@ -843,39 +949,33 @@ class EboshersTracker:
             try:
                 response = await asyncio.wait_for(self.websocket.recv(), timeout=10.0)
                 self.logger.info(f"📨 Получили ответ аутентификации: {len(response)} байт")
+
+                # Декодируем и логируем ответ для отладки
+                if isinstance(response, bytes):
+                    decoded_response = decode_padre_message(response)
+                    self.logger.info(f"📨 Ответ аутентификации декодирован: {decoded_response}")
+
             except asyncio.TimeoutError:
-                self.logger.error("❌ Таймаут ожидания ответа аутентификации")
-                raise
+                self.logger.warning("⚠️ Таймаут ожидания ответа аутентификации, продолжаем...")
+                # Не бросаем исключение, позволяем продолжить
 
         except websockets.exceptions.ConnectionClosedError as e:
             if e.code == 1008:  # Policy violation - часто означает истекший токен
                 self.logger.error(f"❌ Критическая ошибка аутентификации (код 1008): {e}")
                 self.logger.info("🔄 Попытка обновить JWT токен...")
 
-                # Пробуем получить новый токен автоматически
+                # Пробуем получить новый токен через padre_get_access_token.py
                 new_token = None
                 try:
-                    new_token = await self.get_access_token()
+                    self.logger.info("🔄 Получаем новый токен через padre_get_access_token.py...")
+                    new_token = await self.request_new_token_from_user()
                 except Exception as token_error:
-                    self.logger.error(f"❌ Не удалось обновить токен автоматически: {token_error}")
+                    self.logger.error(f"❌ Не удалось получить токен через padre_get_access_token.py: {token_error}")
 
-                # Если не удалось обновить токен автоматически, просим пользователя ввести новый
+                # Если не удалось получить токен, пробуем продолжить с текущим
                 if not new_token:
-                    try:
-                        self.logger.warning("⚠️ Необходимо ввести новый JWT токен для продолжения работы")
-                        new_token = await self.request_new_token_from_user()
-                        if not new_token or not new_token.strip():
-                            self.logger.error("❌ Новый токен не был введен")
-                            raise AuthenticationPolicyViolation("Токен не был введен пользователем")
-                    except Exception as user_input_error:
-                        # Если пользователь отменил ввод (Ctrl+C), пробуем продолжить с текущим токеном
-                        if "cancel" in str(user_input_error).lower() or "keyboardinterrupt" in str(user_input_error).lower():
-                            self.logger.warning("⚠️ Ввод токена отменен, пробуем продолжить с текущим токеном...")
-                            # Не бросаем исключение, позволяем системе продолжить с текущим токеном
-                            return
-                        else:
-                            self.logger.error(f"❌ Ошибка при вводе нового токена: {user_input_error}")
-                            raise AuthenticationPolicyViolation("Не удалось получить новый токен от пользователя")
+                    self.logger.warning("⚠️ Не удалось получить новый токен, продолжаем с текущим...")
+                    return
 
                 # Устанавливаем новый токен
                 if new_token and new_token.strip():
@@ -899,8 +999,8 @@ class EboshersTracker:
             # Первая подписка на tracked-trades/wallet-groups
             subscription_message_1 = [
                 4,
-                52,
-                '/tracked-trades/wallet-groups/4248bbe9-b36a-443b-b25e-a1f1efdd7f6a/subscribe?encodedFilter=%7B%22tradeType%22%3A%5B0%2C1%2C3%2C2%5D%2C%22amountInUsd%22%3A%7B%7D%2C%22mcapInUsd%22%3A%7B%7D%2C%22tokenAgeSeconds%22%3A%7B%7D%7D'
+                1,
+                '/tracked-trades/wallet-groups/cba0b62d-a37f-4ecf-8672-56f857d56055/subscribe?encodedFilter=%7B%22tradeType%22%3A%5B0%2C1%2C3%2C2%5D%2C%22amountInUsd%22%3A%7B%7D%2C%22mcapInUsd%22%3A%7B%7D%2C%22tokenAgeSeconds%22%3A%7B%7D%7D'
             ]
 
             subscription_bytes_1 = msgpack.packb(subscription_message_1)
@@ -925,14 +1025,14 @@ class EboshersTracker:
             # Вторая подписка на tracked-trades/wallet-groups (другая группа)
             subscription_message_2 = [
                 4,
-                53,
-                '/tracked-trades/wallet-groups/9c565aed-3156-4711-b1af-0e2d9eff15a4/subscribe?encodedFilter=%7B%22tradeType%22%3A%5B0%2C1%2C3%2C2%5D%2C%22amountInUsd%22%3A%7B%7D%2C%22mcapInUsd%22%3A%7B%7D%2C%22tokenAgeSeconds%22%3A%7B%7D%7D'
+                2,
+                '/tracked-trades/wallet-groups/14b924db-1808-475b-8320-362baa22f92b/subscribe?encodedFilter=%7B%22tradeType%22%3A%5B0%2C1%2C3%2C2%5D%2C%22amountInUsd%22%3A%7B%7D%2C%22mcapInUsd%22%3A%7B%7D%2C%22tokenAgeSeconds%22%3A%7B%7D%7D'
             ]
 
             subscription_bytes_2 = msgpack.packb(subscription_message_2)
 
             self.logger.info("📡 Отправляем второе сообщение подписки...")
-            self.logger.info(f"📨 Subscription message 2: [4, 53, '/tracked-trades/...']")
+            self.logger.info(f"📨 Subscription message 2: [4, 34, '/tracked-trades/...']")
 
             # Отправляем второе сообщение
             await self.websocket.send(subscription_bytes_2)
@@ -945,63 +1045,51 @@ class EboshersTracker:
             except asyncio.TimeoutError:
                 self.logger.warning("⚠️ Таймаут ожидания подтверждения второй подписки")
 
+            # Вторая подписка на tracked-trades/wallet-groups (другая группа)
+            subscription_message_3 = [
+                4,
+                3,
+                '/tracked-trades/wallet-groups/c1031d6c-1e8f-4b03-82c5-863df244aaf5/subscribe?encodedFilter=%7B%22tradeType%22%3A%5B0%2C1%2C3%2C2%5D%2C%22amountInUsd%22%3A%7B%7D%2C%22mcapInUsd%22%3A%7B%7D%2C%22tokenAgeSeconds%22%3A%7B%7D%7D'
+            ]
+
+            subscription_bytes_3 = msgpack.packb(subscription_message_3)
+
+            self.logger.info("📡 Отправляем второе сообщение подписки...")
+            self.logger.info(f"📨 Subscription message 3: [4, 35, '/tracked-trades/...']")
+
+            # Отправляем второе сообщение
+            await self.websocket.send(subscription_bytes_3)
+            self.logger.info("✅ Третье сообщение подписки отправлено")
+
+            # Ждем подтверждение второй подписки
+            try:
+                response3 = await asyncio.wait_for(self.websocket.recv(), timeout=5.0)
+                self.logger.info(f"📨 Подтверждение третьей подписки: {len(response3)} байт")
+            except asyncio.TimeoutError:
+                self.logger.warning("⚠️ Таймаут ожидания подтверждения третьей подписки")
+
         except Exception as e:
             self.logger.error(f"❌ Ошибка отправки сообщений подписки: {e}")
             raise
 
-    async def get_access_token(self) -> Optional[str]:
-        """Получаем новый JWT токен для аутентификации в Padre"""
-        try:
-            self.logger.info("🔄 Запрос нового JWT токена...")
-
-            # Используем Google Secure Token API для получения нового токена
-            url = "https://securetoken.googleapis.com/v1/token"
-            params = {
-                "key": "AIzaSyAa8yy0GdcGPHdtD083HiGGx_S0vMPScpqQ"  # Firebase API key
-            }
-
-            # Создаем refresh token из текущего JWT
-            refresh_token = self._extract_refresh_token_from_jwt(self.JWT_TOKEN)
-
-            data = {
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token
-            }
-
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, params=params, data=data) as response:
-                    if response.status == 200:
-                        token_data = await response.json()
-                        new_token = token_data.get("access_token")
-                        if new_token:
-                            self.logger.info("✅ Новый JWT токен получен")
-                            return new_token
-                        else:
-                            self.logger.error("❌ В ответе отсутствует access_token")
-                    else:
-                        response_text = await response.text()
-                        self.logger.error(f"❌ Ошибка получения токена: {response.status} - {response_text}")
-
-        except Exception as e:
-            self.logger.error(f"❌ Ошибка при получении нового токена: {e}")
-
-        return None
-
     async def request_new_token_from_user(self) -> Optional[str]:
-        """Запрашивает новый JWT токен у пользователя"""
+        """Автоматически получает новый JWT токен через padre_get_access_token.py"""
         try:
-            self.logger.info("🔑 Введите новый JWT токен Padre.gg:")
-            self.logger.info("💡 Токен можно получить из браузера в разделе Network -> WS -> Messages")
-            self.logger.info("💡 Ищите сообщение типа: [1, 'токен_здесь', 'timestamp']")
+            self.logger.info("🔄 Автоматически получаем новый JWT токен через padre_get_access_token.py...")
 
-            # Используем executor для выполнения синхронного ввода в отдельном потоке
+            # Используем executor для выполнения синхронного вызова скрипта
             loop = asyncio.get_event_loop()
-            token = await loop.run_in_executor(None, self._sync_input_token)
+            token = await loop.run_in_executor(None, self._sync_get_token_from_script)
 
-            return token
+            if token:
+                self.logger.info("✅ Новый токен успешно получен!")
+                return token
+            else:
+                self.logger.error("❌ Не удалось получить токен через скрипт")
+                return None
 
         except Exception as e:
-            self.logger.error(f"❌ Ошибка при запросе токена: {e}")
+            self.logger.error(f"❌ Ошибка при получении токена: {e}")
             return None
 
     def _sync_log_trade(self, token_address: str, log_entry: str):
@@ -1023,17 +1111,13 @@ class EboshersTracker:
         except Exception as e:
             print(f"❌ Ошибка записи лога для {token_address}: {e}")
 
-    async def log_trade_to_file(self, token_address: str, wallet_address: str, trade_type_str: str,
-                               amount_usd: float, sol_amount: float, token_symbol: str, token_name: str,
-                               dex_name: str, timestamp: int):
+    async def log_trade_to_file(self, token_address: str, wallet_address: str, amount_usd: float, timestamp: int, token_name: str, trade_type: int, market_cap: float):
         """Асинхронное логирование трейда в отдельный файл"""
         try:
-            # Формируем строку лога
+            # Формируем строку лога с минимальными данными
             log_entry = (
-                f"[{wallet_address}] {trade_type_str} "
-                f"{sol_amount:.4f} SOL (${amount_usd:.2f}) | "
-                f"{token_symbol} ({token_name}) | "
-                f"DEX: {dex_name} | "
+                f"[{wallet_address}] {'-' if trade_type > 1 else ''}${amount_usd:.2f} | "
+                f"{token_name} | mc: {round(market_cap, 2)} | "
                 f"Time: {datetime.fromtimestamp(timestamp)}"
             )
 
@@ -1044,69 +1128,79 @@ class EboshersTracker:
         except Exception as e:
             self.logger.error(f"❌ Ошибка логирования трейда для {token_address}: {e}")
 
-    def _sync_input_token(self) -> str:
-        """Синхронный ввод токена"""
+    def _sync_log_old_metrics_cluster(self, token_address: str, token_name: str, cluster_data: dict):
+        """Синхронная запись лога кластера по старым метрикам"""
         try:
-            print("\n" + "="*80)
-            print("🔑 ВВЕДИТЕ НОВЫЙ JWT ТОКЕН PADRE.GG")
-            print("="*80)
-            print("📋 Инструкция:")
-            print("1. Откройте https://trade.padre.gg в браузере")
-            print("2. Откройте Developer Tools (F12)")
-            print("3. Перейдите во вкладку Network")
-            print("4. Фильтр: WS (WebSocket)")
-            print("5. Обновите страницу")
-            print("6. Найдите WebSocket соединение")
-            print("7. Во вкладке Messages найдите первое сообщение")
-            print("8. Скопируйте токен из массива [1, 'ТОКЕН_ЗДЕСЬ', 'timestamp']")
-            print("="*80)
+            # Формируем строку лога
+            wallets = cluster_data['wallets']
+            wallet_count = len(wallets)
+            min_time = min(wallets.values())
+            max_time = max(wallets.values())
+            time_span = max_time - min_time
 
-            while True:
-                token = input("🔑 Введите JWT токен: ").strip()
-                if token:
-                    # Простая валидация JWT токена
-                    if len(token) > 100 and '.' in token:
-                        print("✅ Токен принят!")
+            log_entry = (
+                f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                f"СТАРЫЕ МЕТРИКИ: {token_address} | "
+                f"{token_name} | "
+                f"Кошельков: {wallet_count} | "
+                f"Временной промежуток: {time_span} сек | "
+                f"Кошельки: {', '.join([f'{w[:8]}...' for w in wallets.keys()])}"
+            )
+
+            # Записываем в файл
+            with open(OLD_METRICS_LOG_FILE, 'a', encoding='utf-8') as f:
+                f.write(f"{log_entry}\n")
+                f.flush()
+
+        except Exception as e:
+            print(f"❌ Ошибка записи лога старых метрик для {token_address}: {e}")
+
+    async def log_old_metrics_cluster(self, token_address: str, token_name: str, cluster_data: dict):
+        """Асинхронное логирование кластера по старым метрикам"""
+        try:
+            # Записываем в файл в отдельном потоке
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._sync_log_old_metrics_cluster, token_address, token_name, cluster_data)
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка логирования кластера старых метрик для {token_address}: {e}")
+
+    def _sync_get_token_from_script(self) -> Optional[str]:
+        """Синхронный вызов скрипта padre_get_access_token.py"""
+        try:
+            # Запускаем скрипт padre_get_access_token.py
+            script_path = os.path.join(os.path.dirname(__file__), "padre_get_access_token.py")
+            result = subprocess.run(
+                ["python", script_path],
+                capture_output=True,
+                text=True,
+                cwd=os.path.dirname(__file__)
+            )
+
+            if result.returncode == 0:
+                print("✅ Скрипт padre_get_access_token.py выполнен успешно")
+
+                # Читаем токен из файла token.txt
+                token_file = os.path.join(os.path.dirname(__file__), "token.txt")
+                if os.path.exists(token_file):
+                    with open(token_file, 'r') as f:
+                        token = f.read().strip()
+
+                    if token and token.startswith('eyJ'):
                         return token
                     else:
-                        print("❌ Токен выглядит некорректно. Попробуйте еще раз.")
+                        print("❌ Токен в файле имеет неправильный формат")
+                        return None
                 else:
-                    print("❌ Токен не может быть пустым. Попробуйте еще раз.")
-
-        except KeyboardInterrupt:
-            print("\n🛑 Отмена ввода токена")
-            raise Exception("cancel")  # Бросаем исключение для обработки в вызывающем коде
-        except Exception as e:
-            print(f"\n❌ Ошибка ввода: {e}")
-            return ""
-
-    def _extract_refresh_token_from_jwt(self, jwt_token: str) -> str:
-        """Извлекаем refresh token из JWT токена (для Google Firebase)"""
-        try:
-            # JWT токен состоит из трех частей, разделенных точками
-            parts = jwt_token.split('.')
-            if len(parts) >= 2:
-                # Декодируем payload (вторая часть)
-                import base64
-                payload = parts[1]
-                # Добавляем padding если необходимо
-                payload += '=' * (4 - len(payload) % 4)
-                decoded = base64.urlsafe_b64decode(payload)
-                payload_data = json.loads(decoded)
-
-                # В payload Firebase токена может быть информация для refresh
-                # Обычно refresh token получается отдельно, но для простоты
-                # попробуем использовать user_id из payload
-                user_id = payload_data.get('user_id', '')
-                if user_id:
-                    # Создаем refresh token на основе user_id (упрощенная версия)
-                    return f"refresh_token_for_{user_id}"
+                    print("❌ Файл token.txt не найден")
+                    return None
+            else:
+                print(f"❌ Ошибка выполнения скрипта: {result.stderr}")
+                return None
 
         except Exception as e:
-            self.logger.warning(f"⚠️ Не удалось извлечь refresh token из JWT: {e}")
-
-        # Если не удалось извлечь, возвращаем пустую строку
-        return ""
+            print(f"❌ Ошибка при вызове скрипта: {e}")
+            return None
 
     async def listen_for_messages(self):
         """Слушаем входящие сообщения с автоматическим переподключением"""
@@ -1180,6 +1274,18 @@ class EboshersTracker:
 
                 messages_in_iteration = 0
                 async for message in self.websocket:
+                    # Проверяем таймаут tracked trades перед обработкой каждого сообщения
+                    # Только если прошло минимум 2 минуты после установления соединения
+                    current_time = time.time()
+                    if (self.connection_established_time is not None and
+                        current_time - self.connection_established_time > 120 and  # 2 минуты после подключения
+                        self.last_tracked_trade_time is not None and
+                        current_time - self.last_tracked_trade_time > self.tracked_trade_timeout):
+                        self.logger.warning(f"⏰ Таймаут tracked trades: {self.tracked_trade_timeout} сек без новых данных")
+                        self.logger.info("🔄 Выполняем переподключение из-за отсутствия активности tracked trades...")
+                        await self.force_reconnect()
+                        break  # Выходим из цикла прослушивания для переподключения
+
                     if isinstance(message, bytes):
                         # Декодируем бинарные данные
                         decoded_data = decode_padre_message(message)
@@ -1193,6 +1299,8 @@ class EboshersTracker:
                             self.logger.debug(f"📦 Неизвестное бинарное сообщение: {len(message)} байт")
 
                     elif isinstance(message, str):
+                        # Обновляем время последнего полученного сообщения
+                        self.last_message_time = time.time()
                         self.logger.info(f"📨 Текстовое сообщение: {message}")
 
                 # Если дошли до сюда, значит соединение закрылось
@@ -1259,12 +1367,18 @@ class EboshersTracker:
     async def process_message(self, message_data: dict):
         """Обрабатываем входящее сообщение"""
         try:
+            # Обновляем время последнего полученного сообщения (любого типа)
+            self.last_message_time = time.time()
+
             # Обработка нового формата Padre сообщений
             if 'type' in message_data and message_data['type'] == 'msg':
                 conn_id = message_data.get('connId', '')
                 payload = message_data.get('payload', {})
 
                 if payload.get('type') == 'init' and 'snapshot' in payload:
+                    # Обновляем время последнего tracked trade сообщения при получении snapshot
+                    self.last_tracked_trade_time = time.time()
+
                     snapshot = payload['snapshot']
 
                     # Обрабатываем трейды из snapshot
@@ -1272,6 +1386,9 @@ class EboshersTracker:
                         await self.process_tracked_trades(snapshot['trades'])
 
                 elif payload.get('type') == 'update' and 'update' in payload:
+                    # Обновляем время последнего tracked trade сообщения
+                    self.last_tracked_trade_time = time.time()
+
                     # Обработка обновлений трейдов
                     update_data = payload['update']
                     if 'newTrades' in update_data:
@@ -1279,8 +1396,26 @@ class EboshersTracker:
 
                 self.logger.info(f"📨 Обработано сообщение connId={conn_id}, тип={payload.get('type', 'unknown')}")
 
+            # Обработка старого формата, который теперь возвращается как прямой словарь (аналогично payload нового формата)
+            elif isinstance(message_data, dict) and message_data.get('type') == 'init' and 'snapshot' in message_data:
+                self.last_tracked_trade_time = time.time()
+                snapshot = message_data['snapshot']
+                if 'trades' in snapshot:
+                    await self.process_tracked_trades(snapshot['trades'])
+                self.logger.info(f"📨 Обработано сообщение старого формата (init snapshot), тип={message_data.get('type', 'unknown')}")
+
+            elif isinstance(message_data, dict) and message_data.get('type') == 'update' and 'update' in message_data:
+                self.last_tracked_trade_time = time.time()
+                update_data = message_data['update']
+                if 'newTrades' in update_data:
+                    await self.process_tracked_trades(update_data['newTrades'])
+                self.logger.info(f"📨 Обработано сообщение старого формата (update), тип={message_data.get('type', 'unknown')}")
+
             # Обработка tracked_trades типа сообщений (от decode_padre_message)
             elif 'type' in message_data and message_data['type'] == 'tracked_trades':
+                # Обновляем время последнего tracked trade сообщения
+                self.last_tracked_trade_time = time.time()
+
                 raw_data = message_data.get('raw_data', [])
                 if len(raw_data) >= 2:
                     conn_id = raw_data[1]  # connection id
@@ -1298,6 +1433,19 @@ class EboshersTracker:
                                 await self.process_tracked_trades(payload['snapshot']['trades'])
                             else:
                                 self.logger.debug(f"📦 tracked_trades payload без трейдов: {payload}")
+
+                            # Если в payload есть трейды, обновляем время последнего сообщения
+                            if 'trades' in payload or ('snapshot' in payload and 'trades' in payload['snapshot']):
+                                self.last_tracked_trade_time = time.time()
+
+            # Обработка специального сообщения для переподключения
+            elif 'type' in message_data and message_data['type'] == 'reconnect_required':
+                message_type = message_data.get('message_type', 0)
+                payload = message_data.get('payload', 0)
+                self.logger.warning(f"🔄 Получено специальное сообщение для переподключения: message_type={message_type}, payload={payload}")
+                self.logger.info("🔄 Выполняем принудительное переподключение WebSocket...")
+                await self.force_reconnect()
+                return  # Выходим из обработки, так как переподключение уже выполнено
 
             # Обработка системных сообщений
             elif 'type' in message_data and message_data['type'] == 'system':
@@ -1330,35 +1478,35 @@ class EboshersTracker:
 
             for trade in trades_data:
                 # Новый формат: трейд представлен как список элементов
-                if isinstance(trade, list) and len(trade) >= 15:
-                    # Распаковываем данные из списка согласно формату Padre
-                    signature = trade[0]  # Подпись транзакции
+                if isinstance(trade, list) and len(trade) >= 18:
+                    # Извлекаем только необходимые данные
                     timestamp = trade[1]  # Временная метка
-                    slot = trade[2]  # Слот в блокчейне
                     wallet_address = trade[3]  # Адрес кошелька
-                    sol_amount = trade[4]  # Сумма в SOL
-                    token_amount = trade[5]  # Сумма в токенах
-                    price_sol = trade[6]  # Цена в SOL
-                    trade_type = trade[7]  # Тип трейда (0=buy, 1=sell, 2=create, 3=sell?)
-                    token_price_usd = trade[8]  # Цена токена в USD
-                    market_cap_usd = trade[9]  # Рыночная капитализация в USD
-                    bonding_curve_percentage = trade[10]  # Процент бондинг-кривой
-                    market_id = trade[11]  # ID маркета
+                    amount_usd = trade[4]  # Сумма в долларах
                     token_address = trade[12]  # Адрес токена
-                    quote_mint = trade[13]  # Quote mint (обычно SOL)
-                    decimals = trade[14]  # Десятичные знаки
-                    remaining_supply = trade[15] if len(trade) > 15 else 0  # Остаток предложения
-                    token_symbol = trade[16] if len(trade) > 16 else ''  # Символ токена
-                    token_name = trade[17] if len(trade) > 17 else ''  # Название токена
-                    dex_type = trade[18] if len(trade) > 18 else ''  # Тип DEX
-                    dex_name = trade[19] if len(trade) > 19 else ''  # Название DEX
-                    program_id = trade[20] if len(trade) > 20 else ''  # Program ID
+                    token_name = trade[17] if len(trade) > 17 else 'Unknown'  # Название токена
+                    trade_type = trade[7]
 
-                    # Вычисляем сумму в USD
-                    amount_in_usd = sol_amount * token_price_usd if sol_amount and token_price_usd else 0
+                    # Извлекаем market cap (предположительно в миллиардах)
+                    market_cap_raw = trade[8] if len(trade) > 8 else 0
+                    market_cap = market_cap_raw * 1000000000  # Конвертируем в доллары
 
-                    # Все трейды от ебошеров - обрабатываем
-                    await self.process_trade(wallet_address, trade, token_address, amount_in_usd, timestamp)
+                    # Логируем каждый трейд для отладки
+                    self.logger.debug(f"📊 Трейд: amount={amount_usd:.2f}, market_cap_raw={market_cap_raw}, market_cap={market_cap:.0f}, token={token_name}")
+
+                    # ФИЛЬТР: учитываем только ПОКУПКИ (положительная сумма)
+                    if amount_usd <= 0:
+                        self.logger.debug(f"❌ Пропущен трейд: отрицательная сумма {amount_usd}")
+                        continue  # Пропускаем продажи и нулевые суммы
+
+                    # ФИЛЬТР: market cap от 50k до 300k
+                    if market_cap < 50000 or market_cap > 300000:
+                        # Логируем пропущенные трейды для отладки
+                        self.logger.debug(f"❌ Пропущен трейд: market_cap {market_cap:.0f} вне диапазона 50k-300k")
+                        continue
+
+                    # Обрабатываем трейд с минимальными данными
+                    await self.process_trade(wallet_address, token_address, amount_usd, timestamp, token_name, market_cap, trade_type)
 
                 else:
                     # Старый формат или неизвестный
@@ -1369,52 +1517,144 @@ class EboshersTracker:
             import traceback
             self.logger.error(f"📋 Traceback: {traceback.format_exc()}")
 
-    async def process_trade(self, wallet_address: str, trade_data: list, token_address: str, amount_usd: float, timestamp: int):
+    async def process_trade(self, wallet_address: str, token_address: str, amount_usd: float, timestamp: int, token_name: str, market_cap: float = 0, trade_type: int = 0):
         """Обрабатываем трейд ебошера и проверяем на скопления"""
         try:
-            # Распаковываем дополнительные данные
-            trade_type = trade_data[7]  # 0=buy, 1=sell, 2=create, 3=sell?
-            sol_amount = trade_data[4]
-            token_symbol = trade_data[16] if len(trade_data) > 16 else 'UNKNOWN'
-            token_name = trade_data[17] if len(trade_data) > 17 else 'Unknown Token'
-            dex_name = trade_data[19] if len(trade_data) > 19 else 'UNKNOWN'
-
-            # Определяем тип трейда
-            trade_type_str = {0: 'BUY', 1: 'SELL', 2: 'CREATE', 3: 'SELL'}.get(trade_type, f'TYPE_{trade_type}')
-            self.logger.info(f"📈 Тип: {trade_type_str} 🪙 Токен: {token_symbol} ({token_name}) 💰 Сумма: ${amount_usd:,.2f} ({sol_amount:.4f} SOL)")
+            # Обновляем последнюю рыночную капитализацию в кластере
+            if token_address in ebosher_clusters:
+                ebosher_clusters[token_address]['last_market_cap'] = market_cap
 
             # Логируем трейд в отдельный файл для токена
-            await self.log_trade_to_file(token_address, wallet_address, trade_type_str,
-                                       amount_usd, sol_amount, token_symbol, token_name,
-                                       dex_name, timestamp)
+            await self.log_trade_to_file(token_address, wallet_address, amount_usd, timestamp, token_name, trade_type, market_cap)
 
             # Проверяем на скопление ебошеров
-            await self.check_ebosher_cluster(wallet_address, token_address, timestamp, token_symbol, token_name)
+            await self.check_ebosher_cluster(wallet_address, token_address, amount_usd, timestamp, token_name)
+
+            # Также проверяем по старым метрикам (4+ кошельков за час)
+            await self.check_old_metrics_cluster(wallet_address, token_address, timestamp, token_name)
 
         except Exception as e:
             self.logger.error(f"❌ Ошибка обработки трейда {wallet_address[:8]}: {e}")
 
-    async def check_ebosher_cluster(self, wallet_address: str, token_address: str, timestamp: int, token_symbol: str, token_name: str):
-        """Проверяем на скопление ебошеров в токене"""
+    async def check_ebosher_cluster(self, wallet_address: str, token_address: str, amount_usd: float, timestamp: int, token_name: str):
+        """Проверяем на скопление ебошеров в токене по объему ПЕРВЫХ ПОКУПОК (только положительные суммы, без повторных покупок от одного кошелька)"""
         try:
             # Параметры для определения скопления
-            CLUSTER_SIZE_THRESHOLD = 4  # Минимум 4 кошелька
-            TIME_WINDOW_SECONDS = 30  # 30 секунд - "очень маленький период"
-            CLEANUP_TIME_SECONDS = 300  # Очищать старые записи через 5 минут
+            VOLUME_THRESHOLD_USD = 2000  # Минимум 2000 долларов общий объем
+            TIME_WINDOW_SECONDS = 120  # 2 минуты - временное окно
+            CLEANUP_TIME_SECONDS = 300  # Очищать старые записи через час
 
             # Инициализируем кластер для токена если его нет
             if token_address not in ebosher_clusters:
                 ebosher_clusters[token_address] = {
+                    'wallets': {},  # wallet -> {'amount': usd, 'timestamp': time}
+                    'total_volume': 0,
+                    'first_detection': timestamp,
+                    'last_update': timestamp,
+                    'token_name': token_name,
+                    'detected': False,
+                    'last_market_cap': 0  # Последняя рыночная капитализация
+                }
+
+            cluster = ebosher_clusters[token_address]
+
+            # Добавляем кошелек в кластер (ТОЛЬКО ПЕРВАЯ ПОКУПКА)
+            if wallet_address not in cluster['wallets']:
+                cluster['wallets'][wallet_address] = {
+                    'amount': amount_usd,
+                    'timestamp': timestamp
+                }
+                cluster['total_volume'] += amount_usd
+            else:
+                # Повторная покупка от того же кошелька - игнорируем
+                self.logger.debug(f"⚠️ Повторная покупка от кошелька {wallet_address[:8]} игнорируется")
+                return  # Выходим из функции, не обновляя кластер
+
+            cluster['last_update'] = timestamp
+
+            # Очищаем старые записи (кошельки, которые давно не торговали)
+            current_time = timestamp
+            wallets_to_remove = []
+            volume_to_remove = 0
+
+            for wallet, wallet_data in cluster['wallets'].items():
+                if current_time - wallet_data['timestamp'] > CLEANUP_TIME_SECONDS:
+                    wallets_to_remove.append(wallet)
+                    volume_to_remove += wallet_data['amount']
+
+            for wallet in wallets_to_remove:
+                del cluster['wallets'][wallet]
+                cluster['total_volume'] -= volume_to_remove
+
+            # Проверяем, является ли это скоплением по объему И по количеству кошельков
+            WALLET_THRESHOLD = 10  # Минимум 10 кошелька
+            if (cluster['total_volume'] >= VOLUME_THRESHOLD_USD and len(cluster['wallets']) >= WALLET_THRESHOLD) and not cluster['detected']:
+                # СКОПЛЕНИЕ ОБНАРУЖЕНО! (без проверки временного окна)
+                cluster['detected'] = True
+
+                # Вычисляем временную статистику для логов
+                wallet_timestamps = [data['timestamp'] for data in cluster['wallets'].values()]
+                if wallet_timestamps:
+                    min_time = min(wallet_timestamps)
+                    max_time = max(wallet_timestamps)
+                    time_span = max_time - min_time
+                else:
+                    min_time = timestamp
+                    max_time = timestamp
+                    time_span = 0
+
+                # Определяем критерий обнаружения
+                detection_reason = f"ПЕРВЫЕ ПОКУПКИ: ОБЪЕМ ≥ ${VOLUME_THRESHOLD_USD} + КОШЕЛЬКИ ≥ {WALLET_THRESHOLD}"
+
+                self.logger.info("🚨 " + "="*60)
+                self.logger.info("🎯 СКОПЛЕНИЕ ЕБОШЕРОВ ОБНАРУЖЕНО!")
+                self.logger.info(f"📊 КРИТЕРИЙ: {detection_reason}")
+                self.logger.info("🚨 " + "="*60)
+                self.logger.info(f"🪙 ТОКЕН: {token_name}")
+                self.logger.info(f"📍 АДРЕС: {token_address}")
+                self.logger.info(f"💰 ОБЩИЙ ОБЪЕМ: ${cluster['total_volume']:,.2f}")
+                self.logger.info(f"👥 КОШЕЛЬКОВ: {len(cluster['wallets'])}")
+                self.logger.info(f"⏱️  ВРЕМЕННОЙ ПРОМЕЖУТОК: {time_span} сек")
+                self.logger.info(f"🕒 ПЕРВЫЙ ВХОД: {datetime.fromtimestamp(min_time)}")
+                self.logger.info(f"🕒 ПОСЛЕДНИЙ ВХОД: {datetime.fromtimestamp(max_time)}")
+
+                # Выводим список кошельков с суммами
+                self.logger.info("📋 КОШЕЛЬКИ:")
+                for i, (wallet, wallet_data) in enumerate(sorted(cluster['wallets'].items(), key=lambda x: x[1]['timestamp']), 1):
+                    time_diff = wallet_data['timestamp'] - min_time
+                    self.logger.info(f"   {i}. {wallet[:12]}... ${wallet_data['amount']:.2f} (вход через {time_diff} сек)")
+
+                self.logger.info("🚨 " + "="*60)
+
+                # Отправляем уведомление в Telegram
+                await self.notify_ebosher_cluster(token_address, token_name, cluster)
+
+                # Уведомление о найденном скоплении
+                self.logger.info("✅ СКОПЛЕНИЕ ЕБОШЕРОВ НАЙДЕНО!")
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка проверки скопления для {token_address[:8]}: {e}")
+
+    async def check_old_metrics_cluster(self, wallet_address: str, token_address: str, timestamp: int, token_name: str):
+        """Проверяем на скопление ебошеров по старым метрикам (4+ кошельков за час)"""
+        try:
+            # Параметры для определения скопления по старым метрикам
+            OLD_METRICS_WALLET_THRESHOLD = 4  # Минимум 4 кошелька
+            OLD_METRICS_TIME_WINDOW = 1800     # полчаса
+            OLD_METRICS_CLEANUP_TIME = 3600   # Очистка через 1 час
+
+            # Инициализируем кластер для токена если его нет
+            if token_address not in old_metrics_clusters:
+                old_metrics_clusters[token_address] = {
                     'wallets': {},
                     'first_detection': timestamp,
                     'cluster_size': 0,
                     'last_update': timestamp,
-                    'token_symbol': token_symbol,
                     'token_name': token_name,
                     'detected': False
                 }
 
-            cluster = ebosher_clusters[token_address]
+            cluster = old_metrics_clusters[token_address]
 
             # Добавляем кошелек в кластер
             if wallet_address not in cluster['wallets']:
@@ -1426,54 +1666,43 @@ class EboshersTracker:
             current_time = timestamp
             wallets_to_remove = []
             for wallet, wallet_timestamp in cluster['wallets'].items():
-                if current_time - wallet_timestamp > CLEANUP_TIME_SECONDS:
+                if current_time - wallet_timestamp > OLD_METRICS_CLEANUP_TIME:
                     wallets_to_remove.append(wallet)
 
             for wallet in wallets_to_remove:
                 del cluster['wallets'][wallet]
                 cluster['cluster_size'] -= 1
 
-            # Проверяем, является ли это скоплением
-            if cluster['cluster_size'] >= CLUSTER_SIZE_THRESHOLD and not cluster['detected']:
-                # Проверяем, что все кошельки вошли в короткий промежуток времени
+            # Проверяем, является ли это скоплением по старым метрикам
+            if cluster['cluster_size'] >= OLD_METRICS_WALLET_THRESHOLD and not cluster['detected']:
+                # Проверяем, что все кошельки вошли в часовой промежуток времени
                 wallet_timestamps = list(cluster['wallets'].values())
                 if wallet_timestamps:
                     min_time = min(wallet_timestamps)
                     max_time = max(wallet_timestamps)
                     time_span = max_time - min_time
 
-                    if time_span <= TIME_WINDOW_SECONDS:
-                        # СКОПЛЕНИЕ ОБНАРУЖЕНО!
+                    if time_span <= OLD_METRICS_TIME_WINDOW:
+                        # СКОПЛЕНИЕ ПО СТАРЫМ МЕТРИКАМ ОБНАРУЖЕНО!
                         cluster['detected'] = True
 
-                        self.logger.info("🚨 " + "="*60)
-                        self.logger.info("🎯 СКОПЛЕНИЕ ЕБОШЕРОВ ОБНАРУЖЕНО!")
-                        self.logger.info("🚨 " + "="*60)
-                        self.logger.info(f"🪙 ТОКЕН: {token_symbol} ({token_name})")
+                        self.logger.info("📊 " + "="*50)
+                        self.logger.info("🎯 СКОПЛЕНИЕ ПО СТАРЫМ МЕТРИКАМ!")
+                        self.logger.info("📊 " + "="*50)
+                        self.logger.info(f"🪙 ТОКЕН: {token_name}")
                         self.logger.info(f"📍 АДРЕС: {token_address}")
                         self.logger.info(f"👥 КОШЕЛЬКОВ: {cluster['cluster_size']}")
                         self.logger.info(f"⏱️  ВРЕМЕННОЙ ПРОМЕЖУТОК: {time_span} сек")
-                        self.logger.info(f"🕒 ПЕРВЫЙ ВХОД: {datetime.fromtimestamp(min_time)}")
-                        self.logger.info(f"🕒 ПОСЛЕДНИЙ ВХОД: {datetime.fromtimestamp(max_time)}")
 
-                        # Выводим список кошельков
-                        self.logger.info("📋 КОШЕЛЬКИ:")
-                        for i, (wallet, wallet_time) in enumerate(sorted(cluster['wallets'].items(), key=lambda x: x[1]), 1):
-                            time_diff = wallet_time - min_time
-                            self.logger.info(f"   {i}. {wallet[:12]}... (вход через {time_diff} сек)")
+                        # Логируем в файл (без отправки в Telegram)
+                        await self.log_old_metrics_cluster(token_address, token_name, cluster)
 
-                        self.logger.info("🚨 " + "="*60)
-
-                        # Отправляем уведомление в Telegram
-                        await self.notify_ebosher_cluster(token_address, token_symbol, token_name, cluster)
-
-                        # Уведомление о найденном скоплении
-                        self.logger.info("✅ ПЕРВОЕ СКОПЛЕНИЕ ЕБОШЕРОВ НАЙДЕНО!")
+                        self.logger.info("✅ СКОПЛЕНИЕ ПО СТАРЫМ МЕТРИКАМ ЗАЛОГИРОВАНО!")
 
         except Exception as e:
-            self.logger.error(f"❌ Ошибка проверки скопления для {token_address[:8]}: {e}")
+            self.logger.error(f"❌ Ошибка проверки старых метрик для {token_address[:8]}: {e}")
 
-    async def send_telegram_message(self, message: str, keyboard=None) -> bool:
+    async def send_telegram_message(self, message: str, keyboard=None, chat_id=None, thread_id=None) -> bool:
         """Отправляет сообщение в Telegram"""
         try:
             # Проверяем, не слишком ли часто отправляем
@@ -1483,19 +1712,21 @@ class EboshersTracker:
                 if time_since_last < 3:  # Минимум 3 секунды между сообщениями
                     await asyncio.sleep(3 - time_since_last)
 
-            # Отправляем сообщение
-            chat_id = TARGET_CHAT_ID
-            thread_id = TARGET_THREAD_ID
+            # Используем переданный chat_id или по умолчанию
+            chat_id = chat_id or TARGET_CHAT_ID
 
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
             data = {
                 "chat_id": chat_id,
-                "message_thread_id": thread_id,
                 "text": message,
-                "parse_mode": "HTML",
+                "parse_mode": "Markdown",
                 "disable_web_page_preview": True
             }
+
+            # Добавляем thread_id только если он указан (для групп с ветками)
+            if thread_id is not None:
+                data["message_thread_id"] = thread_id
 
             if keyboard:
                 data["reply_markup"] = {"inline_keyboard": keyboard}
@@ -1526,19 +1757,74 @@ class EboshersTracker:
             self.logger.error(f"❌ Ошибка отправки в Telegram: {e}")
             return False
 
-    async def notify_ebosher_cluster(self, token_address: str, token_symbol: str, token_name: str, cluster_data: dict):
+    async def notify_ebosher_cluster(self, token_address: str, token_name: str, cluster_data: dict):
         """Отправляет уведомление о скоплении ебошеров в Telegram"""
         try:
+            # Проверяем, не отправляли ли уже уведомление для этого токена
+            if is_token_sent(token_address):
+                self.logger.info(f"⏭️  Токен {token_address[:8]} уже был отправлен ранее, пропускаем")
+                return
             wallets = cluster_data['wallets']
-            min_time = min(wallets.values())
-            max_time = max(wallets.values())
+            wallet_timestamps = [data['timestamp'] for data in wallets.values()]
+            min_time = min(wallet_timestamps)
+            max_time = max(wallet_timestamps)
             time_span = max_time - min_time
+            total_volume = cluster_data['total_volume']
 
-            # Формируем сообщение в стиле bundle_analyzer
+            # Получаем последнюю рыночную капитализацию
+            last_market_cap = cluster_data.get('last_market_cap', 0)
+
+            # Проверяем наличие специальных кошельков для отправки в особую ветку
+            special_wallets = {
+                "8znHBwV5wSBWDg7ruwYkHeMDNXQ2BPiwBzkTDJeUy1rP",
+                "niggerd597QYedtvjQDVHZTCCGyJrwHNm2i49dkm5zS"
+            }
+
+            special_wallet_qualified_high_value = False
+            qualified_special_wallet_high_value = None
+            special_wallet_qualified_low_value = False
+            qualified_special_wallet_low_value = None # To log which low value special wallet triggered it
+
+            for wallet, wallet_data in wallets.items():
+                if wallet in special_wallets:
+                    amount = wallet_data['amount']
+                    if amount > 3000:
+                        special_wallet_qualified_high_value = True
+                        qualified_special_wallet_high_value = wallet
+                        self.logger.info(f"🎯 Специальный кошелек {wallet[:8]}... квалифицирован (высокая сумма): ${amount:.2f} > $3000")
+                    elif amount > 0 and amount <= 3000:
+                        special_wallet_qualified_low_value = True
+                        qualified_special_wallet_low_value = wallet
+                        self.logger.info(f"🎯 Специальный кошелек {wallet[:8]}... квалифицирован (низкая сумма): ${amount:.2f} <= $3000")
+
+
+            # Выбираем основной канал для отправки (логика для high_value_special_wallet)
+            selected_chat_id = STANDARD_CHAT_ID
+            selected_thread_id = None
+
+            if special_wallet_qualified_high_value and len(wallets) == 10 and total_volume >= 3000:
+                selected_chat_id = SPECIAL_CHAT_ID  # Канал для специальных сообщений
+                selected_thread_id = None  # В каналах нет веток
+                self.logger.info(f"🎯 Отправляем в специальный канал {selected_chat_id} (спец. кошелек: {qualified_special_wallet_high_value[:8]}...)")
+            else:
+                if not special_wallet_qualified_high_value:
+                    self.logger.debug(f"📝 Отправляем в стандартный канал (нет квалифицированного спец. кошелька высокой стоимости)")
+                elif len(wallets) != 10:
+                    self.logger.debug(f"📝 Отправляем в стандартный канал (кошельков: {len(wallets)} != 10)")
+                elif total_volume < 3000:
+                    self.logger.debug(f"📝 Отправляем в стандартный канал (объем: ${total_volume:.2f} < $3000)")
+
+
+            # Формируем сообщение в формате Markdown
             message = (
-                f"<code>{token_address}</code>\n\n"
-                f"<i><a href='https://axiom.trade/t/{token_address}'>axiom</a> | <a href='https://dexscreener.com/solana/{token_address}'>dexscreener</a></i>\n\n"
-                f"<i>🚀 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')} <b>© by Wormster</b></i>"
+                f"**памп монеты от топов**\n\n"
+                f"**{token_name}**\n"
+                f"`{token_address}`\n\n"
+                f"mc: ${last_market_cap:,.0f}\n\n"
+                f"[axiom](https://axiom.trade/t/{token_address}) | "
+                f"[padre](https://trade.padre.gg/trade/solana/{token_address}) |"
+                f"[gmgn](https://gmgn.ai/sol/token/{token_address})\n\n"
+                f"*🚀 {datetime.now().strftime('%d.%m.%Y %H:%M:%S')} © **by Wormster***"
             )
 
             # Создаем клавиатуру с кнопкой быстрой покупки
@@ -1547,9 +1833,39 @@ class EboshersTracker:
                 "url": f"https://t.me/alpha_web3_bot?start=call-dex_men-SO-{token_address}"
             }]]
 
-            # Отправляем сообщение
-            if await self.send_telegram_message(message, keyboard):
-                self.logger.info(f"📢 Уведомление о скоплении отправлено для {token_address[:8]}")
+            # Отправляем сообщение в выбранный канал
+            success_main = await self.send_telegram_message(message, keyboard, selected_chat_id, selected_thread_id)
+            duplicate_info_for_log = ""
+            success_duplicate_special = True # Assume true if not sent
+
+            # Если это специальное сообщение (по высокой стоимости), дублируем в SPECIAL_DUPLICATE_CHAT_ID
+            if special_wallet_qualified_high_value and selected_chat_id == SPECIAL_CHAT_ID:
+                success_duplicate_special = await self.send_telegram_message(message, keyboard, SPECIAL_DUPLICATE_CHAT_ID, None)
+                if success_duplicate_special:
+                    self.logger.info(f"📢 Дубликат отправлен в дополнительный канал {SPECIAL_DUPLICATE_CHAT_ID}")
+                    duplicate_info_for_log += " (с дубликатом в SPECIAL_DUPLICATE)"
+                else:
+                    self.logger.warning(f"⚠️ Не удалось отправить дубликат в дополнительный канал {SPECIAL_DUPLICATE_CHAT_ID}")
+
+            # НОВАЯ ЛОГИКА: Если специальный кошелек зашел на сумму <= $3000, отправляем в NEW_ADDITIONAL_CHANNEL_ID
+            success_duplicate_new_additional = True # Assume true if not sent
+            if special_wallet_qualified_low_value:
+                self.logger.info(f"🎯 Отправляем в новый дополнительный канал {NEW_ADDITIONAL_CHANNEL_ID} (спец. кошелек: {qualified_special_wallet_low_value[:8]}... с низкой суммой)")
+                success_duplicate_new_additional = await self.send_telegram_message(message, keyboard, NEW_ADDITIONAL_CHANNEL_ID, None)
+                if success_duplicate_new_additional:
+                    self.logger.info(f"📢 Дубликат отправлен в новый дополнительный канал {NEW_ADDITIONAL_CHANNEL_ID}")
+                    duplicate_info_for_log += " (с дубликатом в NEW_ADDITIONAL_CHANNEL)"
+                else:
+                    self.logger.warning(f"⚠️ Не удалось отправить дубликат в новый дополнительный канал {NEW_ADDITIONAL_CHANNEL_ID}")
+
+
+            # Проверяем успешность отправки основного сообщения
+            if success_main:
+                channel_type = "специальный канал" if selected_chat_id == SPECIAL_CHAT_ID else "стандартный канал"
+                self.logger.info(f"📢 Уведомление о скоплении отправлено для {token_address[:8]} в {channel_type}{duplicate_info_for_log}")
+
+                # Добавляем токен в список отправленных только при успешной отправке в основной канал
+                add_sent_token(token_address)
             else:
                 self.logger.error(f"❌ Не удалось отправить уведомление о скоплении для {token_address[:8]}")
 
@@ -1640,6 +1956,30 @@ class EboshersTracker:
         except Exception as e:
             self.logger.error(f"❌ Ошибка в задаче таймера соединения: {e}")
 
+    async def message_timeout_task(self):
+        """Задача для отслеживания таймаута сообщений и автоматического переподключения"""
+        try:
+            while self.running:
+                current_time = time.time()
+
+                # Проверяем, прошло ли более минуты с момента последнего сообщения
+                if (self.last_message_time is not None and
+                    self.connection_established_time is not None and
+                    current_time - self.connection_established_time > 30 and  # Ждем минимум 30 сек после подключения
+                    current_time - self.last_message_time > self.message_timeout):
+
+                    self.logger.warning(f"⏰ Таймаут сообщений: {self.message_timeout} сек без данных от сервера")
+                    self.logger.info("🔄 Выполняем переподключение для обновления авторизации и подписок...")
+
+                    # Выполняем переподключение для обновления авторизации и подписок
+                    await self.force_reconnect()
+
+                # Проверяем каждые 10 секунд
+                await asyncio.sleep(10)
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка в задаче таймаута сообщений: {e}")
+
     async def force_reconnect(self):
         """Немедленное переподключение с защитой от бесконечного цикла"""
         try:
@@ -1721,11 +2061,12 @@ class EboshersTracker:
 
             # Запускаем задачи параллельно
             timer_task = asyncio.create_task(self.connection_timer_task())
+            message_timeout_task = asyncio.create_task(self.message_timeout_task())
             listen_task = asyncio.create_task(self.listen_for_messages())
 
             # Ждем завершения любой из задач
             done, pending = await asyncio.wait(
-                [listen_task, timer_task],
+                [listen_task, timer_task, message_timeout_task],
                 return_when=asyncio.FIRST_COMPLETED
             )
 
