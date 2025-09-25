@@ -1,7 +1,7 @@
 import base64
 import msgpack
 
-encoded_str = "kwQl2U0vdHJhZGVzL3JlY2VudC9zb2xhbmEtSExLelhkc2czcTJXd2dKSGlVVUNYZ29ubnZYcnZ2UFNxa3Bucmp1OTR5alIvc21hcnQtZmVlZA=="
+encoded_str = "kQM="
 
 try:
     decoded_bytes = base64.b64decode(encoded_str)

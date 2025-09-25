@@ -999,7 +999,7 @@ class EboshersTracker:
             # Первая подписка на tracked-trades/wallet-groups
             subscription_message_1 = [
                 4,
-                1,
+                60,
                 '/tracked-trades/wallet-groups/cba0b62d-a37f-4ecf-8672-56f857d56055/subscribe?encodedFilter=%7B%22tradeType%22%3A%5B0%2C1%2C3%2C2%5D%2C%22amountInUsd%22%3A%7B%7D%2C%22mcapInUsd%22%3A%7B%7D%2C%22tokenAgeSeconds%22%3A%7B%7D%7D'
             ]
 
@@ -1025,7 +1025,7 @@ class EboshersTracker:
             # Вторая подписка на tracked-trades/wallet-groups (другая группа)
             subscription_message_2 = [
                 4,
-                2,
+                61,
                 '/tracked-trades/wallet-groups/14b924db-1808-475b-8320-362baa22f92b/subscribe?encodedFilter=%7B%22tradeType%22%3A%5B0%2C1%2C3%2C2%5D%2C%22amountInUsd%22%3A%7B%7D%2C%22mcapInUsd%22%3A%7B%7D%2C%22tokenAgeSeconds%22%3A%7B%7D%7D'
             ]
 
@@ -1048,7 +1048,7 @@ class EboshersTracker:
             # Вторая подписка на tracked-trades/wallet-groups (другая группа)
             subscription_message_3 = [
                 4,
-                3,
+                62,
                 '/tracked-trades/wallet-groups/c1031d6c-1e8f-4b03-82c5-863df244aaf5/subscribe?encodedFilter=%7B%22tradeType%22%3A%5B0%2C1%2C3%2C2%5D%2C%22amountInUsd%22%3A%7B%7D%2C%22mcapInUsd%22%3A%7B%7D%2C%22tokenAgeSeconds%22%3A%7B%7D%7D'
             ]
 

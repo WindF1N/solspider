@@ -39,6 +39,11 @@
         }
     };
 
+    // Функция для проверки, что все буквы в строке заглавные
+    const isUpperCase = (str) => {
+        return str === str.toUpperCase() && str.toLowerCase() !== str.toUpperCase();
+    };
+
     // Функция для получения уникального идентификатора токена
     const getTokenId = (element) => {
         const tokenLinkElement = element.querySelector('a[href*="/sol/token/"]');
@@ -61,7 +66,7 @@
             const position = getTokenPosition(element);
             
             // Проверяем только токены на позиции 10 и ниже
-            if (position < 10) {
+            if (position < 3) {
                 // Если токен в топ-4, удаляем его из проверки если он там есть
                 const tokenId = getTokenId(element);
                 if (tokenId && tokenChecks.has(tokenId) && !tokenChecks.get(tokenId).processed) {
@@ -82,17 +87,22 @@
                 const tokenLinkElement = element.querySelector('a[href*="/sol/token/"]');
                 const tokenLink = tokenLinkElement ? tokenLinkElement.href : 'N/A';
 
-                const tokenDevAgeElement = element.querySelector('.flex.items-center.gap-2px.text-green-100');
+                const tokenDevAgeElement = element.querySelector('path[d="M3.30859 11.3997C3.30859 11.0131 3.62199 10.6997 4.00859 10.6997H11.9929C12.3795 10.6997 12.6929 11.0131 12.6929 11.3997C12.6929 11.7863 12.3795 12.0997 11.9929 12.0997H4.00859C3.62199 12.0997 3.30859 11.7863 3.30859 11.3997Z"]').parentElement.parentElement;
                 const tokenDevAge = tokenDevAgeElement ? tokenDevAgeElement.children[tokenDevAgeElement.children.length - 1].innerText : "N/A";
+
+                const tokenFeesElement = element.querySelector('path[d="M2.65639 9.70688C2.73558 9.62768 2.84448 9.58148 2.95998 9.58148H13.4338C13.6252 9.58148 13.7209 9.81247 13.5856 9.94777L11.5166 12.0168C11.4374 12.096 11.3285 12.1422 11.213 12.1422H0.739159C0.547766 12.1422 0.45207 11.9112 0.587365 11.7759L2.65639 9.70688Z"]').parentElement.parentElement;
+                const tokenFees = tokenFeesElement ? tokenFeesElement.children[tokenFeesElement.children.length - 1].innerText : "0";
 
                 // Получаем уникальный ID токена
                 const tokenId = getTokenId(element);
                 
                 if (!tokenId) return;
-                
+
+                if (tokenFees == "0") return;
+
                 // Проверяем, содержит ли devAge процент или DevSell
-                const hasPercentage = tokenDevAge.includes('%');
-                const hasDevSell = tokenDevAge.includes('DS');
+                const hasPercentage = tokenDevAge ? tokenDevAge.includes('%') : true;
+                const hasDevSell = tokenDevAge ? tokenDevAge.includes('DS') : true;
 
                 if (hasPercentage || hasDevSell) {
                     // Если токен уже в процессе проверки
@@ -103,7 +113,7 @@
                         checkData.currentPosition = position; // Обновляем позицию
                         
                         // Если достигли 1 проверок - выводим токен
-                        if (checkData.checkCount >= 1 && !checkData.sentToTelegram) {
+                        if (checkData.checkCount >= 3 && !checkData.sentToTelegram) {
                             const tokenData = {
                                 name: tokenName,
                                 age: ageString,
@@ -134,6 +144,14 @@
                         });
                         console.log(`New token added to checks (position ${position}): ${tokenName}`);
                     }
+                    
+                    // Добавляем проверку на заглавные буквы
+                    if (!isUpperCase(tokenName)) {
+                        console.log(`Token "${tokenName}" removed from checks (not all uppercase): ${tokenName}`);
+                        tokenChecks.delete(tokenId);
+                        return;
+                    }
+
                 } else {
                     // Если процента нет, удаляем токен из проверки
                     if (tokenChecks.has(tokenId) && !tokenChecks.get(tokenId).processed) {
