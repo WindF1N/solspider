@@ -55,6 +55,7 @@ from scipy.stats import linregress
 import uuid
 import random
 import threading
+from telethon.sync import TelegramClient
 
 # Загружаем переменные окружения из .env файла
 load_dotenv()
@@ -1558,6 +1559,11 @@ class EboshersTracker:
 
             cluster = ebosher_clusters[token_address]
 
+            special_wallets = {
+                "8znHBwV5wSBWDg7ruwYkHeMDNXQ2BPiwBzkTDJeUy1rP",
+                "niggerd597QYedtvjQDVHZTCCGyJrwHNm2i49dkm5zS"
+            }
+
             # Добавляем кошелек в кластер (ТОЛЬКО ПЕРВАЯ ПОКУПКА)
             if wallet_address not in cluster['wallets']:
                 cluster['wallets'][wallet_address] = {
@@ -1566,9 +1572,16 @@ class EboshersTracker:
                 }
                 cluster['total_volume'] += amount_usd
             else:
-                # Повторная покупка от того же кошелька - игнорируем
-                self.logger.debug(f"⚠️ Повторная покупка от кошелька {wallet_address[:8]} игнорируется")
-                return  # Выходим из функции, не обновляя кластер
+                if wallet_address in special_wallets:
+                    cluster['wallets'][wallet_address] = {
+                        'amount': cluster['wallets'][wallet_address]['amount'] + amount_usd,
+                        'timestamp': timestamp
+                    }
+                    cluster['total_volume'] += amount_usd
+                else:
+                    # Повторная покупка от того же кошелька - игнорируем
+                    self.logger.debug(f"⚠️ Повторная покупка от кошелька {wallet_address[:8]} игнорируется")
+                    return  # Выходим из функции, не обновляя кластер
 
             cluster['last_update'] = timestamp
 
@@ -1788,31 +1801,33 @@ class EboshersTracker:
             for wallet, wallet_data in wallets.items():
                 if wallet in special_wallets:
                     amount = wallet_data['amount']
-                    if amount > 3000:
+                    if amount > 2900:
                         special_wallet_qualified_high_value = True
                         qualified_special_wallet_high_value = wallet
-                        self.logger.info(f"🎯 Специальный кошелек {wallet[:8]}... квалифицирован (высокая сумма): ${amount:.2f} > $3000")
-                    elif amount > 0 and amount <= 3000:
+                        self.logger.info(f"🎯 Специальный кошелек {wallet[:8]}... квалифицирован (высокая сумма): ${amount:.2f} > $2900")
+                    elif amount > 0 and amount <= 2900:
                         special_wallet_qualified_low_value = True
                         qualified_special_wallet_low_value = wallet
-                        self.logger.info(f"🎯 Специальный кошелек {wallet[:8]}... квалифицирован (низкая сумма): ${amount:.2f} <= $3000")
+                        self.logger.info(f"🎯 Специальный кошелек {wallet[:8]}... квалифицирован (низкая сумма): ${amount:.2f} <= $2900")
 
 
             # Выбираем основной канал для отправки (логика для high_value_special_wallet)
             selected_chat_id = STANDARD_CHAT_ID
             selected_thread_id = None
 
-            if special_wallet_qualified_high_value and len(wallets) == 10 and total_volume >= 3000:
+            if special_wallet_qualified_high_value and len(wallets) == 10 and total_volume >= 2900:
                 selected_chat_id = SPECIAL_CHAT_ID  # Канал для специальных сообщений
                 selected_thread_id = None  # В каналах нет веток
                 self.logger.info(f"🎯 Отправляем в специальный канал {selected_chat_id} (спец. кошелек: {qualified_special_wallet_high_value[:8]}...)")
+                # Отправляем адрес контракта в отдельный чат через Telethon
+                await send_telethon_message(TELETHON_TARGET_CHAT_ID, token_address)
             else:
                 if not special_wallet_qualified_high_value:
                     self.logger.debug(f"📝 Отправляем в стандартный канал (нет квалифицированного спец. кошелька высокой стоимости)")
                 elif len(wallets) != 10:
                     self.logger.debug(f"📝 Отправляем в стандартный канал (кошельков: {len(wallets)} != 10)")
-                elif total_volume < 3000:
-                    self.logger.debug(f"📝 Отправляем в стандартный канал (объем: ${total_volume:.2f} < $3000)")
+                elif total_volume < 2900:
+                    self.logger.debug(f"📝 Отправляем в стандартный канал (объем: ${total_volume:.2f} < $2900)")
 
 
             # Формируем сообщение в формате Markdown
@@ -1847,7 +1862,7 @@ class EboshersTracker:
                 else:
                     self.logger.warning(f"⚠️ Не удалось отправить дубликат в дополнительный канал {SPECIAL_DUPLICATE_CHAT_ID}")
 
-            # НОВАЯ ЛОГИКА: Если специальный кошелек зашел на сумму <= $3000, отправляем в NEW_ADDITIONAL_CHANNEL_ID
+            # НОВАЯ ЛОГИКА: Если специальный кошелек зашел на сумму <= $2900, отправляем в NEW_ADDITIONAL_CHANNEL_ID
             success_duplicate_new_additional = True # Assume true if not sent
             if special_wallet_qualified_low_value:
                 self.logger.info(f"🎯 Отправляем в новый дополнительный канал {NEW_ADDITIONAL_CHANNEL_ID} (спец. кошелек: {qualified_special_wallet_low_value[:8]}... с низкой суммой)")
@@ -2100,6 +2115,25 @@ class EboshersTracker:
                 self.logger.error(f"❌ Ошибка при закрытии соединения: {e}")
             self.websocket = None
 
+# Настройки Telethon (для отдельной отправки)
+TELETHON_APP_ID = 15942015
+TELETHON_API_HASH = '341d19fee1184dfb0939c0d8935cfff4'
+TELETHON_TARGET_CHAT_ID = 5978931099 # Чат для отправки только адреса контракта
+TELETHON_SESSION_NAME = 'ebosher_tracker'
+
+# Инициализация клиента Telethon
+telethon_client = TelegramClient(TELETHON_SESSION_NAME, TELETHON_APP_ID, TELETHON_API_HASH)
+
+async def send_telethon_message(chat_id: int, message: str):
+    """Отправляет сообщение через Telethon"""
+    try:
+        await telethon_client.start()
+        await telethon_client.send_message('@alpha_web3_bot', message)
+        logging.info(f"✅ Сообщение через Telethon отправлено в чат {chat_id}")
+    except Exception as e:
+        logging.error(f"❌ Ошибка отправки сообщения через Telethon в чат {chat_id}: {e}")
+    finally:
+        await telethon_client.disconnect()
 
 async def main():
     """Главная функция для запуска отслеживания ебошеров"""

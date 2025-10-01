@@ -79,7 +79,17 @@ ${tokenData.link}`;
                 chat_id: TELEGRAM_CHAT_ID,
                 text: message,
                 parse_mode: 'HTML',
-                disable_web_page_preview: false
+                disable_web_page_preview: true,
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            {
+                                text: 'QUICK BUY',
+                                url: `https://t.me/alpha_web3_bot?start=call-dex_men-SO-${contractAddress}`
+                            }
+                        ]
+                    ]
+                }
             })
         });
         
