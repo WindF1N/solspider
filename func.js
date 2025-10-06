@@ -6,8 +6,14 @@
     
     // Настройки Telegram
     const TELEGRAM_BOT_TOKEN = '7462651009:AAEU8ubMvkWP62vUOncvpYXSU-D04JeHq-E';
-    const TELEGRAM_CHAT_ID = '-1002936713835';
+    const TELEGRAM_CHAT_ID = '-1003054925662';
     
+    // Helper function to escape MarkdownV2 special characters
+    const escapeMarkdown = (text) => {
+        if (!text) return '';
+        return String(text).replace(/([_*\[\]()~`>#+\-=|{!])/g, '\\$1');
+    };
+
     // Функция для извлечения адреса контракта из ссылки
     const extractContractAddress = (url) => {
         try {
@@ -22,41 +28,63 @@
     const sendToTelegram = async (tokenData) => {
     const contractAddress = extractContractAddress(tokenData.link);
     
-    const message = `<b>🚨 ТОКЕН ОБНАРУЖЕН 🚨</b>
+    // New API call to gmgn.ai
+    const gmgnUrl = `https://gmgn.ai/vas/api/v1/token_holder_stat/sol/${contractAddress}?device_id=eeb8dafa-3383-469c-9eff-0d8e7f91772b&fp_did=d77855ac6b24fee27da1ac79e7aaf072&client_id=gmgn_web_20251004-4905-4ec9259&from_app=gmgn&app_ver=20251004-4905-4ec9259&tz_name=Europe%2FMoscow&tz_offset=10800&app_lang=ru&os=web`;
+    let gmgnData = null;
 
-<b>📊 Основная информация:</b>
-• <b>Название:</b> ${tokenData.name}
-• <b>Позиция в списке:</b> ${tokenData.position}
-• <b>Контракт:</b> <code>${contractAddress}</code>
-• <b>Возраст:</b> ${tokenData.age}
-• <b>Dev Age:</b> ${tokenData.devAge}
+    try {
+        const gmgnResponse = await fetch(gmgnUrl, { method: 'GET' });
+        const gmgnResult = await gmgnResponse.json();
+        if (gmgnResult.code === 0) {
+            console.log(gmgnResult)
+            gmgnData = gmgnResult.data;
+            // if (gmgnData.following_count < 5) {
+            //     console.log(`Токен ${contractAddress} хранит ${gmgnData.following_count} кошельков из базы`)
+            //     return;
+            // }
+        } else {
+            console.error('❌ Error fetching gmgn.ai data:', gmgnResult);
+        }
+    } catch (error) {
+        console.error('❌ Error during gmgn.ai API call:', error);
+    }
 
-<b>💰 Финансовые показатели:</b>
-• <b>Market Cap:</b> ${tokenData.mcap}
-• <b>Объем (5m):</b> ${tokenData.volume}
-• <b>Транзакции (5m):</b> ${tokenData.tx}
-• <b>Комиссии:</b> ${tokenData.fees}
+    const message = `*🚨 ТОКЕН ОБНАРУЖЕН 🚨*
 
-<b>👥 Держатели:</b>
-• <b>Всего держателей:</b> ${tokenData.holders}
-• <b>Топ 10:</b> ${tokenData.top10}
-• <b>Инсайдеры:</b> ${tokenData.insider}
-• <b>Бандлеры:</b> ${tokenData.bundler}
+*📊 Основная информация:*
+• *Название:* ${escapeMarkdown(tokenData.name)}
+• *Позиция в списке:* ${escapeMarkdown(tokenData.position)}
+• *Контракт:* *${escapeMarkdown(contractAddress)}*
+• *Возраст:* ${escapeMarkdown(tokenData.age)}
+• *Dev Age:* ${escapeMarkdown(tokenData.devAge)}
 
-<b>⚠️ Безопасность:</b>
-• <b>Фишинг:</b> ${tokenData.phishing}
-• <b>Снайперы:</b> ${tokenData.sniper}
+*💰 Финансовые показатели:*
+• *Market Cap:* ${escapeMarkdown(tokenData.mcap)}
+• *Объем (5m):* ${escapeMarkdown(tokenData.volume)}
+• *Транзакции (5m):* ${escapeMarkdown(tokenData.tx)}
+• *Комиссии:* ${escapeMarkdown(tokenData.fees)}
 
-<b>👨‍💻 Разработчик:</b>
-• <b>Инфо:</b> ${tokenData.devInfo}
-• <b>KOLs:</b> ${tokenData.kols}
+*👥 Держатели:*
+• *Всего держателей:* ${escapeMarkdown(tokenData.holders)}
+• *Топ 10:* ${escapeMarkdown(tokenData.top10)}
+• *Инсайдеры:* ${escapeMarkdown(tokenData.insider)}
+• *Бандлеры:* ${escapeMarkdown(tokenData.bundler)}
+${gmgnData ? `\n*🤖 Кошельки GMGN:*\n• *Following Wallets:* ${escapeMarkdown(gmgnData.following_count)}\n• *Bundler Wallets:* ${escapeMarkdown(gmgnData.bundler_count)}` : ''}
 
-<b>📈 Активность:</b>
-• <b>Покупатели (Axiom):</b> ${tokenData.buyers}
+*⚠️ Безопасность:*
+• *Фишинг:* ${escapeMarkdown(tokenData.phishing)}
+• *Снайперы:* ${escapeMarkdown(tokenData.sniper)}
 
-<b>🔍 Проверки:</b> ${tokenData.checks}
+*👨‍💻 Разработчик:*
+• *Инфо:* ${escapeMarkdown(tokenData.devInfo)}
+• *KOLs:* ${escapeMarkdown(tokenData.kols)}
 
-<b>🕒 Время отправки:</b> ${new Date().toLocaleString('ru-RU', { 
+*📈 Активность:*
+• *Покупатели (Axiom):* ${escapeMarkdown(tokenData.buyers)}
+
+*🔍 Проверки:* ${escapeMarkdown(tokenData.checks)}
+
+*🕒 Время отправки:* ${new Date().toLocaleString('ru-RU', { 
     year: 'numeric', 
     month: '2-digit', 
     day: '2-digit', 
@@ -65,7 +93,7 @@
     second: '2-digit' 
 })}
 
-${tokenData.link}`;
+${escapeMarkdown(tokenData.link)}`;
 
     const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
     
@@ -78,7 +106,7 @@ ${tokenData.link}`;
             body: JSON.stringify({
                 chat_id: TELEGRAM_CHAT_ID,
                 text: message,
-                parse_mode: 'HTML',
+                parse_mode: 'Markdown',
                 disable_web_page_preview: true,
                 reply_markup: {
                     inline_keyboard: [
@@ -104,11 +132,6 @@ ${tokenData.link}`;
     }
 };
 
-    // Функция для проверки, что все буквы в строке заглавные
-    const isUpperCase = (str) => {
-        return str === str.toUpperCase() && str.toLowerCase() !== str.toUpperCase();
-    };
-
     // Функция для получения уникального идентификатора токена
     const getTokenId = (element) => {
         const tokenLinkElement = element.querySelector('a[href*="/sol/token/"]');
@@ -117,10 +140,10 @@ ${tokenData.link}`;
 
     // Функция для получения позиции токена в таблице
     const getTokenPosition = (element) => {
-        const tableBody = document.querySelector('.flex.flex-col.flex-1.overflow-y-auto.overflow-x-hidden.border-line-100.bg-bg-100:first-child .g-table-body:first-child');
+        const tableBody = document.querySelector('.flex.flex-col.flex-1.overflow-y-auto.overflow-x-hidden.border-line-100.bg-bg-100:last-child .g-table-body:first-child');
         if (!tableBody) return -1;
         
-        const allTokens = document.querySelectorAll('.flex.flex-col.flex-1.overflow-y-auto.overflow-x-hidden.border-line-100.bg-bg-100:first-child .g-table-body:first-child > div > div');
+        const allTokens = document.querySelectorAll('.flex.flex-col.flex-1.overflow-y-auto.overflow-x-hidden.border-line-100.bg-bg-100:last-child .g-table-body:first-child > div > div');
         return Array.from(allTokens).indexOf(element) + 1;
     };
 
@@ -161,13 +184,13 @@ ${tokenData.link}`;
     };
 
     const filterAndLogTokens = () => {
-        const tokenElements = document.querySelectorAll('.flex.flex-col.flex-1.overflow-y-auto.overflow-x-hidden.border-line-100.bg-bg-100:first-child .g-table-body:first-child > div > div');
+        const tokenElements = document.querySelectorAll('.flex.flex-col.flex-1.overflow-y-auto.overflow-x-hidden.border-line-100.bg-bg-100:last-child .g-table-body:first-child > div > div');
 
         tokenElements.forEach(element => {
             const position = getTokenPosition(element);
             
             // Проверяем только токены на позиции 1 и ниже
-            if (position < 1) {
+            if (position < 0) {
                 const tokenId = getTokenId(element);
                 if (tokenId && tokenChecks.has(tokenId) && !tokenChecks.get(tokenId).processed) {
                     tokenChecks.delete(tokenId);
@@ -176,7 +199,7 @@ ${tokenData.link}`;
                 return;
             }
 
-            const ageElement = element.querySelector('.text-green-50.font-medium');
+            const ageElement = element.querySelector('.font-normal.text-text-200font-medium.overflow-hidden.text-ellipsis.whitespace-nowrap.flex-shrink-0 > div');
             if (ageElement) {
                 const ageString = ageElement.innerText.trim();
 
@@ -200,7 +223,7 @@ ${tokenData.link}`;
                 const tokenKOLs = getElementText(element, 'path[d="M12.5798 7.46814V3.02087C12.5798 2.85522 12.4457 2.7211 12.28 2.72107H3.71948C3.55384 2.72112 3.41968 2.85522 3.41968 3.02087V7.46912C3.41977 7.87651 3.61125 8.26058 3.93628 8.50623L7.9978 11.5756L12.0632 8.50623C12.3886 8.26055 12.5798 7.87582 12.5798 7.46814ZM13.9802 7.46814C13.9802 8.31486 13.5827 9.11316 12.907 9.62341L8.698 12.8011V13.9857H11.1472C11.5337 13.9857 11.8472 14.2985 11.8474 14.6849C11.8474 15.0715 11.5338 15.3851 11.1472 15.3851H4.83569C4.44909 15.3851 4.1355 15.0715 4.1355 14.6849C4.1357 14.2985 4.44922 13.9857 4.83569 13.9857H7.29761V12.8011L3.09155 9.62244C2.41661 9.11219 2.01938 8.31523 2.01929 7.46912V3.02087C2.01929 2.08203 2.78063 1.32073 3.71948 1.32068H12.28C13.2188 1.32071 13.9801 2.08208 13.9802 3.02087V7.46814Z"]');
                 const tokenMarketCap = getElementText(element, 'div.flex.z-10.flex-col.w-0.items-end.absolute.right-0 > div:nth-child(1) > div:nth-child(2)');
                 const tokenVolume = getElementText(element, 'div.flex.z-10.flex-col.w-0.items-end.absolute.right-0 > div:nth-child(1) > div:nth-child(1)');
-		const tokenFees = getElementText(element, 'div.flex.z-10.flex-col.w-0.items-end.absolute.right-0 > div:nth-child(2) > div:nth-child(1) > span:last-child');
+		        const tokenFees = getElementText(element, 'div.flex.z-10.flex-col.w-0.items-end.absolute.right-0 > div:nth-child(2) > div:nth-child(1) > span:last-child');
                 const tokenTX = getElementText(element, 'div.flex.z-10.flex-col.w-0.items-end.absolute.right-0 > div:nth-child(2) > div:nth-child(2) > span:nth-child(2)');
 
                 // Получаем уникальный ID токена
@@ -211,9 +234,9 @@ ${tokenData.link}`;
                 if (tokenFees == "0") return;
 
                 // Проверяем, содержит ли devAge процент или DevSell
-                const hasPercentage = tokenDevAge ? (tokenDevAge.includes('%') || tokenDevAge.includes('DS')) : false;
+                // const hasPercentage = tokenDevAge ? (tokenDevAge.includes('%') || tokenDevAge.includes('DS')) : false;
 
-                if (hasPercentage && tokenDevInfo.includes('/1') && tokenDevAge !== '0%') {
+                // if (0 === 0) {
                     // Если токен уже в процессе проверки
                     if (tokenChecks.has(tokenId)) {
                         const checkData = tokenChecks.get(tokenId);
@@ -222,7 +245,7 @@ ${tokenData.link}`;
                         checkData.currentPosition = position;
                         
                         // Если достигли 20 проверок - отправляем в Telegram
-                        if (checkData.checkCount >= 20 && !checkData.sentToTelegram) {
+                        if (checkData.checkCount >= 1 && !checkData.sentToTelegram) {
                             const tokenData = {
                                 name: tokenName,
                                 age: ageString,
@@ -266,13 +289,13 @@ ${tokenData.link}`;
                         });
                         console.log(`New token added to checks (position ${position}): ${tokenName}`);
                     }
-                } else {
-                    // Если процента нет, удаляем токен из проверки
-                    if (tokenChecks.has(tokenId) && !tokenChecks.get(tokenId).processed) {
-                        tokenChecks.delete(tokenId);
-                        console.log(`Token removed from checks (no %/DS): ${tokenName}`);
-                    }
-                }
+                // } else {
+                //     // Если процента нет, удаляем токен из проверки
+                //     if (tokenChecks.has(tokenId) && !tokenChecks.get(tokenId).processed) {
+                //         tokenChecks.delete(tokenId);
+                //         console.log(`Token removed from checks (no %/DS): ${tokenName}`);
+                //     }
+                // }
             }
         });
     };
